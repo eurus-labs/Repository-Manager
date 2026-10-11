@@ -2,7 +2,7 @@
   "name": "repository-manager",
   "displayName": "Repository Manager",
   "description": "Coordinate branches and Git workflows across a parent repository and its linked repositories from one VS Code dashboard",
-  "version": "2.3.0",
+  "version": "2.3.1",
   "publisher": "repository-manager",
   "engines": {
     "vscode": "^1.74.0"
@@ -241,9 +241,6 @@
     "playwright-core": "~1.56.1",
     "sharp": "^0.35.5",
     "typescript": "^5.0.0"
-  },
-  "dependencies": {
-    "simple-git": "^4.0.1"
   },
   "repository": {
     "type": "git",
