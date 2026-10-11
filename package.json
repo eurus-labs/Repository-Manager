@@ -236,7 +236,7 @@
     "@types/vscode": "1.74.0",
     "@typescript-eslint/eslint-plugin": "^6.0.0",
     "@typescript-eslint/parser": "^6.0.0",
-    "@vscode/vsce": "^2.0.0",
+    "@vscode/vsce": "^4.0.0",
     "eslint": "^8.0.0",
     "playwright-core": "~1.56.1",
     "sharp": "^0.35.5",
