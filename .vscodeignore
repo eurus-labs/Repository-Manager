@@ -10,7 +10,6 @@ vsc-extension-quickstart.md
 **/*.ts
 out/test/**
 node_modules/**
-!node_modules/simple-git/**
 ui-snapshots/**
 .github/**
 AGENTS.md
