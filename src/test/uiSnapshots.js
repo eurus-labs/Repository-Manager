@@ -134,7 +134,7 @@ function startServer(workspace, otherFolder) {
   // ask: answers the consent question (a function, so a test can hold it open); remembered: "Always allow".
   const reviewProbe = { runner: null, copied: null, opened: null, questions: [], ask: actions => actions[0], remembered: new Set(),
     fixResponse: null, fixRequests: 0, workingTreeChanged: 0, summaries: [], messagePrompts: [], explainResponse: null, explainRequests: [], askBeforeSending: 'never', settingsOpened: 0,
-    messageReply: async () => ({ text: 'feat(app): add the partly file\n\nIt holds the staged line.', model: 'scripted:1' }) };
+    messageReply: async () => ({ text: 'feat(app): add the partly file\n\nIt holds the staged line.', model: 'Scripted model' }) };
   // Saved reviews outlive a page (a reopened dashboard), like VS Code's workspace state.
   const historyState = new Map();
   const reviewHistory = new ReviewHistoryStore({ get: key => historyState.get(key),
@@ -650,7 +650,9 @@ async function main() {
     await page.waitForFunction(() => document.getElementById('commitMessage').value.startsWith('feat(app): add the partly file'));
     assert.match(reviewProbe.messagePrompts.at(-1).prompt, /\+staged/);
     assert.doesNotMatch(reviewProbe.messagePrompts.at(-1).prompt, /\+later/, 'the staged-part choice was not used for the message');
-    assert.match(await page.textContent('#commitMessageStatus'), /Written by scripted:1, following (AGENTS\.md|Conventional Commits)/);
+    // The model by its name, the convention in words, and one sentence for what to do.
+    assert.match(await page.textContent('#commitMessageStatus'),
+      /^Written by Scripted model, (following AGENTS\.md|in Conventional Commits style, as this repository names no commit convention)\. Check it before committing\.(\s*Undo)?$/);
     await snap(page, '07c-commit-message-written');
     // Changing the choice afterwards says the message no longer matches.
     await page.check('input[name="commitPartial"][value="whole"]');
@@ -661,6 +663,28 @@ async function main() {
     await page.waitForFunction(() => /Written by/.test(document.getElementById('commitMessageStatus').textContent));
     await page.click('#commitMessageStatus [data-action="undoCommitMessage"]');
     assert.equal(await page.inputValue('#commitMessage'), 'my own draft');
+    // Several convention files read as a list, and files too large to send are counted in words.
+    const scriptedStatus = async (convention, omitted) => {
+      await page.evaluate(() => {
+        const toHost = window.__postToHost;
+        window.__postToHost = message => {
+          if (message.type !== 'generateCommitMessage') return toHost(message);
+          window.__postToHost = toHost;
+          window.__scriptedReply = { requestId: message.payload.requestId, repositoryPath: message.payload.repositoryPath };
+          return Promise.resolve();
+        };
+      });
+      await page.click('#commitMessageGenerate');
+      await page.evaluate(([conventionFiles, omittedFiles]) => window.postMessage({ type: 'commitMessageGenerated', payload: {
+        ...window.__scriptedReply, message: 'chore: scripted', model: 'Claude Haiku 4.5', convention: conventionFiles, omitted: omittedFiles } }, '*'),
+      [convention, omitted]);
+      await page.waitForFunction(() => document.getElementById('commitMessage').value === 'chore: scripted');
+      return (await page.textContent('#commitMessageStatus')).replace(/\s*Undo$/, '');
+    };
+    assert.equal(await scriptedStatus(['AGENTS.md', '.commitlintrc', 'package.json'], ['big.bin']),
+      'Written by Claude Haiku 4.5, following AGENTS.md, .commitlintrc and package.json. 1 file was too large to send, so Copilot saw only its name. Check it before committing.');
+    assert.equal(await scriptedStatus([], ['a.bin', 'b.bin']),
+      'Written by Claude Haiku 4.5, in Conventional Commits style, as this repository names no commit convention. 2 files were too large to send, so Copilot saw only their names. Check it before committing.');
     // A failure is said in place, and the button is usable again.
     reviewProbe.messageReply = async () => { throw new Error('No Copilot model available. Sign in to GitHub Copilot and try again.'); };
     await page.click('#commitMessageGenerate');

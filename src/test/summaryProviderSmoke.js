@@ -11,6 +11,8 @@ const fakeModel = {
   id: 'test-model', version: '1', name: 'Test model', maxInputTokens: 32000,
   async countTokens(value) { return Math.ceil(value.length / 4); },
   async sendRequest(messages) {
+    // One prompt (a commit message) gets plain text back.
+    if (messages.length === 1) return { text: (async function* () { yield 'feat: add the thing'; })() };
     requests++;
     active++;
     maxActive = Math.max(active, maxActive);
@@ -90,6 +92,13 @@ async function main() {
   const beforeInvalidRetry = requests;
   await invalidProvider.summarize(makePacket(), token, () => {});
   assert.ok(requests > beforeInvalidRetry, 'invalid later-batch intent should not be cached');
+
+  // A one-prompt reply names the model as people know it, not as id:version.
+  const plain = await new CopilotSummaryProvider().complete('Write a commit message', undefined, token);
+  assert.deepEqual(plain, { text: 'feat: add the thing', model: 'Test model' });
+  fakeModel.name = '';
+  assert.equal((await new CopilotSummaryProvider().complete('Write a commit message', 'test-model', token)).model, 'test-model');
+  fakeModel.name = 'Test model';
   console.log('AI summary batch provider smoke passed');
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });
