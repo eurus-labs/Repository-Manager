@@ -70,6 +70,8 @@
   // The chosen model's name until the list loads (it is restored from the extension at start).
   let selectedSummaryModelName = '';
   let selectedModelRestored = false;
+  // The model id the extension has saved ('' for Default); after a fallback it differs from the one in use.
+  let savedSummaryModelId = '';
   let summaryModels = []; // { id, name } in Copilot's order, once loaded
   let pinnedModelIds = []; // saved by the extension for every workspace; listed first in the Model menu
   // The Repository Review tab's last review, as the extension reports it (ReviewBridge).
@@ -530,13 +532,17 @@
     chooseSummaryModel: (el) => {
       const id = el.dataset.modelId || '';
       hideSummaryModelMenu(true);
+      const model = summaryModels.find(candidate => candidate.id === id);
+      selectedModelRestored = true; // a later settings reply must not undo this choice
+      // Choosing Default after a fallback still forgets the saved model, though Default is already in use.
+      if (id !== savedSummaryModelId) {
+        savedSummaryModelId = id;
+        postMessage('setSelectedModel', { model: model ? { id: model.id, name: model.name } : null });
+      }
       if (id === selectedSummaryModelId) return;
       cancelPendingChangeSummary();
-      const model = summaryModels.find(candidate => candidate.id === id);
       selectedSummaryModelId = id;
       selectedSummaryModelName = model ? model.name : '';
-      selectedModelRestored = true; // a later settings reply must not undo this choice
-      postMessage('setSelectedModel', { model: model ? { id: model.id, name: model.name } : null });
       renderSummaryModelMenu();
       restoreChangeSummary();
       publishReviewContext(); // the review tab's Fix uses the same model
@@ -549,7 +555,9 @@
       renderSummaryModelMenu();
       postMessage('setPinnedModels', { ids: pinnedModelIds });
     },
+    // One list request at a time: replies carry no request id, so an older one could land last.
     reloadSummaryModels: () => {
+      if (summaryModelsState === 'loading') return;
       summaryModelsState = 'idle';
       actions.loadSummaryModels();
     },
@@ -2583,10 +2591,14 @@
             const saved = message.payload.selectedModel;
             if (saved && typeof saved.id === 'string' && saved.id && saved.id !== selectedSummaryModelId) {
               selectedSummaryModelId = saved.id;
+              savedSummaryModelId = saved.id;
               selectedSummaryModelName = typeof saved.name === 'string' ? saved.name : saved.id;
               renderSummaryModelMenu();
               restoreChangeSummary();
               publishReviewContext(); // the review tab's Fix uses the same model
+              // Check it against Copilot's list now, so a model Copilot withdrew falls back to Default
+              // before a review or summary asks for it. Only users who chose a model load the list early.
+              if (summaryModelsState === 'idle') actions.loadSummaryModels();
             }
           }
           break;

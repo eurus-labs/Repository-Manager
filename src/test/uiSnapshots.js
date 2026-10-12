@@ -1635,12 +1635,12 @@ async function main() {
     await nav.evaluate(() => document.body.click());
     assert.equal(await nav.isVisible('#summaryModelMenu'), false, 'a click outside left the menu open');
     assert.equal(await nav.evaluate(() => window.__sent.filter(m => m.type === 'loadSummaryModels').length), 1, 'the list loaded twice');
-    // Pins and the chosen model outlive the page (a reopened dashboard): the button names the model
-    // before the list loads, and the menu lists the pins first with the model ticked.
+    // Pins and the chosen model outlive the page (a reopened dashboard): the button names the model,
+    // the list loads at once to check it is still offered, and the menu lists the pins first, ticked.
     const pinnedPage = await openPage(1440, 900);
     await pinnedPage.locator('#summaryModelButton').waitFor({ state: 'visible' });
     await pinnedPage.waitForFunction(() => document.getElementById('summaryModelName').textContent === 'O reasoner');
-    assert.equal(await pinnedPage.locator('#summaryModelMenu .summary-model-pin').count(), 0, 'the list loaded before the menu opened');
+    await pinnedPage.locator('#summaryModelMenu .summary-model-pin').first().waitFor({ state: 'attached' });
     await pinnedPage.click('#summaryModelButton');
     await pinnedPage.locator('#summaryModelMenu .summary-model-pin').first().waitFor();
     assert.deepEqual((await pinnedPage.locator('#summaryModelMenu .summary-model-choice').allTextContents()).slice(1, 3), ['Claude fast', 'O reasoner']);

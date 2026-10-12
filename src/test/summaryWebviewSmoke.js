@@ -62,8 +62,12 @@ listeners.body_click({ target: { dataset: { action: 'selectHistoryCommit', commi
 detail(A,P);
 assert.match(node('changeSummaryResult').innerHTML, /Changed a.txt/);
 assert.equal(posts.filter(item=>item.type==='cancelChangeSummary').length,0);
+// The restored model is checked at once: the list was asked for at start, and only once.
+assert.equal(posts.filter(post => post.type === 'loadSummaryModels').length, 1, 'a restored model was not checked against the list');
+// Reload does nothing while a list request is pending, so an older reply cannot land last.
+click('reloadSummaryModels');
 click('loadSummaryModels');
-assert.equal(posts.at(-1).type, 'loadSummaryModels');
+assert.equal(posts.filter(post => post.type === 'loadSummaryModels').length, 1, 'a second list request started while one was pending');
 listeners.window_message({ data: { type: 'summaryModelsLoaded', payload: { models: [
   { id: 'fast', name: 'Fast model' }, { id: 'deep', name: 'Deep model' }, { id: 'odd"<id>', name: '<b>Odd</b>' }
 ], pinned: ['gone'] } } });
@@ -71,6 +75,12 @@ const modelMenu = node('summaryModelMenu');
 // Copilot does not offer the remembered model now: Default for this session, but nothing is saved over it.
 assert.equal(node('summaryModelName').textContent, 'Default');
 assert.equal(posts.filter(post => post.type === 'setSelectedModel').length, 0);
+// Choosing Default there is still a choice: the saved model is forgotten, though Default was in use.
+click('chooseSummaryModel', { modelId: '' });
+assert.equal(JSON.stringify(posts.filter(post => post.type === 'setSelectedModel').at(-1).payload), JSON.stringify({ model: null }));
+const savesAfterDefault = posts.filter(post => post.type === 'setSelectedModel').length;
+click('chooseSummaryModel', { modelId: '' });
+assert.equal(posts.filter(post => post.type === 'setSelectedModel').length, savesAfterDefault, 'Default was saved again');
 // A pin of a model Copilot no longer offers is kept but not listed; nothing is pinned here yet.
 assert.doesNotMatch(modelMenu.innerHTML, /Pinned|gone/);
 assert.ok(modelMenu.innerHTML.indexOf('Fast model') < modelMenu.innerHTML.indexOf('Deep model'), 'models lost Copilot\'s order');
