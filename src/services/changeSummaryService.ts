@@ -58,7 +58,8 @@ export class CopilotSummaryProvider implements AIProvider {
       text += fragment;
       if (text.length > maxChars) { throw new Error('The model\'s reply is longer than a commit message should be.'); }
     }
-    return { text, model: `${model.id}:${model.version}` };
+    // The name people know the model by ("Claude Haiku 4.5"), for the status line; not its id:version.
+    return { text, model: model.name || model.id };
   }
 
   async summarize(packet: ChangeContextPacket, token: vscode.CancellationToken, progress: (status: string) => void, selectedModelId?: string) {
