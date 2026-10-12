@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { BranchService } from '../services/branchService';
 import { countChanges } from '../services/submoduleService';
-import { buildCommitMessagePrompt, cleanCommitMessage, collectCommitDiff, commitSections, DEFAULT_CONVENTION, findCommitConvention, MAX_COMMIT_DIFF_BYTES } from '../services/commitMessage';
+import { buildCommitMessagePrompt, cleanCommitMessage, collectCommitDiff, COMMIT_BODY_WIDTH, commitSections, DEFAULT_CONVENTION, findCommitConvention, MAX_COMMIT_DIFF_BYTES } from '../services/commitMessage';
 import { snapshotLocalChanges } from '../services/localChangesSnapshot';
 import { CommitService, parseWorkingTreeStatus } from '../services/commitService';
 import { DiffService, parseChangedFilesOutput } from '../services/diffService';
@@ -849,6 +849,46 @@ async function testCommitMessageInputs(): Promise<void> {
     assert.equal(cleanCommitMessage('```\nfeat: add x\n\nWhy it matters.\nCo-authored-by: Bot <b@x>\n```'), 'feat: add x\n\nWhy it matters.');
     assert.equal(cleanCommitMessage('"fix: quote"'), 'fix: quote');
     assert.equal(cleanCommitMessage('  \n '), '');
+    // One shape whatever the model sends: summary, blank line, why, bullets; wrapped at 72.
+    const sprawling = [
+      '**Subject:** feat(cart): keep the basket when signing in.',
+      '## Why',
+      'Signing in replaced the guest basket with the saved one, so every item a shopper added before signing in was lost.',
+      '## Changes',
+      '* Merge the guest basket into the saved basket on sign-in, keeping the larger quantity when both hold the same item',
+      '* Drop the guest basket once merged',
+      '',
+      'Refs: #42',
+      'Reviewed-by: Someone <someone@example.org>'
+    ].join('\n');
+    assert.equal(cleanCommitMessage(sprawling), [
+      'feat(cart): keep the basket when signing in',
+      '',
+      'Signing in replaced the guest basket with the saved one, so every item a',
+      'shopper added before signing in was lost.',
+      '',
+      '- Merge the guest basket into the saved basket on sign-in, keeping the',
+      '  larger quantity when both hold the same item',
+      '- Drop the guest basket once merged',
+      '',
+      'Refs: #42',
+      'Reviewed-by: Someone <someone@example.org>'
+    ].join('\n'));
+    for (const line of cleanCommitMessage(sprawling).split('\n')) { assert.ok(line.length <= COMMIT_BODY_WIDTH, `too long: ${line}`); }
+    // A missing blank line after the summary is added; hard-wrapped lines are joined before wrapping again;
+    // numbered and + lists become "- " bullets; one list stays together.
+    assert.equal(cleanCommitMessage('fix: stop the crash\nThe parser read past\nthe end.\n1. Check the length\n+ Add a test'),
+      'fix: stop the crash\n\nThe parser read past the end.\n\n- Check the length\n- Add a test');
+    // A subject alone stays alone; an ellipsis is not a trailing period.
+    assert.equal(cleanCommitMessage('chore: bump deps'), 'chore: bump deps');
+    assert.equal(cleanCommitMessage('wip: try this...'), 'wip: try this...');
+    // A prose line that looks like "Key: value" is wrapped as prose, not kept as a trailer.
+    const why = `fix: keep sessions\n\nNote: ${'the session expired too early because the clock was read twice. '.repeat(2).trim()}`;
+    assert.ok(cleanCommitMessage(why).split('\n').every(line => line.length <= COMMIT_BODY_WIDTH), 'a Note: paragraph was not wrapped');
+    // A BREAKING CHANGE footer and indented code are kept as written; a word longer than a line is not split.
+    const url = `https://example.org/${'x'.repeat(80)}`;
+    assert.equal(cleanCommitMessage(`feat!: drop v1\n\nOld clients break. See ${url} for the plan.\n\n    npm run migrate\n\nBREAKING CHANGE: the v1 endpoints are gone`),
+      `feat!: drop v1\n\nOld clients break. See\n${url}\nfor the plan.\n\n    npm run migrate\n\nBREAKING CHANGE: the v1 endpoints are gone`);
 
     // The diff is what the commit would record: the staged part when that is the choice.
     await git.execGit(['init', '-q', '-b', 'main']);
@@ -890,6 +930,9 @@ async function testCommitMessageInputs(): Promise<void> {
     assert.match(prompt, /Follow this repository's commit convention, taken from AGENTS\.md/);
     assert.match(prompt, /their diff is not shown: big\.txt, missing\.txt/);
     assert.match(prompt, /Do not add co-author/);
+    // The prompt asks for the shape the reply is formatted into, with an example of it.
+    assert.match(prompt, /one "- " bullet per change/);
+    assert.match(prompt, /Example of the shape \(not of the content\):\nfeat\(cart\)/);
     assert.match(buildCommitMessagePrompt({ sources: [], text: DEFAULT_CONVENTION }, whole), /states no commit convention\. Use:\n\nConventional Commits 1\.0\.0/);
     // Before the first commit, the staged part is what the index holds, not the working tree.
     const fresh = mkdtempSync(path.join(tmpdir(), 'repository-manager-message-fresh-'));
