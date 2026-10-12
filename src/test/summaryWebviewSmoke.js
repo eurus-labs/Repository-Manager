@@ -33,8 +33,12 @@ function detail(hash, parent) { listeners.window_message({ data: { type: 'commit
 function click(action, data = {}) { listeners.body_click({ target: { dataset: { action, ...data }, parentElement: document.body, tagName: 'BUTTON', closest() { return null; } }, preventDefault() {} }); }
 const A='a'.repeat(40), B='b'.repeat(40), P='0'.repeat(40);
 detail(A, P);
+// The remembered model comes back at start, before the model list loads, and is used at once.
+listeners.window_message({ data: { type: 'copilotSettingsLoaded', payload: { askBeforeSending: 'never', selectedModel: { id: 'saved', name: 'Saved model' } } } });
+assert.equal(node('summaryModelName').textContent, 'Saved model');
 click('summarizeChanges');
 assert.equal(posts.at(-1).type, 'summarizeChanges');
+assert.equal(posts.at(-1).payload.modelId, 'saved');
 const id = posts.at(-1).payload.requestId;
 // Navigate away by requesting a different commit through the dashboard action.
 listeners.body_click({ target: { dataset: { action: 'selectHistoryCommit', commit: B }, parentElement: document.body,
@@ -64,6 +68,9 @@ listeners.window_message({ data: { type: 'summaryModelsLoaded', payload: { model
   { id: 'fast', name: 'Fast model' }, { id: 'deep', name: 'Deep model' }, { id: 'odd"<id>', name: '<b>Odd</b>' }
 ], pinned: ['gone'] } } });
 const modelMenu = node('summaryModelMenu');
+// Copilot does not offer the remembered model now: Default for this session, but nothing is saved over it.
+assert.equal(node('summaryModelName').textContent, 'Default');
+assert.equal(posts.filter(post => post.type === 'setSelectedModel').length, 0);
 // A pin of a model Copilot no longer offers is kept but not listed; nothing is pinned here yet.
 assert.doesNotMatch(modelMenu.innerHTML, /Pinned|gone/);
 assert.ok(modelMenu.innerHTML.indexOf('Fast model') < modelMenu.innerHTML.indexOf('Deep model'), 'models lost Copilot\'s order');
@@ -87,6 +94,11 @@ assert.doesNotMatch(modelMenu.innerHTML, /Pinned/);
 click('toggleSummaryModelPin', { modelId: 'deep' });
 click('chooseSummaryModel', { modelId: 'deep' });
 assert.equal(node('summaryModelName').textContent, 'Deep model');
+const lastSaved = () => JSON.stringify(posts.filter(post => post.type === 'setSelectedModel').at(-1).payload);
+assert.equal(lastSaved(), JSON.stringify({ model: { id: 'deep', name: 'Deep model' } }));
+// A later settings reply (a setting changed) does not undo the choice.
+listeners.window_message({ data: { type: 'copilotSettingsLoaded', payload: { askBeforeSending: 'always', selectedModel: { id: 'saved', name: 'Saved model' } } } });
+assert.equal(node('summaryModelName').textContent, 'Deep model');
 assert.equal(node('changeSummaryResult').innerHTML, '');
 click('summarizeChanges');
 assert.equal(posts.at(-1).payload.modelId, 'deep');
@@ -97,7 +109,14 @@ listeners.window_message({ data: { type: 'changeSummaryLoaded', payload: {
 assert.match(node('changeSummaryResult').innerHTML, /Deep summary/);
 click('chooseSummaryModel', { modelId: '' });
 assert.equal(node('summaryModelName').textContent, 'Default');
-assert.match(node('changeSummaryResult').innerHTML, /Changed a.txt/);
+assert.equal(lastSaved(), JSON.stringify({ model: null }));
+// Summaries are kept per model: the first was written by the remembered model, so Default has none,
+// and switching back to Deep model shows its summary again without asking Copilot.
+assert.equal(node('changeSummaryResult').innerHTML, '');
+const summariesAsked = posts.filter(post => post.type === 'summarizeChanges').length;
+click('chooseSummaryModel', { modelId: 'deep' });
+assert.match(node('changeSummaryResult').innerHTML, /Deep summary/);
+assert.equal(posts.filter(post => post.type === 'summarizeChanges').length, summariesAsked);
 const historyRequest = posts.filter(post => post.type === 'getHistory').at(-1);
 listeners.window_message({ data: { type: 'historyLoaded', payload: {
   repositoryPath: '.', requestId: historyRequest?.payload.requestId || 0, offset: 0, nextOffset: null,

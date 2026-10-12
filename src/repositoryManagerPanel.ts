@@ -20,7 +20,7 @@ import { ReviewConsentStore } from './reviewConsent';
 import { ReviewHistoryStore } from './reviewHistory';
 import { ReviewUnitCache } from './reviewUnitCache';
 import { ReviewSkillStore } from './reviewSkillStore';
-import { readPinnedModels, savePinnedModels } from './pinnedModels';
+import { readPinnedModels, readSelectedModel, savePinnedModels, saveSelectedModel } from './modelPreferences';
 import { RepositoryManagerLauncher } from './repositoryManagerLauncher';
 import { CommitMessageController } from './commitMessageController';
 import { LiveChanges } from './liveChanges';
@@ -42,7 +42,7 @@ const READ_ONLY_MESSAGES = new Set([
   // Writing a commit message reads the working tree's diff; nothing is committed.
   'generateCommitMessage', 'cancelCommitMessage',
   // The Copilot settings menu and pinned models: VS Code settings and state only, no Git.
-  'getCopilotSettings', 'setCopilotSettings', 'openExtensionSettings', 'setPinnedModels',
+  'getCopilotSettings', 'setCopilotSettings', 'openExtensionSettings', 'setPinnedModels', 'setSelectedModel',
   // The Side Bar's copy of the repository list; no Git.
   'sidebarSnapshot'
 ]);
@@ -465,6 +465,10 @@ export class RepositoryManagerPanel {
         await savePinnedModels(RepositoryManagerPanel.globalState, (message.payload as { ids?: unknown } | undefined)?.ids);
         return;
       }
+      if (message.type === 'setSelectedModel') {
+        await saveSelectedModel(RepositoryManagerPanel.globalState, (message.payload as { model?: unknown } | undefined)?.model);
+        return;
+      }
       if (message.type === 'openExtensionSettings') {
         await vscode.commands.executeCommand('workbench.action.openSettings', '@ext:repository-manager.repository-manager');
         return;
@@ -612,7 +616,9 @@ export class RepositoryManagerPanel {
   }
 
   private async _postCopilotSettings(): Promise<void> {
-    await this._panel.webview.postMessage({ type: 'copilotSettingsLoaded', payload: { askBeforeSending: this._askBeforeSending() } });
+    await this._panel.webview.postMessage({ type: 'copilotSettingsLoaded', payload: {
+      askBeforeSending: this._askBeforeSending(), selectedModel: readSelectedModel(RepositoryManagerPanel.globalState) ?? null
+    } });
   }
 
   private async _summarizeChanges(payload: unknown): Promise<void> {

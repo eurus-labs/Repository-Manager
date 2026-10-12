@@ -31,7 +31,7 @@ Module._load = function (request, parent, isMain) {
 };
 const { GitOperations } = require(path.join(root, 'out/gitOperations'));
 const { messageHandlers } = require(path.join(root, 'out/handlers/webviewMessageHandler'));
-const { readPinnedModels, savePinnedModels } = require(path.join(root, 'out/pinnedModels'));
+const { readPinnedModels, savePinnedModels, readSelectedModel, saveSelectedModel } = require(path.join(root, 'out/modelPreferences'));
 const { ReviewController } = require(path.join(root, 'out/reviewController'));
 const { ReviewHistoryStore } = require(path.join(root, 'out/reviewHistory'));
 const { ReviewSkillStore } = require(path.join(root, 'out/reviewSkillStore'));
@@ -144,7 +144,7 @@ function startServer(workspace, otherFolder) {
   const skillState = new Map();
   const reviewSkills = new ReviewSkillStore(path.join(__dirname, '..', '..', 'resources', 'review-skills'),
     { get: key => skillState.get(key), update: async (key, value) => { skillState.set(key, JSON.parse(JSON.stringify(value))); } });
-  // Copilot's models, scripted; pins are kept like VS Code's global state, across pages.
+  // Copilot's models, scripted; pins and the chosen model are kept like VS Code's global state, across pages.
   const modelState = new Map();
   const pinnedModelState = { get: key => modelState.get(key), update: async (key, value) => { modelState.set(key, value); } };
   const scriptedModels = [{ id: 'gpt-mini', name: 'GPT mini' }, { id: 'claude-fast', name: 'Claude fast' },
@@ -243,7 +243,8 @@ function startServer(workspace, otherFolder) {
       } else if (message.type === 'getCopilotSettings' || message.type === 'setCopilotSettings') {
         // Same as RepositoryManagerPanel, with the setting kept here instead of in VS Code's settings.
         if (message.type === 'setCopilotSettings') reviewProbe.askBeforeSending = message.payload.askBeforeSending;
-        await post({ type: 'copilotSettingsLoaded', payload: { askBeforeSending: reviewProbe.askBeforeSending } });
+        await post({ type: 'copilotSettingsLoaded', payload: { askBeforeSending: reviewProbe.askBeforeSending,
+          selectedModel: readSelectedModel(pinnedModelState) ?? null } });
       } else if (message.type === 'openExtensionSettings') {
         reviewProbe.settingsOpened++;
       } else if (message.type === 'loadSummaryModels') {
@@ -251,6 +252,8 @@ function startServer(workspace, otherFolder) {
         await post({ type: 'summaryModelsLoaded', payload: { models: scriptedModels, pinned: readPinnedModels(pinnedModelState) } });
       } else if (message.type === 'setPinnedModels') {
         await savePinnedModels(pinnedModelState, message.payload.ids);
+      } else if (message.type === 'setSelectedModel') {
+        await saveSelectedModel(pinnedModelState, message.payload.model);
       } else if (reviews.handles(message.type)) {
         await reviews.handle(message);
       } else if (message.type === 'switchWorkspaceFolder') {
@@ -332,12 +335,12 @@ function startServer(workspace, otherFolder) {
       res.end(String(error));
     }
   });
-  return new Promise(resolve => server.listen(0, '127.0.0.1', () => resolve({ server, connect, isHostIdle: () => hostBusy === 0, reviewProbe })));
+  return new Promise(resolve => server.listen(0, '127.0.0.1', () => resolve({ server, connect, isHostIdle: () => hostBusy === 0, reviewProbe, modelState: pinnedModelState })));
 }
 
 async function main() {
   const { base, parent, other } = createFixture();
-  const { server, connect, isHostIdle, reviewProbe } = await startServer(parent, other);
+  const { server, connect, isHostIdle, reviewProbe, modelState } = await startServer(parent, other);
   const url = `http://127.0.0.1:${server.address().port}/`;
   const browser = await chromium.launch({ executablePath: process.env.PLAYWRIGHT_CHROMIUM_PATH || undefined });
   const pageErrors = [];
@@ -1632,13 +1635,21 @@ async function main() {
     await nav.evaluate(() => document.body.click());
     assert.equal(await nav.isVisible('#summaryModelMenu'), false, 'a click outside left the menu open');
     assert.equal(await nav.evaluate(() => window.__sent.filter(m => m.type === 'loadSummaryModels').length), 1, 'the list loaded twice');
-    // Pins outlive the page (a reopened dashboard): a new page lists them first.
+    // Pins and the chosen model outlive the page (a reopened dashboard): the button names the model
+    // before the list loads, and the menu lists the pins first with the model ticked.
     const pinnedPage = await openPage(1440, 900);
     await pinnedPage.locator('#summaryModelButton').waitFor({ state: 'visible' });
+    await pinnedPage.waitForFunction(() => document.getElementById('summaryModelName').textContent === 'O reasoner');
+    assert.equal(await pinnedPage.locator('#summaryModelMenu .summary-model-pin').count(), 0, 'the list loaded before the menu opened');
     await pinnedPage.click('#summaryModelButton');
     await pinnedPage.locator('#summaryModelMenu .summary-model-pin').first().waitFor();
     assert.deepEqual((await pinnedPage.locator('#summaryModelMenu .summary-model-choice').allTextContents()).slice(1, 3), ['Claude fast', 'O reasoner']);
+    assert.equal(await pinnedPage.getAttribute('#summaryModelMenu .summary-model-choice[aria-checked="true"]', 'data-model-id'), 'o-reasoner');
+    // Back to Default, which is remembered too (later pages expect it).
+    await pinnedPage.click('#summaryModelMenu .summary-model-choice:text-is("Default")');
     await pinnedPage.close();
+    for (let i = 0; i < 50 && !isHostIdle(); i++) await new Promise(r => setTimeout(r, 20));
+    assert.equal(readSelectedModel(modelState), undefined, 'choosing Default left the old model saved');
     const dimmed = nav.evaluate(() => new Promise(resolve => {
       const history = document.getElementById('dashboardHistory');
       const seen = { stale: false, flashed: false };

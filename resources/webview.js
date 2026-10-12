@@ -67,6 +67,9 @@
   let changeSummaryRequestId = 0;
   let changeSummarySelection = null;
   let selectedSummaryModelId = '';
+  // The chosen model's name until the list loads (it is restored from the extension at start).
+  let selectedSummaryModelName = '';
+  let selectedModelRestored = false;
   let summaryModels = []; // { id, name } in Copilot's order, once loaded
   let pinnedModelIds = []; // saved by the extension for every workspace; listed first in the Model menu
   // The Repository Review tab's last review, as the extension reports it (ReviewBridge).
@@ -157,7 +160,11 @@
     const menu = document.getElementById('summaryModelMenu');
     const name = document.getElementById('summaryModelName');
     const selected = summaryModels.find(model => model.id === selectedSummaryModelId);
-    if (name) name.textContent = selected ? selected.name : summaryModelsState === 'loading' && !summaryModels.length ? 'Default (loading list…)' : 'Default';
+    if (name) {
+      name.textContent = selected ? selected.name
+        : selectedSummaryModelId && selectedSummaryModelName ? selectedSummaryModelName
+          : summaryModelsState === 'loading' && !summaryModels.length ? 'Default (loading list…)' : 'Default';
+    }
     if (!menu) return;
     const pinned = summaryModels.filter(model => pinnedModelIds.includes(model.id));
     const others = summaryModels.filter(model => !pinnedModelIds.includes(model.id));
@@ -519,12 +526,17 @@
       if (!menu) return;
       if (menu.hidden) showSummaryModelMenu(); else hideSummaryModelMenu(true);
     },
+    // The choice is remembered for every workspace; Default is saved as no model.
     chooseSummaryModel: (el) => {
       const id = el.dataset.modelId || '';
       hideSummaryModelMenu(true);
       if (id === selectedSummaryModelId) return;
       cancelPendingChangeSummary();
+      const model = summaryModels.find(candidate => candidate.id === id);
       selectedSummaryModelId = id;
+      selectedSummaryModelName = model ? model.name : '';
+      selectedModelRestored = true; // a later settings reply must not undo this choice
+      postMessage('setSelectedModel', { model: model ? { id: model.id, name: model.name } : null });
       renderSummaryModelMenu();
       restoreChangeSummary();
       publishReviewContext(); // the review tab's Fix uses the same model
@@ -2294,9 +2306,12 @@
           summaryModels = models.filter(model => model && typeof model.id === 'string' && typeof model.name === 'string');
           // Pins of models Copilot no longer offers are kept (the model may come back), not shown.
           if (Array.isArray(message.payload?.pinned)) pinnedModelIds = message.payload.pinned.filter(id => typeof id === 'string');
+          // A chosen model Copilot does not offer now falls back to Default here, but stays saved:
+          // it may be back once Copilot is signed in again.
           if (selectedSummaryModelId && !summaryModels.some(model => model.id === selectedSummaryModelId)) {
             cancelPendingChangeSummary();
             selectedSummaryModelId = '';
+            selectedSummaryModelName = '';
             publishReviewContext();
           }
           summaryModelsState = 'loaded';
@@ -2562,6 +2577,18 @@
 
         case 'copilotSettingsLoaded':
           if (message.payload) renderCopilotSettings(message.payload);
+          // The remembered model, once at start: later replies (a settings change) leave the menu alone.
+          if (message.payload && !selectedModelRestored) {
+            selectedModelRestored = true;
+            const saved = message.payload.selectedModel;
+            if (saved && typeof saved.id === 'string' && saved.id && saved.id !== selectedSummaryModelId) {
+              selectedSummaryModelId = saved.id;
+              selectedSummaryModelName = typeof saved.name === 'string' ? saved.name : saved.id;
+              renderSummaryModelMenu();
+              restoreChangeSummary();
+              publishReviewContext(); // the review tab's Fix uses the same model
+            }
+          }
           break;
 
         case 'reviewQualityLoaded':

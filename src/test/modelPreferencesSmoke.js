@@ -1,7 +1,8 @@
 const assert = require('node:assert/strict');
-const { PINNED_MODELS_KEY, sanitizePinnedModels, readPinnedModels, savePinnedModels } = require('../../out/pinnedModels.js');
+const { PINNED_MODELS_KEY, SELECTED_MODEL_KEY, sanitizePinnedModels, readPinnedModels, savePinnedModels,
+  sanitizeSelectedModel, readSelectedModel, saveSelectedModel } = require('../../out/modelPreferences.js');
 
-// Pinned Copilot models: what the webview sends is cleaned before it is saved for every workspace.
+// The Model menu's pins and chosen model: what the webview sends is cleaned before it is saved for every workspace.
 function memento(initial) {
   const values = new Map(Object.entries(initial || {}));
   return { get: key => values.get(key), update: async (key, value) => { values.set(key, value); }, values };
@@ -28,7 +29,24 @@ async function main() {
   // No global state (tests, a panel created before activation): nothing is read or saved, nothing throws.
   assert.deepEqual(readPinnedModels(undefined), []);
   assert.deepEqual(await savePinnedModels(undefined, ['deep']), ['deep']);
-  console.log('Pinned models smoke passed');
+
+  // The chosen model: an id with its name (the id stands in for a missing or oversized name).
+  assert.deepEqual(sanitizeSelectedModel({ id: 'deep', name: 'Deep model', extra: 1 }), { id: 'deep', name: 'Deep model' });
+  assert.deepEqual(sanitizeSelectedModel({ id: 'deep' }), { id: 'deep', name: 'deep' });
+  assert.deepEqual(sanitizeSelectedModel({ id: 'deep', name: 'n'.repeat(201) }), { id: 'deep', name: 'deep' });
+  for (const value of [null, undefined, 'deep', { id: '' }, { id: 7 }, { id: 'x'.repeat(201) }]) {
+    assert.equal(sanitizeSelectedModel(value), undefined, `${JSON.stringify(value)} was taken as a model`);
+  }
+  const chosen = memento();
+  assert.equal(readSelectedModel(chosen), undefined);
+  await saveSelectedModel(chosen, { id: 'deep', name: 'Deep model' });
+  assert.deepEqual(readSelectedModel(chosen), { id: 'deep', name: 'Deep model' });
+  // Default is saved as no model, replacing the earlier choice.
+  await saveSelectedModel(chosen, null);
+  assert.equal(chosen.values.get(SELECTED_MODEL_KEY), undefined);
+  assert.equal(readSelectedModel(chosen), undefined);
+  assert.equal(readSelectedModel(memento({ [SELECTED_MODEL_KEY]: 'deep' })), undefined);
+  console.log('Model preferences smoke passed');
 }
 
 main().catch(error => { console.error(error); process.exitCode = 1; });
