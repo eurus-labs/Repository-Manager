@@ -2422,9 +2422,15 @@
           if (draft) draft.value = payload.message;
           commitMessagePartial = commitMessagePendingPartial;
           endCommitMessageRequest();
-          const convention = (payload.convention || []).length ? payload.convention.join(', ') : 'Conventional Commits (no convention found)';
-          const omitted = (payload.omitted || []).length ? ` ${payload.omitted.length} file(s) were too large to show it.` : '';
-          setCommitMessageStatus(`Written by ${escapeHtml(payload.model || 'Copilot')}, following ${escapeHtml(convention)}. Read and edit it before committing.${escapeHtml(omitted)}` +
+          // "Written by Claude Haiku 4.5, following AGENTS.md and commitlint.config.js. Check it before committing."
+          const sources = (payload.convention || []).filter(source => typeof source === 'string');
+          const convention = sources.length
+            ? `following ${sources.length > 1 ? `${sources.slice(0, -1).join(', ')} and ${sources.at(-1)}` : sources[0]}`
+            : 'in Conventional Commits style, as this repository names no commit convention';
+          const omittedCount = (payload.omitted || []).length;
+          const omitted = omittedCount === 1 ? ' 1 file was too large to send, so Copilot saw only its name.'
+            : omittedCount > 1 ? ` ${omittedCount} files were too large to send, so Copilot saw only their names.` : '';
+          setCommitMessageStatus(`Written by ${escapeHtml(payload.model || 'Copilot')}, ${escapeHtml(convention)}.${escapeHtml(omitted)} Check it before committing.` +
             (previousCommitMessage !== null ? ' <button type="button" class="link-button" data-action="undoCommitMessage">Undo</button>' : ''), true);
           break;
         }

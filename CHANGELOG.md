@@ -15,6 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [2.3.1] - 2026-10-11
 
+### Fixed
+
+- The note under a commit message written with Copilot reads as one plain sentence: it names the model as Copilot's menu does (for example "Claude Haiku 4.5", not "claude-haiku-4.5:claude-haiku-4.5"), lists the convention files with "and", says "in Conventional Commits style" instead of "following Conventional Commits (no convention found)" when the repository names none, and counts files too large to send in words ("1 file was…", not "1 file(s) were…").
+
 ### Removed
 
 - The extension no longer ships `simple-git`, a library it never used, which also carried a critical security advisory (GHSA-v5rq-49vh-5v5c). Repository Manager runs Git directly, so nothing changes in use, and the VSIX holds about 217 fewer files.
