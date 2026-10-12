@@ -202,8 +202,15 @@ const TRAILER = /^(?:[A-Za-z]+(?:-[A-Za-z]+)+|BREAKING[ -]CHANGE|Refs?|Fixes|Clo
 const VERBATIM = /^( {4}|\t)|^\|/;
 
 /** Plain text from Markdown the model added anyway: bold, italics and heading marks. */
+// Only **bold** that hugs its text, and never inside `code`: `__init__` and `**kwargs` are names.
 function plain(line: string): string {
-  return line.replace(/\*\*(.+?)\*\*|__(.+?)__/g, '$1$2').replace(/^#{1,6}\s+/, '');
+  return line.replace(/^#{1,6}\s+/, '').split(/(`[^`]*`)/)
+    .map((part, index) => (index % 2 ? part : part.replace(/\*\*(?=\S)(.+?)(?<=\S)\*\*/g, '$1'))).join('');
+}
+
+/** The summary line without a label ("Subject:", "**Commit message:**") the model put before it. */
+function summaryOf(line: string): string {
+  return plain(line.trim()).replace(/^(?:subject|summary|commit message|title)\s*:\s*/i, '').replace(/(?<!\.\.)\.$/, '').trim();
 }
 
 /**
@@ -220,16 +227,21 @@ export function cleanCommitMessage(raw: string): string {
     .filter(line => !/^(co-authored-by|signed-off-by|generated[- ]by|🤖)\b/i.test(line.trim()))
     // A heading the model put over a part of the body ("## Why", "**Changes:**") says nothing a reader needs.
     .filter((line, index) => index === 0 || !/^(#{1,6}\s+.*|\*\*[^*]+:?\*\*:?)$/.test(line.trim()));
-  const first = lines.findIndex(line => line.trim());
+  // The summary is the first line with words left once a label is removed: a label alone on its
+  // line ("**Commit message:**", "Subject:") is not the summary but the line after it is.
+  const first = lines.findIndex(line => summaryOf(line));
   if (first < 0) { return ''; }
-  const subject = plain(lines[first].trim()).replace(/^(?:subject|summary|commit message|title)\s*:\s*/i, '').replace(/(?<!\.\.)\.$/, '');
+  const subject = summaryOf(lines[first]);
 
   // Trailers: the last paragraph, when every line of it is one. They are kept as written, last.
   let rest = lines.slice(first + 1);
   while (rest.length && !rest[rest.length - 1].trim()) { rest.pop(); }
   const lastGap = rest.map(line => !line.trim()).lastIndexOf(true);
   const lastParagraph = rest.slice(lastGap + 1);
-  const trailers = lastParagraph.length && lastParagraph.every(line => TRAILER.test(line.trim())) ? lastParagraph.map(line => line.trim()) : [];
+  // A trailer's value may go on over indented lines, as in Git; they stay with it, as written.
+  const trailers = lastParagraph.length && TRAILER.test(lastParagraph[0].trim())
+    && lastParagraph.every(line => TRAILER.test(line.trim()) || /^\s+\S/.test(line))
+    ? lastParagraph.map(line => (TRAILER.test(line.trim()) ? line.trim() : line)) : [];
   if (trailers.length) { rest = rest.slice(0, lastGap + 1); }
 
   // The body as blocks: a paragraph (joined, then wrapped), a bullet (with its continuation lines),

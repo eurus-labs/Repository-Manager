@@ -885,6 +885,15 @@ async function testCommitMessageInputs(): Promise<void> {
     // A prose line that looks like "Key: value" is wrapped as prose, not kept as a trailer.
     const why = `fix: keep sessions\n\nNote: ${'the session expired too early because the clock was read twice. '.repeat(2).trim()}`;
     assert.ok(cleanCommitMessage(why).split('\n').every(line => line.length <= COMMIT_BODY_WIDTH), 'a Note: paragraph was not wrapped');
+    // A label alone on the first line is dropped; the line after it is the summary.
+    assert.equal(cleanCommitMessage('**Commit Message:**\nfeat: add x\n\nWhy it matters.'), 'feat: add x\n\nWhy it matters.');
+    assert.equal(cleanCommitMessage('Subject:\n\nfix: y'), 'fix: y');
+    // Dunder names and **kwargs keep their marks, in code spans or not; only bold that hugs its text goes.
+    assert.equal(cleanCommitMessage('fix: call __init__ once\n\nPass **kwargs and `**opts` to `__enter__`, **always**.'),
+      'fix: call __init__ once\n\nPass **kwargs and `**opts` to `__enter__`, always.');
+    // A trailer continued on an indented line stays one trailer, and the next trailer stays its own line.
+    assert.equal(cleanCommitMessage('fix: z\n\nWhy.\n\nReviewed-by: A Long Name\n  <a@example.org>\nRefs: #42'),
+      'fix: z\n\nWhy.\n\nReviewed-by: A Long Name\n  <a@example.org>\nRefs: #42');
     // A BREAKING CHANGE footer and indented code are kept as written; a word longer than a line is not split.
     const url = `https://example.org/${'x'.repeat(80)}`;
     assert.equal(cleanCommitMessage(`feat!: drop v1\n\nOld clients break. See ${url} for the plan.\n\n    npm run migrate\n\nBREAKING CHANGE: the v1 endpoints are gone`),
