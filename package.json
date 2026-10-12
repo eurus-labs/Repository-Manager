@@ -34,7 +34,7 @@
         "command": "repositoryManager.openPanel",
         "title": "Open Repository Manager",
         "category": "Repository Manager",
-        "icon": "$(git-branch)"
+        "icon": "$(window)"
       },
       {
         "command": "repositoryManager.forgetReviewPermissions",
@@ -138,6 +138,13 @@
       ]
     },
     "menus": {
+      "view/title": [
+        {
+          "command": "repositoryManager.openPanel",
+          "when": "view == repositoryManager.launcher",
+          "group": "navigation"
+        }
+      ],
       "commandPalette": [
         {
           "command": "repositoryManager.openPanel",

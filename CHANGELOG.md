@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [2.3.1] - Unreleased
 
+### Added
+
+- An **Open Repository Manager** button in the Repository Manager Side Bar's title bar brings the dashboard to the front and focuses it, even when it is already open behind other editor tabs.
+
 ### Removed
 
 - The extension no longer ships `simple-git`, a library it never used, which also carried a critical security advisory (GHSA-v5rq-49vh-5v5c). Repository Manager runs Git directly, so nothing changes in use, and the VSIX holds about 217 fewer files.
