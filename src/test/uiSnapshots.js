@@ -678,7 +678,10 @@ async function main() {
     await page.click('#commitMessageStatus [data-action="undoCommitMessage"]');
     assert.equal(await page.inputValue('#commitMessage'), 'my own draft');
     // Several convention files read as a list, and files too large to send are counted in words.
+    // Each reply has its own message, so waiting for it cannot match the previous one.
+    let scriptedReplies = 0;
     const scriptedStatus = async (convention, omitted) => {
+      const scripted = `chore: scripted reply ${++scriptedReplies}`;
       await page.evaluate(() => {
         const toHost = window.__postToHost;
         window.__postToHost = message => {
@@ -689,10 +692,10 @@ async function main() {
         };
       });
       await page.click('#commitMessageGenerate');
-      await page.evaluate(([conventionFiles, omittedFiles]) => window.postMessage({ type: 'commitMessageGenerated', payload: {
-        ...window.__scriptedReply, message: 'chore: scripted', model: 'Claude Haiku 4.5', convention: conventionFiles, omitted: omittedFiles } }, '*'),
-      [convention, omitted]);
-      await page.waitForFunction(() => document.getElementById('commitMessage').value === 'chore: scripted');
+      await page.evaluate(([text, conventionFiles, omittedFiles]) => window.postMessage({ type: 'commitMessageGenerated', payload: {
+        ...window.__scriptedReply, message: text, model: 'Claude Haiku 4.5', convention: conventionFiles, omitted: omittedFiles } }, '*'),
+      [scripted, convention, omitted]);
+      await page.waitForFunction(text => document.getElementById('commitMessage').value === text, scripted);
       return (await page.textContent('#commitMessageStatus')).replace(/\s*Undo$/, '');
     };
     assert.equal(await scriptedStatus(['AGENTS.md', '.commitlintrc', 'package.json'], ['big.bin']),
