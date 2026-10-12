@@ -13,6 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [2.3.1] - 2026-10-11
 
+### Added
+
+- Pin Copilot models in the dashboard's **Model** menu: the 📌 on each model lists it first, under **Pinned**, in every workspace, without choosing it. The menu works with the keyboard: Up and Down move between models, Right and Left between a model and its pin. A pinned model that Copilot stops offering is hidden, and comes back pinned if Copilot offers it again.
+
 ### Removed
 
 - The extension no longer ships `simple-git`, a library it never used, which also carried a critical security advisory (GHSA-v5rq-49vh-5v5c). Repository Manager runs Git directly, so nothing changes in use, and the VSIX holds about 217 fewer files.

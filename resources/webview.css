@@ -2716,8 +2716,21 @@ body.vscode-high-contrast .graph-node-control[data-marker="T"] .graph-node-hit {
 /* The Copilot model, next to the reviews it runs: one choice for reviews, summaries and commit messages. */
 .toolbar-model { display: inline-flex; flex: none; align-items: stretch; height: 30px; font-size: 12px; vertical-align: middle; white-space: nowrap; }
 .toolbar-model > span { display: flex; align-items: center; padding: 0 8px; color: var(--text-muted); border: 1px solid var(--border-strong); border-right: 0; border-radius: 6px 0 0 6px; background: var(--bg-tertiary); }
-.history-controls .toolbar-model select { max-width: 200px; min-width: 96px; width: 100%; height: 30px; color: var(--vscode-dropdown-foreground); background: var(--vscode-dropdown-background); border: 1px solid var(--border-strong); border-radius: 0 6px 6px 0; padding: 0 6px; font: inherit; }
-.toolbar-model select:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
+.history-controls .toolbar-model button { display: inline-flex; align-items: center; gap: 6px; max-width: 200px; min-width: 96px; height: 30px; color: var(--vscode-dropdown-foreground); background: var(--vscode-dropdown-background); border: 1px solid var(--border-strong); border-radius: 0 6px 6px 0; padding: 0 6px; font: inherit; text-align: left; cursor: pointer; }
+#summaryModelName { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.toolbar-model-caret { flex: none; color: var(--text-muted); font-size: 10px; }
+.toolbar-model button:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
+/* The Model menu: pinned models first; each row chooses on the left and pins on the right. */
+.summary-model-menu { min-width: 240px; max-width: 360px; overflow-y: auto; }
+.summary-model-menu .menu-heading { padding: 6px 10px 4px; color: var(--text-muted); font-size: 11px; }
+.summary-model-menu .menu-separator { height: 1px; margin: 5px 0; background: var(--vscode-menu-separatorBackground, var(--border)); }
+.summary-model-menu button[role="menuitemradio"] { padding-left: 26px; position: relative; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.summary-model-menu button[role="menuitemradio"][aria-checked="true"]::before { content: "✓"; position: absolute; left: 9px; }
+.summary-model-row { display: flex; align-items: stretch; }
+.summary-model-row .summary-model-choice { flex: 1; min-width: 0; }
+.history-context-menu .summary-model-row .summary-model-pin { flex: none; width: 30px; padding: 0; text-align: center; opacity: .3; filter: grayscale(1); }
+.history-context-menu .summary-model-row:hover .summary-model-pin, .history-context-menu .summary-model-row .summary-model-pin:focus-visible { opacity: .7; }
+.history-context-menu .summary-model-row .summary-model-pin[aria-checked="true"] { opacity: 1; filter: none; }
 .review-entry-label { padding: 0 8px; color: var(--text-muted); }
 /* Review branch's split part: a narrow ▾ that opens the Changed files / All files menu. */
 .review-entry .review-split-toggle { padding: 0 5px; }
@@ -2734,12 +2747,12 @@ body.vscode-high-contrast .graph-node-control[data-marker="T"] .graph-node-hit {
 /* Compact: "◈ | Changes | Whole"; the buttons' titles still say what each one reviews. */
 @media (max-width: 1100px) {
   .review-entry-word { display: none; }
-  .history-controls .toolbar-model select { max-width: 120px; }
+  .history-controls .toolbar-model button { max-width: 120px; }
 }
-/* Narrower: the select alone; its tooltip says what it is. */
+/* Narrower: the model button alone; its tooltip says what it is. */
 @media (max-width: 850px) {
   .toolbar-model > span { display: none; }
-  .history-controls .toolbar-model select { border-radius: 6px; min-width: 84px; max-width: 90px; }
+  .history-controls .toolbar-model button { border-radius: 6px; min-width: 84px; max-width: 90px; }
   .review-entry button::first-letter { text-transform: uppercase; }
   .history-controls { gap: 6px; }
   .compare-branches-button { padding: 0 7px; font-size: 0; }

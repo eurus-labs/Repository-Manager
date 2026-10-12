@@ -12,7 +12,7 @@ const repositoryCheckboxes = [
 function node(id) {
   if (!nodes.has(id)) nodes.set(id, { id, hidden: false, disabled: false, innerHTML: '', textContent: '', value: '', dataset: {}, style: {},
     classList: { add() {}, remove() {}, toggle() {} }, listeners: {}, addEventListener(type, cb) { this.listeners[type] = cb; }, querySelector() { return id === 'historyContextMenu' ? { focus() {} } : null; }, querySelectorAll() { return []; },
-    setAttribute() {}, removeAttribute() {}, closest() { return null; } });
+    setAttribute() {}, removeAttribute() {}, closest() { return null; }, contains() { return false; } });
   return nodes.get(id);
 }
 const document = { documentElement: { clientWidth: 1200, clientHeight: 800 }, body: { addEventListener(type, cb) { listeners[`body_${type}`] = cb; }, closest() { return null; } },
@@ -61,12 +61,32 @@ assert.equal(posts.filter(item=>item.type==='cancelChangeSummary').length,0);
 click('loadSummaryModels');
 assert.equal(posts.at(-1).type, 'loadSummaryModels');
 listeners.window_message({ data: { type: 'summaryModelsLoaded', payload: { models: [
-  { id: 'fast', name: 'Fast model' }, { id: 'deep', name: 'Deep model' }
-] } } });
-const modelSelect = node('summaryModelSelect');
-assert.match(modelSelect.innerHTML, /Deep model/);
-modelSelect.value = 'deep';
-modelSelect.listeners.change();
+  { id: 'fast', name: 'Fast model' }, { id: 'deep', name: 'Deep model' }, { id: 'odd"<id>', name: '<b>Odd</b>' }
+], pinned: ['gone'] } } });
+const modelMenu = node('summaryModelMenu');
+// A pin of a model Copilot no longer offers is kept but not listed; nothing is pinned here yet.
+assert.doesNotMatch(modelMenu.innerHTML, /Pinned|gone/);
+assert.ok(modelMenu.innerHTML.indexOf('Fast model') < modelMenu.innerHTML.indexOf('Deep model'), 'models lost Copilot\'s order');
+// Names and ids are escaped.
+assert.match(modelMenu.innerHTML, /&lt;b&gt;Odd&lt;\/b&gt;/);
+assert.match(modelMenu.innerHTML, /data-model-id="odd&quot;&lt;id&gt;"/);
+// Pinning saves every pin (the stale one too) and lists the pinned model first, under Pinned.
+click('toggleSummaryModelPin', { modelId: 'deep' });
+assert.equal(JSON.stringify(posts.at(-1)), JSON.stringify({ type: 'setPinnedModels', payload: { ids: ['gone', 'deep'] } }));
+const pinnedAt = modelMenu.innerHTML.indexOf('Pinned');
+assert.ok(pinnedAt > 0 && pinnedAt < modelMenu.innerHTML.indexOf('Deep model'));
+assert.ok(modelMenu.innerHTML.indexOf('Deep model') < modelMenu.innerHTML.indexOf('All models'));
+assert.ok(modelMenu.innerHTML.indexOf('All models') < modelMenu.innerHTML.indexOf('Fast model'));
+assert.match(modelMenu.innerHTML, /aria-checked="true" aria-label="Unpin Deep model"/);
+// Pinning does not choose the model.
+assert.equal(node('summaryModelName').textContent, 'Default');
+// Unpinning puts it back in its place; the last pin is gone, so is the Pinned heading.
+click('toggleSummaryModelPin', { modelId: 'deep' });
+assert.equal(JSON.stringify(posts.at(-1).payload.ids), '["gone"]');
+assert.doesNotMatch(modelMenu.innerHTML, /Pinned/);
+click('toggleSummaryModelPin', { modelId: 'deep' });
+click('chooseSummaryModel', { modelId: 'deep' });
+assert.equal(node('summaryModelName').textContent, 'Deep model');
 assert.equal(node('changeSummaryResult').innerHTML, '');
 click('summarizeChanges');
 assert.equal(posts.at(-1).payload.modelId, 'deep');
@@ -75,8 +95,8 @@ listeners.window_message({ data: { type: 'changeSummaryLoaded', payload: {
   requestId: secondId, repositoryPath: '.', summary: { ...summary, intent: { text: 'Deep summary', evidence: ['a.txt'] } }, model: 'deep:1'
 } } });
 assert.match(node('changeSummaryResult').innerHTML, /Deep summary/);
-modelSelect.value = '';
-modelSelect.listeners.change();
+click('chooseSummaryModel', { modelId: '' });
+assert.equal(node('summaryModelName').textContent, 'Default');
 assert.match(node('changeSummaryResult').innerHTML, /Changed a.txt/);
 const historyRequest = posts.filter(post => post.type === 'getHistory').at(-1);
 listeners.window_message({ data: { type: 'historyLoaded', payload: {

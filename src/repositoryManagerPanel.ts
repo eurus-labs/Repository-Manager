@@ -20,6 +20,7 @@ import { ReviewConsentStore } from './reviewConsent';
 import { ReviewHistoryStore } from './reviewHistory';
 import { ReviewUnitCache } from './reviewUnitCache';
 import { ReviewSkillStore } from './reviewSkillStore';
+import { readPinnedModels, savePinnedModels } from './pinnedModels';
 import { RepositoryManagerLauncher } from './repositoryManagerLauncher';
 import { CommitMessageController } from './commitMessageController';
 import { LiveChanges } from './liveChanges';
@@ -40,8 +41,8 @@ const READ_ONLY_MESSAGES = new Set([
   'proposeReviewFix', 'discardReviewFix', 'cancelReviewFix', 'listReviewHistory', 'openStoredReview', 'deleteStoredReview',
   // Writing a commit message reads the working tree's diff; nothing is committed.
   'generateCommitMessage', 'cancelCommitMessage',
-  // The Copilot settings menu: VS Code settings only, no Git.
-  'getCopilotSettings', 'setCopilotSettings', 'openExtensionSettings',
+  // The Copilot settings menu and pinned models: VS Code settings and state only, no Git.
+  'getCopilotSettings', 'setCopilotSettings', 'openExtensionSettings', 'setPinnedModels',
   // The Side Bar's copy of the repository list; no Git.
   'sidebarSnapshot'
 ]);
@@ -460,6 +461,10 @@ export class RepositoryManagerPanel {
         await this._postCopilotSettings();
         return;
       }
+      if (message.type === 'setPinnedModels') {
+        await savePinnedModels(RepositoryManagerPanel.globalState, (message.payload as { ids?: unknown } | undefined)?.ids);
+        return;
+      }
       if (message.type === 'openExtensionSettings') {
         await vscode.commands.executeCommand('workbench.action.openSettings', '@ext:repository-manager.repository-manager');
         return;
@@ -480,7 +485,8 @@ export class RepositoryManagerPanel {
       if (message.type === 'loadSummaryModels') {
         try {
           const models = await this._summaryProvider.listModels();
-          await this._panel.webview.postMessage({ type: 'summaryModelsLoaded', payload: { models } });
+          const pinned = readPinnedModels(RepositoryManagerPanel.globalState);
+          await this._panel.webview.postMessage({ type: 'summaryModelsLoaded', payload: { models, pinned } });
         } catch (error) {
           await this._panel.webview.postMessage({ type: 'summaryModelsError', payload: {
             message: error instanceof Error ? error.message : 'Unable to load Copilot models.'

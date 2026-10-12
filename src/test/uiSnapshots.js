@@ -31,6 +31,7 @@ Module._load = function (request, parent, isMain) {
 };
 const { GitOperations } = require(path.join(root, 'out/gitOperations'));
 const { messageHandlers } = require(path.join(root, 'out/handlers/webviewMessageHandler'));
+const { readPinnedModels, savePinnedModels } = require(path.join(root, 'out/pinnedModels'));
 const { ReviewController } = require(path.join(root, 'out/reviewController'));
 const { ReviewHistoryStore } = require(path.join(root, 'out/reviewHistory'));
 const { ReviewSkillStore } = require(path.join(root, 'out/reviewSkillStore'));
@@ -143,6 +144,11 @@ function startServer(workspace, otherFolder) {
   const skillState = new Map();
   const reviewSkills = new ReviewSkillStore(path.join(__dirname, '..', '..', 'resources', 'review-skills'),
     { get: key => skillState.get(key), update: async (key, value) => { skillState.set(key, JSON.parse(JSON.stringify(value))); } });
+  // Copilot's models, scripted; pins are kept like VS Code's global state, across pages.
+  const modelState = new Map();
+  const pinnedModelState = { get: key => modelState.get(key), update: async (key, value) => { modelState.set(key, value); } };
+  const scriptedModels = [{ id: 'gpt-mini', name: 'GPT mini' }, { id: 'claude-fast', name: 'Claude fast' },
+    { id: 'gemini-pro', name: 'Gemini Pro' }, { id: 'o-reasoner', name: 'O reasoner' }];
   const resource = uri => ({ scheme: 'http', toString: () => uri });
   // Same list the panel builds: parent repository first, then linked repositories.
   const listRepositories = async (gitOps = ops) => {
@@ -240,6 +246,11 @@ function startServer(workspace, otherFolder) {
         await post({ type: 'copilotSettingsLoaded', payload: { askBeforeSending: reviewProbe.askBeforeSending } });
       } else if (message.type === 'openExtensionSettings') {
         reviewProbe.settingsOpened++;
+      } else if (message.type === 'loadSummaryModels') {
+        // Same as RepositoryManagerPanel, with scripted models instead of Copilot's.
+        await post({ type: 'summaryModelsLoaded', payload: { models: scriptedModels, pinned: readPinnedModels(pinnedModelState) } });
+      } else if (message.type === 'setPinnedModels') {
+        await savePinnedModels(pinnedModelState, message.payload.ids);
       } else if (reviews.handles(message.type)) {
         await reviews.handle(message);
       } else if (message.type === 'switchWorkspaceFolder') {
@@ -433,7 +444,7 @@ async function main() {
     assert.deepEqual(await page.locator('.change-summary-toolbar button:visible').allTextContents(), ['Commit…', 'Review changes', 'Summarize changes']);
     assert.equal(await page.getAttribute('#reviewSelectionChangesButton', 'aria-disabled'), 'true');
     const summariesBeforeLocal = reviewProbe.summaries.length;
-    await page.selectOption('#summaryModelSelect', '');
+    assert.equal(await page.textContent('#summaryModelName'), 'Default');
     await page.click('#summarizeChangesButton');
     for (let i = 0; i < 100 && reviewProbe.summaries.length === summariesBeforeLocal; i++) await page.waitForTimeout(20);
     const localSummary = reviewProbe.summaries.at(-1);
@@ -677,7 +688,7 @@ async function main() {
 
     // The toolbar has no Release group: the Copilot model sits next to the reviews it runs.
     assert.equal(await page.locator('[data-action="loadReleaseRange"]').count(), 0, 'Load range is still there');
-    assert.equal(await page.locator('.history-controls .toolbar-model #summaryModelSelect').isVisible(), true, 'the model select is not in the toolbar');
+    assert.equal(await page.locator('.history-controls .toolbar-model #summaryModelButton').isVisible(), true, 'the model button is not in the toolbar');
     assert.equal(await page.locator('.change-summary-toolbar select').count(), 0, 'the summary bar still has a model select');
     assert.deepEqual(await page.locator('.review-current-group button').allTextContents(), ['Review changes', 'Review commit', 'Review branch', '▾', 'Review ↗']);
     // ⚙ next to Model: when to ask before code goes to Copilot (never, by default) and all settings.
@@ -1577,13 +1588,57 @@ async function main() {
     await nav.click('[data-action="clearCommitComparison"]');
     await nav.evaluate(() => { const toHost = window.__postToHost; window.__sent = []; window.__postToHost = m => { window.__sent.push(m); return toHost(m); }; });
     // The Model menu is hidden until the commit detail is back; a hidden control gets no focus.
-    await nav.locator('#summaryModelSelect').waitFor({ state: 'visible' });
-    await nav.focus('#summaryModelSelect');
-    assert.match(await nav.textContent('#summaryModelSelect option'), /loading list/);
+    // The list loads when the menu first opens, and only once.
+    await nav.locator('#summaryModelButton').waitFor({ state: 'visible' });
+    assert.equal(await nav.evaluate(() => window.__sent.filter(m => m.type === 'loadSummaryModels').length), 0, 'the list loaded before the menu opened');
+    await nav.click('#summaryModelButton');
+    await nav.locator('#summaryModelMenu .summary-model-pin').first().waitFor();
     assert.equal(await nav.evaluate(() => window.__sent.filter(m => m.type === 'loadSummaryModels').length), 1);
-    await nav.evaluate(() => document.getElementById('summaryModelSelect').blur());
-    await nav.focus('#summaryModelSelect');
+    const modelOrder = () => nav.locator('#summaryModelMenu .summary-model-choice').allTextContents();
+    const headings = () => nav.locator('#summaryModelMenu .menu-heading').allTextContents();
+    assert.deepEqual(await modelOrder(), ['Default', 'GPT mini', 'Claude fast', 'Gemini Pro', 'O reasoner', '↻ Reload model list']);
+    assert.deepEqual(await headings(), [], 'a heading shows with nothing pinned');
+    // Default is chosen and has focus; Down and Right reach a model's pin, Space pins it.
+    assert.equal(await nav.evaluate(() => document.activeElement.textContent), 'Default');
+    await nav.keyboard.press('ArrowDown');
+    await nav.keyboard.press('ArrowDown');
+    await nav.keyboard.press('ArrowRight');
+    assert.equal(await nav.evaluate(() => document.activeElement.getAttribute('aria-label')), 'Pin Claude fast');
+    await nav.keyboard.press('Space');
+    // Pinned models come first, the menu stays open, and focus follows the row to the top.
+    assert.deepEqual(await modelOrder(), ['Default', 'Claude fast', 'GPT mini', 'Gemini Pro', 'O reasoner', '↻ Reload model list']);
+    assert.deepEqual(await headings(), ['Pinned', 'All models']);
+    assert.equal(await nav.evaluate(() => document.activeElement.getAttribute('aria-label')), 'Unpin Claude fast');
+    assert.equal(await nav.isVisible('#summaryModelMenu'), true, 'pinning closed the menu');
+    // A second pin by mouse, from the bottom: pinned models keep Copilot's order.
+    await nav.click('#summaryModelMenu .summary-model-pin[aria-label="Pin O reasoner"]');
+    assert.deepEqual(await modelOrder(), ['Default', 'Claude fast', 'O reasoner', 'GPT mini', 'Gemini Pro', '↻ Reload model list']);
+    assert.deepEqual(await nav.evaluate(() => window.__sent.filter(m => m.type === 'setPinnedModels').at(-1).payload.ids), ['claude-fast', 'o-reasoner']);
+    // Pinning did not choose a model; clicking a name does, and closes the menu.
+    assert.equal(await nav.textContent('#summaryModelName'), 'Default');
+    await nav.screenshot({ path: path.join(outputDir, '04c-model-menu-pinned.png'), animations: 'disabled', caret: 'hide' });
+    await nav.click('#summaryModelMenu .summary-model-choice:text-is("O reasoner")');
+    assert.equal(await nav.isVisible('#summaryModelMenu'), false);
+    assert.equal(await nav.textContent('#summaryModelName'), 'O reasoner');
+    assert.equal(await nav.evaluate(() => document.activeElement.id), 'summaryModelButton');
+    // Down on the button reopens it at the chosen model; Escape closes it and gives focus back.
+    await nav.keyboard.press('ArrowDown');
+    assert.equal(await nav.evaluate(() => document.activeElement.textContent), 'O reasoner');
+    await nav.keyboard.press('Escape');
+    assert.equal(await nav.isVisible('#summaryModelMenu'), false);
+    assert.equal(await nav.evaluate(() => document.activeElement.id), 'summaryModelButton');
+    // A click outside closes it too; reopening does not load the list again.
+    await nav.click('#summaryModelButton');
+    await nav.evaluate(() => document.body.click());
+    assert.equal(await nav.isVisible('#summaryModelMenu'), false, 'a click outside left the menu open');
     assert.equal(await nav.evaluate(() => window.__sent.filter(m => m.type === 'loadSummaryModels').length), 1, 'the list loaded twice');
+    // Pins outlive the page (a reopened dashboard): a new page lists them first.
+    const pinnedPage = await openPage(1440, 900);
+    await pinnedPage.locator('#summaryModelButton').waitFor({ state: 'visible' });
+    await pinnedPage.click('#summaryModelButton');
+    await pinnedPage.locator('#summaryModelMenu .summary-model-pin').first().waitFor();
+    assert.deepEqual((await pinnedPage.locator('#summaryModelMenu .summary-model-choice').allTextContents()).slice(1, 3), ['Claude fast', 'O reasoner']);
+    await pinnedPage.close();
     const dimmed = nav.evaluate(() => new Promise(resolve => {
       const history = document.getElementById('dashboardHistory');
       const seen = { stale: false, flashed: false };
