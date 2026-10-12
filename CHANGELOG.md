@@ -10,13 +10,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - An **Open Repository Manager** button in the Repository Manager Side Bar's title bar brings the dashboard to the front and focuses it, even when it is already open behind other editor tabs.
-
-## [2.3.1] - 2026-10-11
-
-### Added
-
 - Pin Copilot models in the dashboard's **Model** menu: the 📌 on each model lists it first, under **Pinned**, in every workspace, without choosing it. The menu works with the keyboard: Up and Down move between models, Right and Left between a model and its pin. A pinned model that Copilot stops offering is hidden, and comes back pinned if Copilot offers it again.
 - The dashboard remembers the chosen Copilot model, in every workspace, instead of going back to Default each time it opens. If Copilot does not offer that model at the moment, Default is used until it does.
+
+## [2.3.1] - 2026-10-11
 
 ### Removed
 
