@@ -320,7 +320,7 @@ function renderDashboard(repositories: RepositoryInfo[], workspaceFolders: Works
           <div class="history-controls">
             <label class="remote-toggle"><input id="dashboardIncludeRemotes" type="checkbox" checked> Include remotes</label>
             <button class="compare-branches-button" type="button" data-action="openBranchCompareModal">⇄ Compare branches</button>
-            <label class="toolbar-model" for="summaryModelSelect" title="The Copilot model for reviews, summaries, commit messages and fixes; the list loads when you open it"><span>Model</span><select id="summaryModelSelect" aria-label="Copilot model"><option value="">Default</option></select></label>
+            <div class="toolbar-model" title="The Copilot model for reviews, summaries, commit messages and fixes; the list loads when you open it. Pin models to list them first"><span id="summaryModelLabel">Model</span><button type="button" id="summaryModelButton" data-action="toggleSummaryModelMenu" aria-haspopup="menu" aria-expanded="false" aria-controls="summaryModelMenu" aria-labelledby="summaryModelLabel summaryModelName"><span id="summaryModelName">Default</span><span class="toolbar-model-caret" aria-hidden="true">▾</span></button></div>
             <button type="button" class="toolbar-settings" data-action="toggleCopilotSettingsMenu" id="copilotSettingsButton" aria-haspopup="menu" aria-expanded="false" aria-controls="copilotSettingsMenu" aria-label="Copilot settings" title="Copilot settings: whether to ask before code is sent, and all Repository Manager settings">⚙</button>
             <div class="review-entry review-current-group" role="group" aria-label="Review with Copilot">
               <button type="button" data-action="reviewLocal" id="reviewLocalChangesButton" title="Review your local changes before committing: staged and unstaged changes and new files (not those .gitignore excludes), as they are now. Nothing is committed or staged"><span class="review-entry-word">Review </span>changes</button>
@@ -481,6 +481,8 @@ export function getHtmlForWebview(repositories: RepositoryInfo[], resourceUris: 
     <button type="button" role="menuitem" data-action="contextReviewCommit" title="Review what this commit changed against its parent (committed content only)">Review changes in this commit</button>
     <button type="button" role="menuitem" data-action="contextReviewSnapshot" title="Review every file as committed at this commit; uncommitted changes are not included">Review branch at this commit</button>
   </div>
+
+  <div class="history-context-menu summary-model-menu" id="summaryModelMenu" role="menu" aria-label="Copilot model" hidden></div>
 
   <div class="history-context-menu copilot-settings-menu" id="copilotSettingsMenu" role="menu" aria-label="Copilot settings" hidden>
     <div class="menu-heading" role="presentation">Ask before sending code to Copilot</div>

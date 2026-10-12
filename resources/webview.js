@@ -67,6 +67,13 @@
   let changeSummaryRequestId = 0;
   let changeSummarySelection = null;
   let selectedSummaryModelId = '';
+  // The chosen model's name until the list loads (it is restored from the extension at start).
+  let selectedSummaryModelName = '';
+  let selectedModelRestored = false;
+  // The model id the extension has saved ('' for Default); after a fallback it differs from the one in use.
+  let savedSummaryModelId = '';
+  let summaryModels = []; // { id, name } in Copilot's order, once loaded
+  let pinnedModelIds = []; // saved by the extension for every workspace; listed first in the Model menu
   // The Repository Review tab's last review, as the extension reports it (ReviewBridge).
   let reviewStatus = { state: 'idle' };
   let historyDateFormat = null; // shared by every history row (see formatHistoryDate)
@@ -138,6 +145,98 @@
     document.querySelectorAll('#copilotSettingsMenu [data-action="setAskBeforeSending"]').forEach(item => {
       item.setAttribute('aria-checked', String(item.dataset.value === settings.askBeforeSending));
     });
+  }
+
+  // The Model menu: Default, the pinned models, the rest in Copilot's order, and Reload. Each model
+  // row is two items: choose it, or pin it (📌), so a model can be pinned without being chosen.
+  function summaryModelRow(model, pinned) {
+    const name = escapeHtml(model.name);
+    const id = escapeHtml(model.id);
+    return `<div class="summary-model-row" role="none">` +
+      `<button type="button" role="menuitemradio" class="summary-model-choice" data-action="chooseSummaryModel" data-model-id="${id}" aria-checked="${model.id === selectedSummaryModelId}">${name}</button>` +
+      `<button type="button" role="menuitemcheckbox" class="summary-model-pin" data-action="toggleSummaryModelPin" data-model-id="${id}" aria-checked="${pinned}" aria-label="${pinned ? 'Unpin' : 'Pin'} ${name}" title="${pinned ? 'Unpin: list it with the other models' : 'Pin: list it first, in every workspace'}">📌</button>` +
+      `</div>`;
+  }
+
+  function renderSummaryModelMenu() {
+    const menu = document.getElementById('summaryModelMenu');
+    const name = document.getElementById('summaryModelName');
+    const selected = summaryModels.find(model => model.id === selectedSummaryModelId);
+    if (name) {
+      name.textContent = selected ? selected.name
+        : selectedSummaryModelId && selectedSummaryModelName ? selectedSummaryModelName
+          : summaryModelsState === 'loading' && !summaryModels.length ? 'Default (loading list…)' : 'Default';
+    }
+    if (!menu) return;
+    const pinned = summaryModels.filter(model => pinnedModelIds.includes(model.id));
+    const others = summaryModels.filter(model => !pinnedModelIds.includes(model.id));
+    let html = `<button type="button" role="menuitemradio" class="summary-model-choice" data-action="chooseSummaryModel" data-model-id="" aria-checked="${!selectedSummaryModelId}" title="The first Copilot model VS Code offers">Default</button>`;
+    if (summaryModelsState === 'loading') html += '<div class="menu-heading" role="presentation">Loading models…</div>';
+    if (pinned.length) {
+      html += '<div class="menu-heading" role="presentation">Pinned</div>' + pinned.map(model => summaryModelRow(model, true)).join('');
+      if (others.length) html += '<div class="menu-heading" role="presentation">All models</div>';
+    }
+    html += others.map(model => summaryModelRow(model, false)).join('');
+    html += '<div class="menu-separator" role="separator"></div><button type="button" role="menuitem" class="summary-model-choice" data-action="reloadSummaryModels">↻ Reload model list</button>';
+    // Rebuilding the menu drops focus: put it back on the same item (a pinned row moves to the top).
+    const focused = menu.contains(document.activeElement) ? document.activeElement : null;
+    const focusKey = focused ? [focused.dataset.action, focused.dataset.modelId] : null;
+    menu.innerHTML = html;
+    if (focusKey && !menu.hidden) {
+      const again = Array.from(menu.querySelectorAll('button')).find(item => item.dataset.action === focusKey[0] && item.dataset.modelId === focusKey[1]);
+      (again || menu.querySelector('[role="menuitemradio"][aria-checked="true"]') || menu.querySelector('button')).focus();
+    }
+  }
+
+  function hideSummaryModelMenu(restoreFocus) {
+    const menu = document.getElementById('summaryModelMenu');
+    const toggle = document.getElementById('summaryModelButton');
+    if (!menu || menu.hidden) return;
+    menu.hidden = true;
+    if (toggle) {
+      toggle.setAttribute('aria-expanded', 'false');
+      if (restoreFocus) toggle.focus();
+    }
+  }
+
+  function showSummaryModelMenu() {
+    const menu = document.getElementById('summaryModelMenu');
+    const toggle = document.getElementById('summaryModelButton');
+    if (!menu || !toggle) return;
+    if (summaryModelsState === 'idle') actions.loadSummaryModels(); // the list loads on first open
+    renderSummaryModelMenu();
+    menu.hidden = false;
+    toggle.setAttribute('aria-expanded', 'true');
+    const anchor = toggle.getBoundingClientRect();
+    const width = window.innerWidth || document.documentElement.clientWidth;
+    const height = window.innerHeight || document.documentElement.clientHeight;
+    menu.style.left = `${Math.max(0, Math.min(anchor.left, width - menu.offsetWidth - 8))}px`;
+    menu.style.top = `${anchor.bottom + 2}px`;
+    menu.style.maxHeight = `${Math.max(120, height - anchor.bottom - 12)}px`;
+    (menu.querySelector('[role="menuitemradio"][aria-checked="true"]') || menu.querySelector('button')).focus();
+  }
+
+  // Arrow keys move between rows (keeping to the choose or pin column), Left/Right between the two.
+  function moveInSummaryModelMenu(event) {
+    const menu = document.getElementById('summaryModelMenu');
+    const current = event.target.closest && event.target.closest('#summaryModelMenu button');
+    if (!menu || !current) return;
+    const onPin = current.classList.contains('summary-model-pin');
+    let next = null;
+    if (event.key === 'ArrowRight' && !onPin) next = current.parentElement.querySelector('.summary-model-pin');
+    else if (event.key === 'ArrowLeft' && onPin) next = current.parentElement.querySelector('.summary-model-choice');
+    else if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
+      const choices = Array.from(menu.querySelectorAll('.summary-model-choice'));
+      const at = choices.indexOf(onPin ? current.parentElement.querySelector('.summary-model-choice') : current);
+      const index = event.key === 'Home' ? 0 : event.key === 'End' ? choices.length - 1
+        : (at + (event.key === 'ArrowDown' ? 1 : -1) + choices.length) % choices.length;
+      next = choices[index];
+      // Stay in the pin column when the row has one.
+      const pin = onPin && next.parentElement.classList.contains('summary-model-row') ? next.parentElement.querySelector('.summary-model-pin') : null;
+      if (pin) next = pin;
+    } else return;
+    event.preventDefault();
+    if (next) next.focus();
   }
 
   // Operation paused in each repository ('rebase', 'merge', ...), as last reported by the extension.
@@ -421,9 +520,46 @@
     loadSummaryModels: () => {
       if (summaryModelsState === 'loading') return;
       summaryModelsState = 'loading';
-      const select = document.getElementById('summaryModelSelect');
-      if (select && select.options && select.options[0]) select.options[0].textContent = 'Default (loading list…)';
+      renderSummaryModelMenu();
       postMessage('loadSummaryModels', {});
+    },
+    toggleSummaryModelMenu: () => {
+      const menu = document.getElementById('summaryModelMenu');
+      if (!menu) return;
+      if (menu.hidden) showSummaryModelMenu(); else hideSummaryModelMenu(true);
+    },
+    // The choice is remembered for every workspace; Default is saved as no model.
+    chooseSummaryModel: (el) => {
+      const id = el.dataset.modelId || '';
+      hideSummaryModelMenu(true);
+      const model = summaryModels.find(candidate => candidate.id === id);
+      selectedModelRestored = true; // a later settings reply must not undo this choice
+      // Choosing Default after a fallback still forgets the saved model, though Default is already in use.
+      if (id !== savedSummaryModelId) {
+        savedSummaryModelId = id;
+        postMessage('setSelectedModel', { model: model ? { id: model.id, name: model.name } : null });
+      }
+      if (id === selectedSummaryModelId) return;
+      cancelPendingChangeSummary();
+      selectedSummaryModelId = id;
+      selectedSummaryModelName = model ? model.name : '';
+      renderSummaryModelMenu();
+      restoreChangeSummary();
+      publishReviewContext(); // the review tab's Fix uses the same model
+    },
+    // Pinning keeps the menu open, so several models can be pinned in a row.
+    toggleSummaryModelPin: (el) => {
+      const id = el.dataset.modelId;
+      if (!id) return;
+      pinnedModelIds = pinnedModelIds.includes(id) ? pinnedModelIds.filter(pinned => pinned !== id) : pinnedModelIds.concat(id);
+      renderSummaryModelMenu();
+      postMessage('setPinnedModels', { ids: pinnedModelIds });
+    },
+    // One list request at a time: replies carry no request id, so an older one could land last.
+    reloadSummaryModels: () => {
+      if (summaryModelsState === 'loading') return;
+      summaryModelsState = 'idle';
+      actions.loadSummaryModels();
     },
     summarizeChanges: () => {
       if (!changeSummarySelection) return;
@@ -2046,6 +2182,7 @@
     if (!e.target.closest('#historyContextMenu')) hideHistoryContextMenu();
     if (!e.target.closest('#reviewBranchMenu, #reviewBranchMenuButton')) hideReviewBranchMenu(false);
     if (!e.target.closest('#copilotSettingsMenu, #copilotSettingsButton')) hideCopilotSettingsMenu(false);
+    if (!e.target.closest('#summaryModelMenu, #summaryModelButton')) hideSummaryModelMenu(false);
     let el = e.target;
 
     // Walk up the DOM tree to find element with data-action
@@ -2073,14 +2210,20 @@
   window.addEventListener('scroll', hideHistoryContextMenu, true);
   window.addEventListener('blur', hideHistoryContextMenu);
   // The menu is placed under its button once: scrolling or resizing would leave it behind.
-  window.addEventListener('scroll', () => { hideReviewBranchMenu(false); hideCopilotSettingsMenu(false); }, true);
-  window.addEventListener('resize', () => { hideReviewBranchMenu(false); hideCopilotSettingsMenu(false); });
+  // Scrolling inside the Model menu (a long list) keeps it open.
+  window.addEventListener('scroll', (e) => {
+    hideReviewBranchMenu(false); hideCopilotSettingsMenu(false);
+    if (!(e.target && e.target.id === 'summaryModelMenu')) hideSummaryModelMenu(false);
+  }, true);
+  window.addEventListener('resize', () => { hideReviewBranchMenu(false); hideCopilotSettingsMenu(false); hideSummaryModelMenu(false); });
   document.body.addEventListener('keydown', function (e) {
     if (e.key === 'Escape') {
       hideHistoryContextMenu();
       hideReviewBranchMenu(true);
       hideCopilotSettingsMenu(true);
+      hideSummaryModelMenu(true);
     }
+    moveInSummaryModelMenu(e);
     if ((e.key === 'ContextMenu' || (e.shiftKey && e.key === 'F10')) && e.target.closest('.history-row')) {
       e.preventDefault();
       const rect = e.target.getBoundingClientRect();
@@ -2167,27 +2310,27 @@
     try {
       switch (message.type) {
         case 'summaryModelsLoaded': {
-          const select = document.getElementById('summaryModelSelect');
           const models = Array.isArray(message.payload?.models) ? message.payload.models : [];
-          select.innerHTML = '<option value="">Default</option>' + models
-            .filter(model => typeof model.id === 'string' && typeof model.name === 'string')
-            .map(model => `<option value="${escapeHtml(model.id)}">${escapeHtml(model.name)}</option>`).join('');
-          if (selectedSummaryModelId && !models.some(model => model.id === selectedSummaryModelId)) {
+          summaryModels = models.filter(model => model && typeof model.id === 'string' && typeof model.name === 'string');
+          // Pins of models Copilot no longer offers are kept (the model may come back), not shown.
+          if (Array.isArray(message.payload?.pinned)) pinnedModelIds = message.payload.pinned.filter(id => typeof id === 'string');
+          // A chosen model Copilot does not offer now falls back to Default here, but stays saved:
+          // it may be back once Copilot is signed in again.
+          if (selectedSummaryModelId && !summaryModels.some(model => model.id === selectedSummaryModelId)) {
             cancelPendingChangeSummary();
             selectedSummaryModelId = '';
+            selectedSummaryModelName = '';
             publishReviewContext();
           }
-          select.innerHTML += '<option value="__reload__">↻ Reload model list</option>';
-          select.value = selectedSummaryModelId;
           summaryModelsState = 'loaded';
+          renderSummaryModelMenu();
           restoreChangeSummary();
           break;
         }
         case 'summaryModelsError': {
           // Opening the menu again retries.
           summaryModelsState = 'idle';
-          const select = document.getElementById('summaryModelSelect');
-          if (select && select.options && select.options[0]) select.options[0].textContent = 'Default';
+          renderSummaryModelMenu();
           document.getElementById('changeSummaryStatus').textContent = message.payload?.message || 'Unable to load models.';
           break;
         }
@@ -2442,6 +2585,22 @@
 
         case 'copilotSettingsLoaded':
           if (message.payload) renderCopilotSettings(message.payload);
+          // The remembered model, once at start: later replies (a settings change) leave the menu alone.
+          if (message.payload && !selectedModelRestored) {
+            selectedModelRestored = true;
+            const saved = message.payload.selectedModel;
+            if (saved && typeof saved.id === 'string' && saved.id && saved.id !== selectedSummaryModelId) {
+              selectedSummaryModelId = saved.id;
+              savedSummaryModelId = saved.id;
+              selectedSummaryModelName = typeof saved.name === 'string' ? saved.name : saved.id;
+              renderSummaryModelMenu();
+              restoreChangeSummary();
+              publishReviewContext(); // the review tab's Fix uses the same model
+              // Check it against Copilot's list now, so a model Copilot withdrew falls back to Default
+              // before a review or summary asks for it. Only users who chose a model load the list early.
+              if (summaryModelsState === 'idle') actions.loadSummaryModels();
+            }
+          }
           break;
 
         case 'reviewQualityLoaded':
@@ -2777,23 +2936,13 @@
   }, { passive: true });
 
   const dashboardSearch = document.getElementById('dashboardSearch');
-  const summaryModelSelect = document.getElementById('summaryModelSelect');
-  if (summaryModelSelect) {
-    const loadOnOpen = function () { if (summaryModelsState === 'idle') actions.loadSummaryModels(); };
-    summaryModelSelect.addEventListener('focus', loadOnOpen);
-    summaryModelSelect.addEventListener('mousedown', loadOnOpen);
-    summaryModelSelect.addEventListener('change', function () {
-      if (summaryModelSelect.value === '__reload__') {
-        summaryModelSelect.value = selectedSummaryModelId;
-        summaryModelsState = 'idle';
-        actions.loadSummaryModels();
-        return;
-      }
-      if (summaryModelSelect.value === selectedSummaryModelId) return;
-      cancelPendingChangeSummary();
-      selectedSummaryModelId = summaryModelSelect.value;
-      restoreChangeSummary();
-      publishReviewContext(); // the review tab's Fix uses the same model
+  // Down/Up on the closed Model button opens its menu, as on a select.
+  const summaryModelButton = document.getElementById('summaryModelButton');
+  if (summaryModelButton) {
+    summaryModelButton.addEventListener('keydown', function (e) {
+      if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+      e.preventDefault();
+      if (document.getElementById('summaryModelMenu').hidden) showSummaryModelMenu();
     });
   }
   if (dashboardSearch) {
