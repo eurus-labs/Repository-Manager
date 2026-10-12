@@ -5,11 +5,17 @@ All notable changes to Repository Manager will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [2.3.1] - Unreleased
+## [2.4.0] - Unreleased
+
+### Changed
+
+- Commit messages written with Copilot follow one layout: a summary line, a sentence or two on why, then a "- " bullet for each notable change when there is more than one. Lines are wrapped at 72 columns, with bullets indented under their text; Markdown headings and bold, a "Subject:" label and a trailing period are removed; trailers such as `Refs: #42` are kept as written, at the end. The layout is applied to the reply itself, so it holds even when the model ignores it.
 
 ### Fixed
 
 - The note under a commit message written with Copilot reads as one plain sentence: it names the model as Copilot's menu does (for example "Claude Haiku 4.5", not "claude-haiku-4.5:claude-haiku-4.5"), lists the convention files with "and", says "in Conventional Commits style" instead of "following Conventional Commits (no convention found)" when the repository names none, and counts files too large to send in words ("1 file was…", not "1 file(s) were…").
+
+## [2.3.1] - 2026-10-11
 
 ### Removed
 
