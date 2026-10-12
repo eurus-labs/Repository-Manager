@@ -2,7 +2,7 @@
   "name": "repository-manager",
   "displayName": "Repository Manager",
   "description": "Coordinate branches and Git workflows across a parent repository and its linked repositories from one VS Code dashboard",
-  "version": "2.3.1",
+  "version": "2.4.0",
   "publisher": "repository-manager",
   "engines": {
     "vscode": "^1.74.0"
@@ -34,7 +34,7 @@
         "command": "repositoryManager.openPanel",
         "title": "Open Repository Manager",
         "category": "Repository Manager",
-        "icon": "$(git-branch)"
+        "icon": "$(window)"
       },
       {
         "command": "repositoryManager.forgetReviewPermissions",
@@ -138,6 +138,13 @@
       ]
     },
     "menus": {
+      "view/title": [
+        {
+          "command": "repositoryManager.openPanel",
+          "when": "view == repositoryManager.launcher",
+          "group": "navigation"
+        }
+      ],
       "commandPalette": [
         {
           "command": "repositoryManager.openPanel",

@@ -87,6 +87,16 @@ async function main() {
   closed.show();
   await tick();
   assert.equal(opened, 4);
+
+  // The view's title bar always has a button that brings the dashboard forward, open or not.
+  const manifest = require('../../package.json');
+  const titleButton = (manifest.contributes.menus['view/title'] || [])
+    .find(item => item.command === 'repositoryManager.openPanel');
+  assert.ok(titleButton, 'the Side Bar has no button to open the dashboard');
+  assert.equal(titleButton.when, `view == ${RepositoryManagerLauncher.viewType}`);
+  assert.equal(titleButton.group, 'navigation', 'the button is hidden in the ... menu');
+  const command = manifest.contributes.commands.find(item => item.command === 'repositoryManager.openPanel');
+  assert.ok(command.icon, 'a title-bar button without an icon shows as text');
   console.log('Side Bar view smoke passed');
 }
 
