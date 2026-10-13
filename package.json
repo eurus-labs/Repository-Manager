@@ -2,7 +2,7 @@
   "name": "repository-manager",
   "displayName": "Repository Manager",
   "description": "Coordinate branches and Git workflows across a parent repository and its linked repositories from one VS Code dashboard",
-  "version": "2.4.0",
+  "version": "2.4.1",
   "publisher": "repository-manager",
   "engines": {
     "vscode": "^1.74.0"

@@ -1766,10 +1766,16 @@
     });
   }
 
+  // Older commits load when the end of the list is within 400px of the view; there is no button.
+  function loadHistoryNearEnd() {
+    const list = document.getElementById('dashboardHistory');
+    if (!list || historyNextOffset === null || historyAppendPending) return;
+    if (list.scrollTop + list.clientHeight >= list.scrollHeight - 400) actions.loadMoreHistory();
+  }
+
   function renderHistoryPage(payload) {
     if (!payload || payload.repositoryPath !== activeDashboardRepository || payload.requestId !== historyRequestId) return;
     const history = document.getElementById('dashboardHistory');
-    const loadMore = document.getElementById('loadMoreHistory');
     if (!history) return;
 
     history.classList.remove('history-stale');
@@ -1829,8 +1835,9 @@
       pendingHistoryViewport = null;
     }
     historyNextOffset = payload.nextOffset;
-    if (loadMore) loadMore.hidden = historyNextOffset === null;
     updateCommitCompareUI();
+    // A page that does not reach past the view cannot be scrolled to its end: load the next one now.
+    requestAnimationFrame(loadHistoryNearEnd);
 
     if (!append && payload.commits && payload.commits.length > 0) {
       const visibleHashes = new Set(loadedHistoryCommits.map(commit => commit.hash));
@@ -2934,12 +2941,9 @@
     });
   }
 
-  // Scrolling near the end loads the next page; the Load more button stays for keyboard use.
+  // Scrolling near the end loads the next page (keyboard focus on a row scrolls the list too).
   const historyList = document.getElementById('dashboardHistory');
-  if (historyList) historyList.addEventListener('scroll', function () {
-    if (historyNextOffset === null || historyAppendPending) return;
-    if (historyList.scrollTop + historyList.clientHeight >= historyList.scrollHeight - 400) actions.loadMoreHistory();
-  }, { passive: true });
+  if (historyList) historyList.addEventListener('scroll', loadHistoryNearEnd, { passive: true });
 
   const dashboardSearch = document.getElementById('dashboardSearch');
   // Down/Up on the closed Model button opens its menu, as on a select.

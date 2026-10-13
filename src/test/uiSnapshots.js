@@ -1515,6 +1515,32 @@ async function main() {
     assert.deepEqual(appended, { rows: 200, sameFirst: true, lastSubject: true, graphCovers: true, nodes: 200 });
     await paging.close();
 
+    // There is no Load more button: older commits load as the end of the list comes near, so a page
+    // that fits in the view (nothing to scroll) asks for the next one by itself, once.
+    const shortPaging = await openPage(1440, 900);
+    const fitting = await shortPaging.evaluate(async () => {
+      const sent = [];
+      const toHost = window.__postToHost;
+      window.__postToHost = message => { sent.push(message); return toHost(message); };
+      document.getElementById('dashboardIncludeRemotes').click();
+      for (let i = 0; i < 100 && !sent.some(message => message.type === 'getHistory'); i++) await new Promise(r => setTimeout(r, 20));
+      await new Promise(r => setTimeout(r, 500));
+      const request = sent.filter(message => message.type === 'getHistory').at(-1).payload;
+      const hex = n => n.toString(16).padStart(40, '0');
+      const commits = Array.from({ length: 5 }, (_, n) => ({ hash: hex(n + 1), shortHash: hex(n + 1).slice(-7), parentHashes: [hex(n + 2)],
+        authorName: 'A', authorEmail: 'a@x', authoredAt: '2025-01-15T10:00:00Z', subject: `commit ${n}`, refs: [] }));
+      window.dispatchEvent(new MessageEvent('message', { data: { type: 'historyLoaded', payload: { repositoryPath: request.repositoryPath,
+        requestId: request.requestId, offset: 0, commits, nextOffset: 5, upstream: null } } }));
+      await new Promise(r => setTimeout(r, 200));
+      const list = document.getElementById('dashboardHistory');
+      return { button: document.getElementById('loadMoreHistory') === null && !/Load more/.test(document.body.innerText),
+        scrollable: list.scrollHeight > list.clientHeight,
+        appends: sent.filter(message => message.type === 'getHistory' && message.payload.append).map(message => message.payload.offset) };
+    });
+    assert.deepEqual(fitting, { button: true, scrollable: false, appends: [5] },
+      'a page that fits did not ask for exactly one next page (or the Load more button is back)');
+    await shortPaging.close();
+
     // Many lanes in a narrow window: the graph column clips the drawing instead of squeezing it, so
     // commit nodes stay round, and lane changes turn as even S-curves.
     const lanes = await openPage(420, 1400);
