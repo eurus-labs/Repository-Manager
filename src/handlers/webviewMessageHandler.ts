@@ -924,8 +924,9 @@ export async function handleStashAction(ctx: MessageHandlerContext, payload: {
   }
   const result = await ctx.gitOps.runStashAction(payload.repositoryPath, payload.stash, payload.operation);
   const data = result.data as StashActionData | undefined;
-  if (data && data.changedWorkingTree) {
-    await sendToWebview(ctx, { type: 'stashActionCompleted', payload: { repositoryPath: payload.repositoryPath, operation: payload.operation } });
+  if (data && (data.changedWorkingTree || data.removedStash)) {
+    await sendToWebview(ctx, { type: 'stashActionCompleted', payload: { repositoryPath: payload.repositoryPath,
+      operation: payload.operation, changedWorkingTree: data.changedWorkingTree, removedStash: data.removedStash } });
   }
   if (data && data.conflicts && data.conflicts.length) {
     void vscode.window.showWarningMessage(result.message, 'Open Source Control').then(choice => {

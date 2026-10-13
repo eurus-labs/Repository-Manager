@@ -2613,11 +2613,18 @@
           break;
         }
 
-        case 'stashActionCompleted':
-          if (message.payload && message.payload.repositoryPath === activeDashboardRepository) {
-            openWorkingTreeAfterStash = message.payload.repositoryPath;
+        case 'stashActionCompleted': {
+          const done = message.payload;
+          if (!done || done.repositoryPath !== activeDashboardRepository) break;
+          if (done.changedWorkingTree) openWorkingTreeAfterStash = done.repositoryPath;
+          // A history filtered to stash@{n} (from the Stashes list) names a moving position: once a
+          // stash is removed it is gone or names another stash, so the reload that follows shows all.
+          if (done.removedStash && /^stash(@\{\d+\})?$/.test(getDashboardFilters(activeDashboardRepository).branch || '')) {
+            setHistoryRevision('');
+            saveState();
           }
           break;
+        }
 
         case 'reloadDashboardHistory': {
           const repositoryPaths = Array.isArray(message.payload && message.payload.repositoryPaths)

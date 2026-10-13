@@ -120,7 +120,9 @@ async function main() {
       await handleStashAction(ctx, { repositoryPath: '.', stash: older, operation: 'drop' });
       assert.deepEqual(repo.stashes().map(line => line.split(' ')[0]), [newer], 'Drop dropped the wrong stash');
       assert.match(shown.at(-1).message, new RegExp(`git stash store ${older}`), 'Drop did not say how to restore it');
-      assert.deepEqual(calls.posted, [], 'Drop opened the uncommitted changes');
+      // Drop says the stash is gone (a history filtered to it must be cleared) but changed no files.
+      assert.deepEqual(calls.posted.map(message => [message.type, message.payload.changedWorkingTree, message.payload.removedStash]),
+        [['stashActionCompleted', false, true]]);
 
       // A stash that is gone by the time the button is pressed is reported, not guessed at.
       shown.length = 0;
@@ -171,6 +173,49 @@ async function main() {
       assert.equal(repo.stashes().length, 1);
       assert.deepEqual(calls.posted, []);
       assert.equal(calls.reloaded, 0);
+    }
+
+    // A -u stash whose untracked file is already in the way: Git restores the tracked edit, then stops
+    // without a conflict. That is reported as partway, with the changes shown and the stash kept.
+    {
+      const repo = repository(); repos.push(repo);
+      repo.write('tracked.txt', 'stashed edit\n');
+      repo.write('new.txt', 'from the stash\n');
+      repo.run('stash', 'push', '-u', '-m', 'partway');
+      const hash = repo.run('rev-parse', 'stash@{0}');
+      repo.write('new.txt', 'already here\n');
+      const { ctx, calls } = context(repo);
+      shown.length = 0;
+      await handleStashAction(ctx, { repositoryPath: '.', stash: hash, operation: 'pop' });
+      assert.equal(repo.read('tracked.txt'), 'stashed edit\n', 'the fixture no longer stops partway');
+      assert.equal(repo.read('new.txt'), 'already here\n');
+      assert.deepEqual(shown.map(item => item.kind), ['error']);
+      assert.match(shown[0].message, /^Pop stash@\{0\} \(partway\) stopped partway: .*already exists.*Some of its changes are in the working tree; the stash is kept\.$/s);
+      assert.equal(repo.stashes().length, 1);
+      assert.deepEqual(calls.posted.map(message => [message.type, message.payload.changedWorkingTree, message.payload.removedStash]),
+        [['stashActionCompleted', true, false]], 'a partly applied stash did not open the changes');
+      assert.equal(calls.reloaded, 1, 'a partly applied stash did not reload the dashboard');
+    }
+
+    // Two clicks on Pop for stash@{1} at once: the second must not pop the stash that moved into
+    // stash@{1} after the first, so the actions run one at a time and look the position up last.
+    {
+      const repo = repository(); repos.push(repo);
+      repo.write('tracked.txt', 'older\n');
+      repo.run('stash', 'push', '-m', 'older');
+      const older = repo.run('rev-parse', 'stash@{0}');
+      repo.write('tracked.txt', 'middle\n');
+      repo.run('stash', 'push', '-m', 'middle');
+      const middle = repo.run('rev-parse', 'stash@{0}');
+      repo.write('tracked.txt', 'newer\n');
+      repo.run('stash', 'push', '-m', 'newer');
+      const newer = repo.run('rev-parse', 'stash@{0}');
+      const { service } = context(repo);
+      const [first, second] = await Promise.all([service.run('.', middle, 'drop'), service.run('.', middle, 'drop')]);
+      assert.equal(first.success, true);
+      assert.equal(second.success, false);
+      assert.match(second.message, /no longer exists/);
+      assert.deepEqual(repo.stashes().map(line => line.split(' ')[0]), [newer, older], 'a second click dropped another stash');
     }
 
     // Anything the webview sends that is not one of the three actions is ignored.

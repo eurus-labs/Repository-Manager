@@ -20,7 +20,8 @@ const document = { documentElement: { clientWidth: 1200, clientHeight: 800 }, bo
   querySelector() { return null; }, addEventListener() {} };
 const window = { __initialRepositories: [], innerWidth: 1200, innerHeight: 800,
   addEventListener(type, cb) { listeners[`window_${type}`] = cb; }, setTimeout() {}, requestAnimationFrame() {},
-  RepositoryHistoryGraph: { laneX() { return 25; }, buildGraphModel(commits) { return {
+  RepositoryHistoryGraph: { normalizeHistoryFilters: require('../../resources/historyGraph.js').normalizeHistoryFilters,
+    laneX() { return 25; }, buildGraphModel(commits) { return {
     width: 76, rowHeight: 32, rows: commits.map(() => ({ lane: 0, before: [], after: [], startsHere: true, parentLanes: [], isMerge: false }))
   }; } } };
 const vscode = { getState() { return { selectedDashboardCommit: 'a'.repeat(40), activeDashboardRepository: '.' }; },
@@ -218,7 +219,8 @@ assert.equal(node('stashActions').hidden, false, 'a stash has no Apply / Pop / D
 click('stashAction', { operation: 'pop' });
 assert.equal(JSON.stringify(posts.at(-1)), JSON.stringify({ type: 'stashAction', payload: { repositoryPath: '.', stash: B, operation: 'pop' } }));
 // Once it is applied, the next status of the repository opens the uncommitted changes it made.
-listeners.window_message({ data: { type: 'stashActionCompleted', payload: { repositoryPath: '.', operation: 'pop' } } });
+listeners.window_message({ data: { type: 'stashActionCompleted', payload: { repositoryPath: '.', operation: 'pop',
+  changedWorkingTree: true, removedStash: true } } });
 listeners.window_message({ data: { type: 'workingTreeChangesLoaded', payload: { repositoryPath: '.', purpose: 'dashboard',
   changes: [{ path: 'untracked.txt', staged: false, unstaged: false, untracked: true, conflicted: false }] } } });
 assert.match(node('dashboardCommitSummary').innerHTML, /<strong>Uncommitted changes<\/strong>/);
@@ -239,4 +241,17 @@ listeners.window_message({ data: { type: 'commitDetailLoaded', payload: { reposi
   authorName: 'Test', authoredAt: new Date().toISOString(), files: [], refs: [],
   stash: { ref: 'stash@{0}', branch: 'main', message: 'wip' } } } } });
 assert.equal(node('stashActions').hidden, true, 'a comparison has stash actions');
+// A history filtered to a stash from the Stashes list names a position: Apply keeps the filter, but
+// once a Pop or Drop removes a stash the reload that follows shows the whole history.
+const lastHistoryBranch = () => posts.filter(message => message.type === 'getHistory').at(-1).payload.branch;
+click('selectReference', { revision: 'stash@{0}' });
+assert.equal(lastHistoryBranch(), 'stash@{0}');
+listeners.window_message({ data: { type: 'stashActionCompleted', payload: { repositoryPath: '.', operation: 'apply',
+  changedWorkingTree: true, removedStash: false } } });
+listeners.window_message({ data: { type: 'reloadDashboardHistory', payload: { repositoryPaths: ['.'] } } });
+assert.equal(lastHistoryBranch(), 'stash@{0}', 'Apply cleared the stash filter');
+listeners.window_message({ data: { type: 'stashActionCompleted', payload: { repositoryPath: '.', operation: 'drop',
+  changedWorkingTree: false, removedStash: true } } });
+listeners.window_message({ data: { type: 'reloadDashboardHistory', payload: { repositoryPaths: ['.'] } } });
+assert.equal(lastHistoryBranch(), undefined, 'a dropped stash stayed the history filter');
 console.log('UI summary switch smoke passed');
