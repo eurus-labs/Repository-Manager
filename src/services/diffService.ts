@@ -4,6 +4,7 @@
 
 import { ChangedFileInfo, ChangedFileStatus, CommitDetail, FileDiff } from '../types';
 import { GitCommandService } from './gitCommandService';
+import { findStash, stashDiffTarget } from './stashTarget';
 import { parseDecorations } from './historyService';
 
 const FIELD_SEPARATOR = '\x1f';
@@ -92,9 +93,12 @@ export class DiffService {
       : comparisonBaseHash
         ? 'parent'
         : 'root';
+    // A stash made with untracked files is read with them (see stashTarget).
+    const stash = await findStash(this.gitCmd, repositoryRoot, commitHash);
+    const diffTarget = await stashDiffTarget(this.gitCmd, repositoryRoot, commitHash);
     const changedFiles = comparisonBaseHash
       ? await this.gitCmd.execGitRaw([
-        'diff', '--name-status', '-z', '--find-renames', comparisonBaseHash, commitHash, '--'
+        'diff', '--name-status', '-z', '--find-renames', comparisonBaseHash, diffTarget, '--'
       ], repositoryRoot, 10000)
       : await this.gitCmd.execGitRaw([
         'diff-tree', '--root', '--no-commit-id', '--name-status', '-r', '-z', '--find-renames', commitHash, '--'
@@ -115,7 +119,8 @@ export class DiffService {
       body: bodyParts.join(FIELD_SEPARATOR).trim(),
       comparisonBaseHash,
       comparisonMode,
-      files: parseChangedFilesOutput(changedFiles)
+      files: parseChangedFilesOutput(changedFiles),
+      ...(stash ? { stash: { ref: stash.ref, branch: stash.branch, message: stash.message } } : {})
     };
   }
 
@@ -132,9 +137,10 @@ export class DiffService {
       );
       baseCommitHash = ancestry.split(/\s+/).slice(1)[0] || null;
     }
+    const diffTarget = await stashDiffTarget(this.gitCmd, repositoryRoot, commitHash);
     const output = baseCommitHash
       ? await this.gitCmd.execGitRaw([
-        'diff', '--no-ext-diff', '--find-renames', '--unified=80', baseCommitHash, commitHash, '--', safePath
+        'diff', '--no-ext-diff', '--find-renames', '--unified=80', baseCommitHash, diffTarget, '--', safePath
       ], repositoryRoot, 15000)
       : await this.gitCmd.execGitRaw([
         'show', '--format=', '--no-ext-diff', '--find-renames', '--unified=80', commitHash, '--', safePath

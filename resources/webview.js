@@ -2129,7 +2129,12 @@
       const comparisonText = detail.comparisonBaseHash
         ? `${detail.comparisonMode === 'parent' ? 'Parent' : 'Compare'} ${escapeHtml(shortRevision(detail.comparisonBaseHash))} → ${escapeHtml(detail.shortHash)}`
         : `Root commit → ${escapeHtml(detail.shortHash)}`;
-      summary.innerHTML = `<div class="commit-avatar">${escapeHtml(initials)}</div><div class="commit-summary-copy"><strong>${escapeHtml(detail.subject)}</strong><span>${escapeHtml(detail.authorName)} · ${escapeHtml(formatHistoryDate(detail.authoredAt))} · ${comparisonText}</span>${detail.body && detail.body !== detail.subject ? `<p>${escapeHtml(detail.body)}</p>` : ''}</div><code>${escapeHtml(detail.shortHash)}</code><div class="commit-summary-refs">${refs}</div>`;
+      // A stash reads as one: its own message, which stash it is and the branch it was made on.
+      const stash = detail.stash;
+      const title = stash ? stash.message || detail.subject : detail.subject;
+      const who = stash ? `Stash ${stash.ref}${stash.branch ? ` · on ${stash.branch}` : ''}` : detail.authorName;
+      const avatar = stash ? '<div class="commit-avatar stash-avatar" aria-hidden="true">▱</div>' : `<div class="commit-avatar">${escapeHtml(initials)}</div>`;
+      summary.innerHTML = `${avatar}<div class="commit-summary-copy"><strong>${escapeHtml(title)}</strong><span>${escapeHtml(who)} · ${escapeHtml(formatHistoryDate(detail.authoredAt))} · ${comparisonText}</span>${detail.body && detail.body !== detail.subject ? `<p>${escapeHtml(detail.body)}</p>` : ''}</div><code>${escapeHtml(detail.shortHash)}</code><div class="commit-summary-refs">${refs}</div>`;
     }
     if (count) count.textContent = String((detail.files || []).length);
     if (files) {

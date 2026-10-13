@@ -342,6 +342,8 @@ export interface CommitDetail extends HistoryCommit {
   committerName: string;
   committerEmail: string;
   files: ChangedFileInfo[];
+  /** Set when the commit is a stash: which one, the branch it was made on, and its own message. */
+  stash?: { ref: string; branch: string; message: string };
 }
 
 export interface FileDiff {
