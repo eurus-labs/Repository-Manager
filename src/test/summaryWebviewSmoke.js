@@ -12,7 +12,7 @@ const repositoryCheckboxes = [
 function node(id) {
   if (!nodes.has(id)) nodes.set(id, { id, hidden: false, disabled: false, innerHTML: '', textContent: '', value: '', dataset: {}, style: {},
     classList: { add() {}, remove() {}, toggle() {} }, listeners: {}, addEventListener(type, cb) { this.listeners[type] = cb; }, querySelector() { return id === 'historyContextMenu' ? { focus() {} } : null; }, querySelectorAll() { return []; },
-    setAttribute() {}, removeAttribute() {}, closest() { return null; }, contains() { return false; } });
+    setAttribute() {}, removeAttribute() {}, closest() { return null; }, contains() { return false; }, insertAdjacentHTML() {} });
   return nodes.get(id);
 }
 const document = { documentElement: { clientWidth: 1200, clientHeight: 800 }, body: { addEventListener(type, cb) { listeners[`body_${type}`] = cb; }, closest() { return null; } },
@@ -213,4 +213,30 @@ listeners.window_message({ data: { type: 'commitDetailLoaded', payload: { reposi
   stash: { ref: 'stash@{0}', branch: 'main', message: 'wip: <try>' } } } } });
 assert.match(node('dashboardCommitSummary').innerHTML, /stash-avatar/);
 assert.match(node('dashboardCommitSummary').innerHTML, /<strong>wip: &lt;try&gt;<\/strong><span>Stash stash@\{0\} · on main · /);
+// A stash on its own gets Apply, Pop and Drop in the header; each names the stash by its hash.
+assert.equal(node('stashActions').hidden, false, 'a stash has no Apply / Pop / Drop');
+click('stashAction', { operation: 'pop' });
+assert.equal(JSON.stringify(posts.at(-1)), JSON.stringify({ type: 'stashAction', payload: { repositoryPath: '.', stash: B, operation: 'pop' } }));
+// Once it is applied, the next status of the repository opens the uncommitted changes it made.
+listeners.window_message({ data: { type: 'stashActionCompleted', payload: { repositoryPath: '.', operation: 'pop' } } });
+listeners.window_message({ data: { type: 'workingTreeChangesLoaded', payload: { repositoryPath: '.', purpose: 'dashboard',
+  changes: [{ path: 'untracked.txt', staged: false, unstaged: false, untracked: true, conflicted: false }] } } });
+assert.match(node('dashboardCommitSummary').innerHTML, /<strong>Uncommitted changes<\/strong>/);
+assert.equal(node('stashActions').hidden, true, 'the uncommitted changes kept the stash actions');
+// Only once: a later status leaves the selection to the user.
+listeners.body_click({ target: { dataset: { action: 'selectHistoryCommit', commit: A }, parentElement: document.body,
+  tagName: 'BUTTON', closest() { return null; } }, preventDefault() {} });
+detail(A, P);
+listeners.window_message({ data: { type: 'workingTreeChangesLoaded', payload: { repositoryPath: '.', purpose: 'dashboard',
+  changes: [{ path: 'untracked.txt', staged: false, unstaged: false, untracked: true, conflicted: false }] } } });
+assert.doesNotMatch(node('dashboardCommitSummary').innerHTML, /Uncommitted changes/);
+// An ordinary commit, or a stash compared with another commit, has none.
+assert.equal(node('stashActions').hidden, true, 'an ordinary commit has stash actions');
+listeners.body_click({ target: { dataset: { action: 'selectHistoryCommit', commit: B }, parentElement: document.body,
+  tagName: 'BUTTON', closest() { return null; } }, preventDefault() {} });
+listeners.window_message({ data: { type: 'commitDetailLoaded', payload: { repositoryPath: '.', targetRevision: B, detail: {
+  hash: B, shortHash: B.slice(0, 7), parentHashes: [P], comparisonBaseHash: A, comparisonMode: 'range', subject: 'On main: wip',
+  authorName: 'Test', authoredAt: new Date().toISOString(), files: [], refs: [],
+  stash: { ref: 'stash@{0}', branch: 'main', message: 'wip' } } } } });
+assert.equal(node('stashActions').hidden, true, 'a comparison has stash actions');
 console.log('UI summary switch smoke passed');

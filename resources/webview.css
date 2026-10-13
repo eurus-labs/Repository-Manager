@@ -808,7 +808,8 @@ select {
 .commit-header-actions[hidden], .commit-header-actions [hidden] { display: none; }
 .commit-header-actions .btn { height: 26px; padding: 0 10px; font-size: 12px; }
 /* Commit… and Review changes act on the working tree; a rule sets them apart from Summarize. */
-.commit-header-actions .working-tree-actions { padding-right: 6px; border-right: 1px solid var(--border); }
+.commit-header-actions .working-tree-actions,
+.commit-header-actions .stash-actions { padding-right: 6px; border-right: 1px solid var(--border); }
 
 .commit-avatar {
   display: grid;
@@ -2974,8 +2975,8 @@ body.sidebar-view { overflow: hidden; background: var(--vscode-sideBar-backgroun
 .uncommitted-counts { color: var(--text-secondary); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .uncommitted-row.active .uncommitted-counts { color: inherit; opacity: .82; }
 .uncommitted-avatar { color: var(--vscode-gitDecoration-modifiedResourceForeground, #e2c08d); }
-.working-tree-actions { display: inline-flex; gap: 6px; align-items: center; }
-.working-tree-actions[hidden] { display: none; }
+.working-tree-actions, .stash-actions { display: inline-flex; gap: 6px; align-items: center; }
+.working-tree-actions[hidden], .stash-actions[hidden] { display: none; }
 .working-diff-modes { display: inline-flex; gap: 4px; margin-left: auto; margin-right: 8px; }
 .working-diff-modes[hidden] { display: none; }
 .working-diff-modes button { padding: 1px 7px; border: 1px solid var(--border); border-radius: 4px; color: var(--text-secondary); background: transparent; font: inherit; font-size: 11px; cursor: pointer; }

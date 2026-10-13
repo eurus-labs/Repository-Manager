@@ -18,6 +18,8 @@ import {
   ReferenceService
 } from './services';
 import { HistoryAction, HistoryActionService } from './services/historyActionService';
+import { StashActionService, StashOperation } from './services/stashActionService';
+import { StashEntry } from './services/stashTarget';
 import { HistoryRewriteAction, HistoryRewritePreview, HistoryRewriteService, ResetMode } from './services/historyRewriteService';
 
 import {
@@ -46,6 +48,7 @@ export class GitOperations {
   private diffService: DiffService;
   private referenceService: ReferenceService;
   private historyActionService: HistoryActionService;
+  private stashActionService: StashActionService;
   private historyRewriteService: HistoryRewriteService;
 
   constructor(workspaceRoot: string) {
@@ -57,6 +60,7 @@ export class GitOperations {
     this.diffService = new DiffService(this.gitCmd);
     this.referenceService = new ReferenceService(this.gitCmd, this.branchService, this.commitService);
     this.historyActionService = new HistoryActionService(this.gitCmd);
+    this.stashActionService = new StashActionService(this.gitCmd);
     this.historyRewriteService = new HistoryRewriteService(this.gitCmd);
   }
 
@@ -345,6 +349,15 @@ export class GitOperations {
 
   async abortHistoryAction(repositoryPath: string, operation: HistoryAction): Promise<CommandResult> {
     return this.historyActionService.abort(repositoryPath, operation);
+  }
+
+  /** The stash whose commit is `hash`; throws when it no longer exists. */
+  async describeStash(repositoryPath: string, hash: string): Promise<StashEntry> {
+    return this.stashActionService.describe(repositoryPath, hash);
+  }
+
+  async runStashAction(repositoryPath: string, hash: string, operation: StashOperation): Promise<CommandResult> {
+    return this.stashActionService.run(repositoryPath, hash, operation);
   }
 
   /** The Git operation paused in the repository (rebase, merge, cherry-pick, ...), if any. */
