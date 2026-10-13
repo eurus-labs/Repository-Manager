@@ -342,7 +342,6 @@ function renderDashboard(repositories: RepositoryInfo[], workspaceFolders: Works
               <span class="history-column-header">Commit<span class="history-column-resizer" data-column-index="4" role="separator" aria-label="Resize Commit column" aria-orientation="vertical" tabindex="0"></span></span>
             </div>
             <div class="history-table" id="dashboardHistory"><div class="dashboard-loading">Loading history…</div></div>
-            <button class="load-more-button" id="loadMoreHistory" data-action="loadMoreHistory" type="button" hidden>Load more commits</button>
           </section>
           <div class="dashboard-splitter dashboard-splitter-horizontal" id="historyDiffSplitter" role="separator" aria-label="Resize history and diff panels" aria-orientation="horizontal" tabindex="0"></div>
           <section class="commit-detail-region">

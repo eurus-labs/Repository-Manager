@@ -1766,15 +1766,23 @@
     });
   }
 
+  // Older commits load when the end of the list is within 400px of the view; there is no button.
+  function loadHistoryNearEnd() {
+    const list = document.getElementById('dashboardHistory');
+    if (!list || historyNextOffset === null || historyAppendPending) return;
+    if (list.scrollTop + list.clientHeight >= list.scrollHeight - 400) actions.loadMoreHistory();
+  }
+
   function renderHistoryPage(payload) {
     if (!payload || payload.repositoryPath !== activeDashboardRepository || payload.requestId !== historyRequestId) return;
     const history = document.getElementById('dashboardHistory');
-    const loadMore = document.getElementById('loadMoreHistory');
     if (!history) return;
 
     history.classList.remove('history-stale');
     history.inert = false;
     if (payload.offset > 0) historyAppendPending = false;
+    const appendError = history.querySelector('.history-append-error');
+    if (appendError) appendError.remove(); // the page that failed has loaded since
     const renderedCount = loadedHistoryCommits.length;
     let addedCommits = [];
     if (payload.offset > 0) {
@@ -1829,8 +1837,9 @@
       pendingHistoryViewport = null;
     }
     historyNextOffset = payload.nextOffset;
-    if (loadMore) loadMore.hidden = historyNextOffset === null;
     updateCommitCompareUI();
+    // A page that does not reach past the view cannot be scrolled to its end: load the next one now.
+    requestAnimationFrame(loadHistoryNearEnd);
 
     if (!append && payload.commits && payload.commits.length > 0) {
       const visibleHashes = new Set(loadedHistoryCommits.map(commit => commit.hash));
@@ -2148,9 +2157,18 @@
     if (!payload || payload.repositoryPath !== activeDashboardRepository) return;
     const history = document.getElementById('dashboardHistory');
     if (payload.request === 'getHistory' && history) {
+      const appending = historyAppendPending;
       historyAppendPending = false;
       history.classList.remove('history-stale');
       history.inert = false;
+      // A next page that failed keeps the rows already shown, with a way to ask for it again
+      // (scrolling near the end asks again too).
+      if (appending && history.querySelector('.history-row')) {
+        const previous = history.querySelector('.history-append-error');
+        if (previous) previous.remove();
+        history.insertAdjacentHTML('beforeend', `<div class="dashboard-error history-append-error" role="alert">${escapeHtml(payload.message)} <button type="button" class="link-button" data-action="loadMoreHistory">Retry</button></div>`);
+        return;
+      }
       { uncommittedRowRendered = false; history.innerHTML = `<div class="dashboard-error">${escapeHtml(payload.message)}</div>`; }
       return;
     }
@@ -2934,12 +2952,9 @@
     });
   }
 
-  // Scrolling near the end loads the next page; the Load more button stays for keyboard use.
+  // Scrolling near the end loads the next page (keyboard focus on a row scrolls the list too).
   const historyList = document.getElementById('dashboardHistory');
-  if (historyList) historyList.addEventListener('scroll', function () {
-    if (historyNextOffset === null || historyAppendPending) return;
-    if (historyList.scrollTop + historyList.clientHeight >= historyList.scrollHeight - 400) actions.loadMoreHistory();
-  }, { passive: true });
+  if (historyList) historyList.addEventListener('scroll', loadHistoryNearEnd, { passive: true });
 
   const dashboardSearch = document.getElementById('dashboardSearch');
   // Down/Up on the closed Model button opens its menu, as on a select.
@@ -3068,7 +3083,8 @@
     applyHistoryColumnWidths(historyColumnWidths);
 
     history.scrollLeft = 0;
-    new ResizeObserver(() => applyHistoryColumnWidths(historyColumnWidths))
+    // A taller list (window or splitter) can bring its end into view without a scroll event.
+    new ResizeObserver(() => { applyHistoryColumnWidths(historyColumnWidths); loadHistoryNearEnd(); })
       .observe(history);
 
     header.querySelectorAll('.history-column-resizer').forEach(handle => {

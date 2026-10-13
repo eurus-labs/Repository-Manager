@@ -5,7 +5,13 @@ All notable changes to Repository Manager will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [2.4.0] - Unreleased
+## [2.4.1] - Unreleased
+
+### Changed
+
+- The **Load more commits** button below the history is gone: older commits load as you scroll toward the end of the list, or move the keyboard focus down it. A page that fits in the view without scrolling loads the next one by itself.
+
+## [2.4.0] - 2026-10-13
 
 ### Added
 

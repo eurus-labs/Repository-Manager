@@ -779,14 +779,6 @@ select {
 .history-ref.ref-local-branch { color: var(--vscode-charts-green, #73c991); }
 .history-ref.ref-head { color: var(--vscode-charts-orange, #d18616); }
 
-.load-more-button {
-  padding: 5px;
-  border: 0;
-  border-top: 1px solid var(--border);
-  color: var(--accent);
-  background: var(--bg-secondary);
-  cursor: pointer;
-}
 
 .commit-detail-region {
   display: grid;
@@ -1774,10 +1766,6 @@ body.vscode-high-contrast .graph-node-control[data-marker="T"] .graph-node-hit {
 .history-ref.ref-remote-branch { color: var(--tone-ok); background: rgba(60, 199, 166, .10); }
 .history-ref.ref-local-branch { color: var(--tone-info); background: rgba(139, 167, 240, .12); }
 
-.load-more-button {
-  color: var(--accent);
-  background: var(--bg-secondary);
-}
 
 .commit-detail-region { background: var(--bg-sunken); }
 
@@ -2976,3 +2964,7 @@ body.sidebar-view { overflow: hidden; background: var(--vscode-sideBar-backgroun
 
 /* Why Compare did not run, in the dialog's footer (webviews have no alert()). */
 .compare-hint { margin-right: auto; color: var(--vscode-errorForeground); font-size: 12px; align-self: center; }
+
+/* A next history page that failed: the rows stay, with Retry at the end. */
+.history-append-error { padding: 8px 12px; }
+.history-append-error .link-button { padding: 0; border: 0; color: var(--vscode-textLink-foreground, var(--accent)); background: none; font: inherit; text-decoration: underline; cursor: pointer; }
