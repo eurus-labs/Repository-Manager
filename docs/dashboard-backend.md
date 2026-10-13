@@ -20,6 +20,7 @@ flowchart LR
 - `HistoryService` owns paginated commit history and history search. It returns commit parents so the webview can render a commit graph without parsing Git text.
 - `DiffService` owns commit metadata, changed-file lists, and on-demand file patches. Patch output is capped at 1 MiB before it crosses the webview boundary.
 - `ReferenceService` aggregates branches, tags, remotes, and stashes for the selected repository.
+- `stashTarget` reads a stash as one change. Only commits in the stash reflog count as stashes. For a stash made with untracked files (`git stash -u`, kept in a third parent), the file list and patches (`DiffService`), summaries (`ChangeContextService`) and reviews (`ReviewSnapshotService`) read a commit that adds those files to the stash's tree, on its first parent; it is built in a temporary index with the stash's own identity and dates, so the same stash always gives the same commit, and the working tree, index and stash are untouched. The webview keeps the stash's own hash. `HistoryService` leaves out the index and untracked-files commits inside every stash and draws a stash on its first parent, and a stash's commit detail carries `stash` (its `stash@{n}`, branch and message) for the header.
 - `GitOperations` remains a thin facade. It exposes services to VS Code handlers but contains no parsing or view-specific state.
 - `webviewMessageHandler` validates untrusted webview payloads and converts service results into typed events.
 
