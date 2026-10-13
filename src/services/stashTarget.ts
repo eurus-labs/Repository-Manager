@@ -29,8 +29,23 @@ export interface StashEntry {
   message: string;
 }
 
-const EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
+const EMPTY_TREE: Record<string, string> = {
+  sha1: '4b825dc642cb6eb9a060e54bf8d69288fbee4904',
+  sha256: '6ef19b41225c5369f1c104d45d8d85efa9b057b53b14b4b9b939dd74decc5321'
+};
 const FIELD = '\x1f';
+
+/**
+ * The message of every commit stashDiffTarget builds. It names no stash@{n}: that moves when
+ * another stash is pushed, and the commit (and so the review cache keyed by it) must not.
+ */
+export const STASH_SNAPSHOT_MESSAGE = 'Stash with its untracked files (Repository Manager review snapshot)';
+
+/** Whether `sha` is a commit stashDiffTarget built (a saved review may read one). */
+export async function isStashSnapshot(git: GitCommandService, root: string, sha: string): Promise<boolean> {
+  const message = await git.execGit(['log', '-1', '--format=%B', sha], root, 5000).catch(() => '');
+  return message.trim() === STASH_SNAPSHOT_MESSAGE;
+}
 
 /** "On main: try this" or "WIP on main: abc1234 subject" → { branch, message }. */
 export function parseStashSubject(subject: string): { branch: string; message: string } {
@@ -68,28 +83,36 @@ export async function stashDiffTarget(git: GitCommandService, root: string, sha:
     env['GIT_INDEX_FILE'] = temporaryIndex;
     // A three-way read from the empty tree takes every path from whichever side has it. Untracked
     // files were not tracked, so no path is on both sides and nothing conflicts.
-    await git.execGitRaw(['read-tree', '-m', '-i', EMPTY_TREE, `${sha}^{tree}`, `${untracked}^{tree}`], root, 30000, false, env);
+    const format = await git.execGit(['rev-parse', '--show-object-format'], root, 5000).catch(() => 'sha1');
+    const emptyTree = EMPTY_TREE[format] || EMPTY_TREE.sha1;
+    await git.execGitRaw(['read-tree', '-m', '-i', emptyTree, `${sha}^{tree}`, `${untracked}^{tree}`], root, 30000, false, env);
     const tree = (await git.execGitRaw(['write-tree'], root, 30000, false, env)).trim();
     const [name, email, authorDate, committerDate] = (await git.execGitRaw(
       ['log', '-1', `--format=%an${FIELD}%ae${FIELD}%aI${FIELD}%cI`, sha], root, 10000)).trim().split(FIELD);
     env['GIT_AUTHOR_NAME'] = name; env['GIT_AUTHOR_EMAIL'] = email; env['GIT_AUTHOR_DATE'] = authorDate;
     env['GIT_COMMITTER_NAME'] = name; env['GIT_COMMITTER_EMAIL'] = email; env['GIT_COMMITTER_DATE'] = committerDate;
-    const message = `${stash.ref} with its untracked files (Repository Manager)`;
-    return (await git.execGitRaw(['commit-tree', tree, '-p', base, '-m', message], root, 30000, false, env)).trim();
+    return (await git.execGitRaw(['commit-tree', tree, '-p', base, '-m', STASH_SNAPSHOT_MESSAGE], root, 30000, false, env)).trim();
   } finally {
     rmSync(temporaryIndex, { force: true });
   }
 }
 
+/** The index and untracked-files commits Git keeps inside these stashes. */
+export function stashInternals(stashes: StashEntry[]): Set<string> {
+  return new Set(stashes.flatMap(stash => stash.parents.slice(1)));
+}
+
 /**
  * The history without the commits Git keeps inside a stash: each stash shows as one commit on the
- * commit it was made from.
+ * commit it was made from. One that is also somewhere the user went stays: it carries a ref (a
+ * branch, a tag, a detached HEAD), or it is the revision the history was asked from (`tip`).
  */
-export function hideStashInternals(commits: HistoryCommit[], stashes: StashEntry[]): HistoryCommit[] {
+export function hideStashInternals(commits: HistoryCommit[], stashes: StashEntry[], tip?: string): HistoryCommit[] {
   if (!stashes.length) { return commits; }
   const byHash = new Map(stashes.map(stash => [stash.hash, stash]));
-  const internal = new Set(stashes.flatMap(stash => stash.parents.slice(1)));
-  return commits.filter(commit => !internal.has(commit.hash)).map(commit => {
+  const internal = stashInternals(stashes);
+  const hidden = (commit: HistoryCommit) => internal.has(commit.hash) && commit.hash !== tip && !commit.refs.length;
+  return commits.filter(commit => !hidden(commit)).map(commit => {
     const stash = byHash.get(commit.hash);
     return stash ? { ...commit, parentHashes: commit.parentHashes.slice(0, 1) } : commit;
   });

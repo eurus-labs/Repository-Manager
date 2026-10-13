@@ -101,8 +101,10 @@ export class HistoryService {
       args.push(`--skip=${offset}`);
     }
 
+    let tip: string | undefined;
     if (query.branch) {
-      args.push(await this.gitCmd.resolveRevision(query.repositoryPath, query.branch));
+      tip = await this.gitCmd.resolveRevision(query.repositoryPath, query.branch);
+      args.push(tip);
     } else if (query.includeRemotes) {
       // Every ref but the snapshots kept for saved reviews of local changes, which are not history.
       args.push(`--exclude=${SNAPSHOT_REF_PREFIX}*`, '--all');
@@ -147,7 +149,7 @@ export class HistoryService {
       repositoryPath: query.repositoryPath,
       offset,
       // Git's index and untracked-files commits inside a stash are not history.
-      commits: hideStashInternals(commits.slice(0, limit), await listStashes(this.gitCmd, repositoryRoot)),
+      commits: hideStashInternals(commits.slice(0, limit), await listStashes(this.gitCmd, repositoryRoot), tip),
       nextOffset: hasMore ? offset + limit : null,
       upstream
     };

@@ -1,4 +1,4 @@
-import { stashDiffTarget } from './stashTarget';
+import { listStashes, stashDiffTarget, stashInternals } from './stashTarget';
 import { ChangeContextPacket } from '../types';
 import { parseChangedFilesOutput } from './diffService';
 import { GitCommandService } from './gitCommandService';
@@ -55,7 +55,10 @@ export class ChangeContextService {
     const log = root
       ? `${targetSha}\x1f${await this.git.execGit(['show', '-s', '--format=%s', targetSha], cwd, 5000)}\0`
       : await this.git.execGitRaw(['log', '-z', '--format=%H%x1f%s', '-n', '21', `${baseSha}..${targetSha}`], cwd, 10000);
-    const entries = log.split('\0').filter(Boolean);
+    // Git's index and untracked-files commits inside a stash are not commits to cite.
+    const internal = stashInternals(await listStashes(this.git, cwd));
+    const entries = log.split('\0').filter(Boolean)
+      .filter(entry => !internal.has(entry.trim().split('\x1f')[0]));
     const commits = entries.slice(0, 20).map(entry => {
       const [hash, ...subject] = entry.trim().split('\x1f');
       return { hash, subject: subject.join('\x1f') };

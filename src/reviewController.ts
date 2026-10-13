@@ -13,6 +13,7 @@ import { FixError, FixModel, FixProposal, FixStep, ReviewFixService } from './se
 import { ExplainError, ReviewExplainService } from './services/reviewExplainService';
 import { markAiDirectedText, scanReviewedChanges } from './services/aiDirectedText';
 import { keepSnapshots, snapshotLocalChanges } from './services/localChangesSnapshot';
+import { isStashSnapshot } from './services/stashTarget';
 import { resolveDefaultBranch, resolveReleaseRange } from './services/releaseRange';
 import { ReviewSkillStore } from './reviewSkillStore';
 import { carryTriage } from './reviewTriageCarry';
@@ -660,7 +661,9 @@ export class ReviewController {
     this.cancelExplanationQuietly();
     const git = this.git(entry.workspaceRoot);
     // Kept again if its ref went missing (another workspace let it go), as long as Git still has it.
-    if (entry.context.kind === 'local') { await this.keepSnapshots(git, entry.repositoryRoot); }
+    if (entry.context.kind === 'local' || await isStashSnapshot(git, entry.repositoryRoot, entry.result.request.targetSha)) {
+      await this.keepSnapshots(git, entry.repositoryRoot);
+    }
     // Reviews saved before the check existed get it now, while their commits can still be read, and
     // keep it: the commits may be gone by the next time.
     if (await this.checkAiDirectedText(git, git.resolveRepositoryPath(entry.repositoryPath), entry.result)) {
@@ -708,12 +711,17 @@ export class ReviewController {
   }
 
   /**
-   * The snapshots this repository's saved reviews of local changes read are kept from garbage
-   * collection while the reviews are saved, so their evidence and explanations still open later.
+   * The snapshots this repository's saved reviews read are kept from garbage collection while the
+   * reviews are saved, so their evidence and explanations still open later: those of local changes,
+   * and the commit a stash with untracked files is reviewed as (stashTarget).
    * Best effort: a repository that refuses the ref only loses that guarantee.
    */
   private async keepSnapshots(git: GitCommandService, root: string): Promise<void> {
-    const snapshots = this.host.history.list(root).filter(entry => entry.context.kind === 'local').map(entry => entry.result.request.targetSha);
+    const snapshots: string[] = [];
+    for (const entry of this.host.history.list(root)) {
+      const target = entry.result.request.targetSha;
+      if (entry.context.kind === 'local' || await isStashSnapshot(git, root, target)) { snapshots.push(target); }
+    }
     await keepSnapshots(git, root, snapshots).catch(() => undefined);
   }
 
