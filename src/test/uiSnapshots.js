@@ -1470,6 +1470,50 @@ async function main() {
     await snap(page, '08-rebase-menu');
     await page.mouse.click(5, 5);
 
+    // A stash made with -u: Apply, Pop and Drop sit in the header with the others, and Pop runs the
+    // real handler against the fixture, then opens the uncommitted changes it brought back.
+    git(other, 'rebase', '--abort');
+    fs.writeFileSync(path.join(other, 'notes.md'), 'stashed edit\n');
+    fs.writeFileSync(path.join(other, 'idea.md'), 'new idea\n');
+    git(other, 'stash', 'push', '-u', '-m', 'try a new note');
+    await page.click('[data-action="refresh"]');
+    const stashRow = page.locator('.history-row', { hasText: 'try a new note' });
+    await stashRow.waitFor({ timeout: 5000 });
+    assert.equal(await page.locator('.history-row', { hasText: /index on|untracked files on/ }).count(), 0);
+    await stashRow.click();
+    await page.waitForFunction(() => /Stash stash@\{0\} · on topic/.test(document.getElementById('dashboardCommitSummary').textContent));
+    await page.locator('#stashActions').waitFor({ state: 'visible' });
+    assert.deepEqual(await page.locator('#stashActions button').allTextContents(), ['Apply', 'Pop', 'Drop…']);
+    assert.equal(await page.isHidden('#workingTreeActions'), true);
+    const stashHeader = await page.evaluate(() => {
+      const header = document.querySelector('.commit-header').getBoundingClientRect();
+      const hash = document.querySelector('#dashboardCommitSummary > code').getBoundingClientRect();
+      const actions = document.getElementById('stashActions').getBoundingClientRect();
+      return { afterHash: actions.left > hash.right, inHeader: actions.right <= header.right && actions.bottom <= header.bottom };
+    });
+    assert.deepEqual(stashHeader, { afterHash: true, inHeader: true });
+    // In a narrow window the four buttons move under the title, inside the header and off the title.
+    await page.setViewportSize({ width: 680, height: 900 });
+    const narrowStash = await page.evaluate(() => {
+      const header = document.querySelector('.commit-header').getBoundingClientRect();
+      const actions = document.getElementById('commitHeaderActions').getBoundingClientRect();
+      const copy = document.querySelector('.commit-summary-copy').getBoundingClientRect();
+      return { inside: actions.left >= header.left && actions.right <= header.right + 0.5 && actions.bottom <= header.bottom + 0.5,
+        overlaps: !(actions.right <= copy.left || actions.left >= copy.right || actions.bottom <= copy.top || actions.top >= copy.bottom) };
+    });
+    assert.deepEqual(narrowStash, { inside: true, overlaps: false }, '680px: the stash actions spill out of the header or cover the title');
+    await snap(page, '03d-stash-actions-narrow');
+    await page.setViewportSize({ width: 1440, height: 900 });
+    assert.deepEqual((await page.locator('#dashboardChangedFiles .changed-file-item').allTextContents())
+      .map(text => text.replace(/›$/, '')).sort(), ['Aidea.mdidea.md', 'Mnotes.mdnotes.md']);
+    await snap(page, '03c-stash-actions');
+    await page.click('#stashActions [data-operation="pop"]');
+    await page.waitForFunction(() => /Uncommitted changes/.test(document.getElementById('dashboardCommitSummary').textContent), null, { timeout: 5000 });
+    assert.equal(fs.readFileSync(path.join(other, 'idea.md'), 'utf8'), 'new idea\n');
+    assert.equal(fs.readFileSync(path.join(other, 'notes.md'), 'utf8'), 'stashed edit\n');
+    assert.equal(git(other, 'stash', 'list').trim(), '');
+    await stashRow.waitFor({ state: 'detached' });
+
     await page.close();
     // Narrow editor splits: rows keep one-line ref pills, and the subject keeps a readable width.
     // Narrowing the window re-lays the history out in a few frames. A content-sized history

@@ -11,6 +11,7 @@ import { HistoryQuery } from '../types';
 import { GitCommandService } from '../services/gitCommandService';
 import { HistoryAction } from '../services/historyActionService';
 import { HistoryRewriteAction, ResetMode } from '../services/historyRewriteService';
+import { STASH_OPERATIONS, StashActionData, StashOperation } from '../services/stashActionService';
 
 export interface MessageHandlerContext {
   panel: vscode.WebviewPanel;
@@ -894,6 +895,53 @@ export async function handleRewriteHistoryCommit(ctx: MessageHandlerContext, pay
 }
 
 /**
+ * Apply, Pop or Drop the stash selected in the dashboard. Only Drop asks first: Apply and Pop
+ * leave the stash's changes in the working tree (Pop keeps the stash when they conflict), while
+ * Drop throws them away. After Apply or Pop the dashboard opens the uncommitted changes.
+ */
+export async function handleStashAction(ctx: MessageHandlerContext, payload: {
+  repositoryPath: string; stash: string; operation: StashOperation
+}): Promise<void> {
+  if (!payload || typeof payload.repositoryPath !== 'string' || typeof payload.stash !== 'string' ||
+      !STASH_OPERATIONS.includes(payload.operation)) {
+    return;
+  }
+  if (payload.operation === 'drop') {
+    let stash;
+    try {
+      stash = await ctx.gitOps.describeStash(payload.repositoryPath, payload.stash);
+    } catch (error) {
+      showResult(false, error instanceof Error ? error.message : String(error));
+      return;
+    }
+    const approved = await vscode.window.showWarningMessage(
+      `Drop ${stash.ref}${stash.message ? ` (${stash.message})` : ''}?`,
+      { modal: true, detail: `Its changes are deleted without being applied. Repository: ${payload.repositoryPath}` },
+      'Drop stash');
+    if (approved !== 'Drop stash') {
+      return;
+    }
+  }
+  const result = await ctx.gitOps.runStashAction(payload.repositoryPath, payload.stash, payload.operation);
+  const data = result.data as StashActionData | undefined;
+  if (data && (data.changedWorkingTree || data.removedStash)) {
+    await sendToWebview(ctx, { type: 'stashActionCompleted', payload: { repositoryPath: payload.repositoryPath,
+      operation: payload.operation, changedWorkingTree: data.changedWorkingTree, removedStash: data.removedStash } });
+  }
+  if (data && data.conflicts && data.conflicts.length) {
+    void vscode.window.showWarningMessage(result.message, 'Open Source Control').then(choice => {
+      if (choice) { void vscode.commands.executeCommand('workbench.view.scm'); }
+    });
+  } else {
+    showResult(result.success, result.message);
+  }
+  if (result.success || (data && data.changedWorkingTree)) {
+    await ctx.reloadDashboardHistory([payload.repositoryPath]);
+  }
+  await ctx.refresh();
+}
+
+/**
  * Report which Git operation is paused in a repository, so the history menu only offers
  * Continue/Abort rebase while a rebase is actually in progress.
  */
@@ -1068,6 +1116,7 @@ export const messageHandlers: Record<string, (ctx: MessageHandlerContext, payloa
   'rewriteHistoryCommit': (ctx, payload) => handleRewriteHistoryCommit(ctx, payload as { repositoryPath: string; commit: string; action: HistoryRewriteAction }),
   'resolveHistoryRebase': (ctx, payload) => handleResolveHistoryRebase(ctx, payload as { repositoryPath: string; command: 'continue' | 'abort' }),
   'getPendingOperation': (ctx, payload) => handleGetPendingOperation(ctx, payload),
+  'stashAction': (ctx, payload) => handleStashAction(ctx, payload as { repositoryPath: string; stash: string; operation: StashOperation }),
   'getCommits': (ctx, payload) => handleGetCommits(ctx, payload as { submodule: string }),
   'getRecordedCommit': (ctx, payload) => handleGetRecordedCommit(ctx, payload as { submodule: string }),
   'updateToRecorded': (ctx, payload) => handleUpdateToRecorded(ctx, payload as { submodule: string }),

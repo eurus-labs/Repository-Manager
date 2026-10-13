@@ -5,7 +5,11 @@ All notable changes to Repository Manager will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [2.4.1] - Unreleased
+## [2.5.0] - Unreleased
+
+### Added
+
+- A stash shown in the dashboard has **Apply**, **Pop** and **Drop…** in its header. Apply and Pop bring its changes, untracked files included, back into the working tree and then show them as the uncommitted changes; Pop also removes the stash, unless they conflict. Drop asks first and says how to bring the stash back. Each acts on the stash you selected even if newer stashes have moved its `stash@{n}`.
 
 ### Changed
 

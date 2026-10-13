@@ -338,6 +338,9 @@
     // The header's actions: Commit… and Review changes for uncommitted changes, then Summarize.
     const workingActions = document.getElementById('workingTreeActions');
     if (workingActions) workingActions.hidden = !(changeSummarySelection && changeSummarySelection.local);
+    // Apply, Pop and Drop for a stash shown on its own (not as one side of a comparison).
+    const stashActions = document.getElementById('stashActions');
+    if (stashActions) stashActions.hidden = !(changeSummarySelection && changeSummarySelection.stash);
     if (!changeSummarySelection) return;
     const record = changeSummaries.get(changeSummaryKey(changeSummarySelection));
     document.getElementById('commitHeaderActions').hidden = false;
@@ -589,6 +592,11 @@
       postMessage('summarizeChanges', { repositoryPath: activeDashboardRepository,
         baseSha: changeSummarySelection.baseSha, targetSha: changeSummarySelection.targetSha,
         local: changeSummarySelection.local === true || undefined, requestId, modelId: selectedSummaryModelId });
+    },
+    stashAction: (el) => {
+      if (!changeSummarySelection || !changeSummarySelection.stash) return;
+      postMessage('stashAction', { repositoryPath: activeDashboardRepository,
+        stash: changeSummarySelection.targetSha, operation: el.dataset.operation });
     },
     cancelChangeSummary: () => {
       cancelPendingChangeSummary();
@@ -1872,6 +1880,9 @@
     if (!append) requestWorkingTreeSummary();
   }
 
+  // Set when a stash was applied or popped in this repository; the next status opens its changes.
+  let openWorkingTreeAfterStash = null;
+
   // One status request at a time per repository: a second ask while one runs asks once more afterwards.
   let workingSummaryInFlight = null;
   let workingSummaryAgain = false;
@@ -1934,6 +1945,11 @@
     workingTree = { repositoryPath: payload.repositoryPath, changes: Array.isArray(payload.changes) ? payload.changes : [] };
     updateUncommittedRow();
     const hasChanges = workingTree.changes.length > 0;
+    if (openWorkingTreeAfterStash === payload.repositoryPath) {
+      // A stash was just applied or popped: show where its changes went.
+      openWorkingTreeAfterStash = null;
+      if (hasChanges) { selectWorkingTree(); return; }
+    }
     if (selectedDashboardCommit === WORKING_TREE) {
       if (hasChanges) renderWorkingTreeDetail();
       else if (loadedHistoryCommits.length) loadParentCommitDetail(loadedHistoryCommits[0].hash);
@@ -2117,7 +2133,8 @@
     activeComparisonTarget = detail.hash;
     comparisonBaseHash = detail.comparisonBaseHash || null;
     resetChangeSummary();
-    changeSummarySelection = { baseSha: comparisonBaseHash, targetSha: detail.hash, files: detail.files || [] };
+    changeSummarySelection = { baseSha: comparisonBaseHash, targetSha: detail.hash, files: detail.files || [],
+      stash: Boolean(detail.stash) && detail.comparisonMode === 'parent' };
     applyReviewLock(); // Review commit has something to review
     restoreChangeSummary();
     const summary = document.getElementById('dashboardCommitSummary');
@@ -2592,6 +2609,19 @@
             saveState();
             requestDashboardHistory(0, false, { preserveViewport: true });
             postMessage('getRepositoryRefs', { repositoryPath: activeDashboardRepository });
+          }
+          break;
+        }
+
+        case 'stashActionCompleted': {
+          const done = message.payload;
+          if (!done || done.repositoryPath !== activeDashboardRepository) break;
+          if (done.changedWorkingTree) openWorkingTreeAfterStash = done.repositoryPath;
+          // A history filtered to stash@{n} (from the Stashes list) names a moving position: once a
+          // stash is removed it is gone or names another stash, so the reload that follows shows all.
+          if (done.removedStash && /^stash(@\{\d+\})?$/.test(getDashboardFilters(activeDashboardRepository).branch || '')) {
+            setHistoryRevision('');
+            saveState();
           }
           break;
         }
