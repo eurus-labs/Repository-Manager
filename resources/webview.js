@@ -1781,6 +1781,8 @@
     history.classList.remove('history-stale');
     history.inert = false;
     if (payload.offset > 0) historyAppendPending = false;
+    const appendError = history.querySelector('.history-append-error');
+    if (appendError) appendError.remove(); // the page that failed has loaded since
     const renderedCount = loadedHistoryCommits.length;
     let addedCommits = [];
     if (payload.offset > 0) {
@@ -2155,9 +2157,18 @@
     if (!payload || payload.repositoryPath !== activeDashboardRepository) return;
     const history = document.getElementById('dashboardHistory');
     if (payload.request === 'getHistory' && history) {
+      const appending = historyAppendPending;
       historyAppendPending = false;
       history.classList.remove('history-stale');
       history.inert = false;
+      // A next page that failed keeps the rows already shown, with a way to ask for it again
+      // (scrolling near the end asks again too).
+      if (appending && history.querySelector('.history-row')) {
+        const previous = history.querySelector('.history-append-error');
+        if (previous) previous.remove();
+        history.insertAdjacentHTML('beforeend', `<div class="dashboard-error history-append-error" role="alert">${escapeHtml(payload.message)} <button type="button" class="link-button" data-action="loadMoreHistory">Retry</button></div>`);
+        return;
+      }
       { uncommittedRowRendered = false; history.innerHTML = `<div class="dashboard-error">${escapeHtml(payload.message)}</div>`; }
       return;
     }
@@ -3072,7 +3083,8 @@
     applyHistoryColumnWidths(historyColumnWidths);
 
     history.scrollLeft = 0;
-    new ResizeObserver(() => applyHistoryColumnWidths(historyColumnWidths))
+    // A taller list (window or splitter) can bring its end into view without a scroll event.
+    new ResizeObserver(() => { applyHistoryColumnWidths(historyColumnWidths); loadHistoryNearEnd(); })
       .observe(history);
 
     header.querySelectorAll('.history-column-resizer').forEach(handle => {

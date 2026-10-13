@@ -2964,3 +2964,7 @@ body.sidebar-view { overflow: hidden; background: var(--vscode-sideBar-backgroun
 
 /* Why Compare did not run, in the dialog's footer (webviews have no alert()). */
 .compare-hint { margin-right: auto; color: var(--vscode-errorForeground); font-size: 12px; align-self: center; }
+
+/* A next history page that failed: the rows stay, with Retry at the end. */
+.history-append-error { padding: 8px 12px; }
+.history-append-error .link-button { padding: 0; border: 0; color: var(--vscode-textLink-foreground, var(--accent)); background: none; font: inherit; text-decoration: underline; cursor: pointer; }

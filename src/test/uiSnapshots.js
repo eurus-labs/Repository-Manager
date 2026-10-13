@@ -1541,6 +1541,46 @@ async function main() {
       'a page that fits did not ask for exactly one next page (or the Load more button is back)');
     await shortPaging.close();
 
+    // A list that grows (window or splitter) can bring its end into view without scrolling: that
+    // asks for the next page too. A next page that fails keeps the rows, with Retry at the end.
+    const growPaging = await openPage(1440, 900);
+    const grown = await growPaging.evaluate(async () => {
+      const sent = [];
+      const toHost = window.__postToHost;
+      // Next pages are held back, so one is still on its way when its error arrives.
+      window.__postToHost = message => { sent.push(message); return message.type === 'getHistory' && message.payload.append ? Promise.resolve() : toHost(message); };
+      document.getElementById('dashboardIncludeRemotes').click();
+      for (let i = 0; i < 100 && !sent.some(message => message.type === 'getHistory'); i++) await new Promise(r => setTimeout(r, 20));
+      await new Promise(r => setTimeout(r, 500));
+      const request = sent.filter(message => message.type === 'getHistory').at(-1).payload;
+      const hex = n => n.toString(16).padStart(40, '0');
+      const commits = Array.from({ length: 100 }, (_, n) => ({ hash: hex(n + 1), shortHash: hex(n + 1).slice(-7), parentHashes: [hex(n + 2)],
+        authorName: 'A', authorEmail: 'a@x', authoredAt: '2025-01-15T10:00:00Z', subject: `commit ${n}`, refs: [] }));
+      window.dispatchEvent(new MessageEvent('message', { data: { type: 'historyLoaded', payload: { repositoryPath: request.repositoryPath,
+        requestId: request.requestId, offset: 0, commits, nextOffset: 100, upstream: null } } }));
+      await new Promise(r => setTimeout(r, 200));
+      const list = document.getElementById('dashboardHistory');
+      const appends = () => sent.filter(message => message.type === 'getHistory' && message.payload.append).map(message => message.payload.offset);
+      const before = appends();
+      list.style.height = `${list.scrollHeight + 1000}px`; // taller than its content: nothing left to scroll
+      await new Promise(r => setTimeout(r, 300));
+      const afterGrow = appends();
+      // The next page fails: the rows stay, and Retry asks for the same page again.
+      window.dispatchEvent(new MessageEvent('message', { data: { type: 'dashboardError', payload: { request: 'getHistory',
+        repositoryPath: request.repositoryPath, message: 'Git command timed out after 15000ms' } } }));
+      await new Promise(r => setTimeout(r, 50));
+      const kept = document.querySelectorAll('.history-row').length;
+      const error = document.querySelector('.history-append-error');
+      const errorText = error ? error.textContent : '';
+      error.querySelector('button').click();
+      await new Promise(r => setTimeout(r, 50));
+      return { before, afterGrow, kept, errorText, afterRetry: appends() };
+    });
+    assert.deepEqual(grown, { before: [], afterGrow: [100], kept: 100,
+      errorText: 'Git command timed out after 15000ms Retry', afterRetry: [100, 100] },
+      'a growing list did not load the next page, or a failed page lost the rows or its retry');
+    await growPaging.close();
+
     // Many lanes in a narrow window: the graph column clips the drawing instead of squeezing it, so
     // commit nodes stay round, and lane changes turn as even S-curves.
     const lanes = await openPage(420, 1400);
