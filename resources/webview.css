@@ -788,9 +788,9 @@ select {
   overflow: hidden;
 }
 
-.commit-summary {
+.commit-header {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
   align-items: center;
   gap: 9px;
   min-height: 55px;
@@ -798,6 +798,17 @@ select {
   border-bottom: 1px solid var(--border);
   background: var(--bg-secondary);
 }
+/* The header's content is redrawn for each selection; its children share the header's grid with the
+   actions beside it, which are never redrawn (a running summary keeps its disabled button). */
+.commit-summary { display: contents; }
+.commit-summary > .detail-placeholder,
+.commit-summary > .dashboard-loading,
+.commit-summary > .dashboard-error { grid-column: 1 / 4; }
+.commit-header-actions { grid-column: 4; grid-row: 1; display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 6px; }
+.commit-header-actions[hidden], .commit-header-actions [hidden] { display: none; }
+.commit-header-actions .btn { height: 26px; padding: 0 10px; font-size: 12px; }
+/* Commit… and Review changes act on the working tree; a rule sets them apart from Summarize. */
+.commit-header-actions .working-tree-actions { padding-right: 6px; border-right: 1px solid var(--border); }
 
 .commit-avatar {
   display: grid;
@@ -827,8 +838,17 @@ select {
 
 .commit-summary-copy span,
 .commit-summary-copy p { color: var(--text-secondary); font-size: 10px; }
-.commit-summary > code { color: var(--text-muted); font-size: 10px; }
-.commit-summary-refs { grid-column: 2 / 4; }
+.commit-summary > code { justify-self: end; color: var(--text-muted); font-size: 10px; }
+.commit-summary-refs { grid-column: 2 / -1; }
+/* Narrow: the actions move down to the refs row, so the title keeps its width. */
+@media (max-width: 900px) {
+  .commit-header { grid-template-columns: auto minmax(0, 1fr) auto; }
+  .commit-summary > .detail-placeholder,
+  .commit-summary > .dashboard-loading,
+  .commit-summary > .dashboard-error { grid-column: 1 / -1; }
+  .commit-header-actions { grid-column: 3; grid-row: 2; }
+  .commit-summary-refs { grid-column: 2; grid-row: 2; }
+}
 
 .commit-content {
   display: grid;
@@ -1794,7 +1814,7 @@ body.vscode-high-contrast .graph-node-control[data-marker="T"] .graph-node-hit {
   content: '';
 }
 
-.commit-summary {
+.commit-header {
   min-height: 56px;
   padding: 10px 20px;
   border-bottom-color: var(--border);
@@ -2441,7 +2461,7 @@ body.vscode-high-contrast .graph-node-control[data-marker="T"] .graph-node-hit {
   overflow-wrap: anywhere;
 }
 .change-summary[hidden], .change-summary button[hidden] { display: none; }
-.change-summary-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.change-summary-status:empty { display: none; }
 /* Reviews of the same selection, set apart from the summary and its Cancel. */
 #reviewLocalChangesButton { position: relative; margin-left: 11px; }
 #reviewLocalChangesButton::before { content: ""; position: absolute; top: 4px; bottom: 4px; left: -11px; border-left: 1px solid var(--border); }
@@ -2579,7 +2599,7 @@ body.vscode-high-contrast .graph-node-control[data-marker="T"] .graph-node-hit {
 
 /* Detail pane: explicit rows so hidden siblings never shift the main content into an auto row. */
 .commit-detail-region { grid-template-rows: auto auto minmax(0, 1fr); }
-.commit-detail-region > .commit-summary { grid-row: 1; }
+.commit-detail-region > .commit-header { grid-row: 1; }
 .commit-detail-region > .change-summary { grid-row: 2; }
 .commit-detail-region > .commit-content { grid-row: 3; }
 .commit-content[hidden] { display: none; }

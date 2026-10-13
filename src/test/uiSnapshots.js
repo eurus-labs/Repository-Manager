@@ -443,8 +443,10 @@ async function main() {
     // and the summary bar; the toolbar's model applies, and Review commit has no commit to review.
     assert.match(await page.textContent('#dashboardCommitSummary .commit-summary-copy span'), /^1 modified · on feature\/dashboard · HEAD [0-9a-f]{7,8} → working tree$/);
     assert.equal(await page.textContent('#dashboardCommitSummary > code'), '*');
-    assert.equal(await page.isVisible('#changeSummary'), true, 'the summary bar is hidden for uncommitted changes');
-    assert.deepEqual(await page.locator('.change-summary-toolbar button:visible').allTextContents(), ['Commit…', 'Review changes', 'Summarize changes']);
+    // The actions sit in the header, top-right after the hash; the bar below stays hidden until a summary has a status.
+    assert.equal(await page.isVisible('#commitHeaderActions'), true, 'the header actions are hidden for uncommitted changes');
+    assert.deepEqual(await page.locator('#commitHeaderActions button:visible').allTextContents(), ['Commit…', 'Review changes', 'Summarize changes']);
+    assert.equal(await page.isVisible('#changeSummary'), false, 'an empty summary bar takes a row');
     assert.equal(await page.getAttribute('#reviewSelectionChangesButton', 'aria-disabled'), 'true');
     const summariesBeforeLocal = reviewProbe.summaries.length;
     assert.equal(await page.textContent('#summaryModelName'), 'Default');
@@ -562,6 +564,17 @@ async function main() {
     assert.doesNotMatch(diffText, /diff --git|^index /m);
     const firstAddition = page.locator('#dashboardDiff .diff-addition').first();
     assert.equal(await firstAddition.locator('.diff-ln').nth(1).textContent(), '3');
+    // Summarize sits top-right in the header, after the hash and on the title's row; no bar takes a row below.
+    const headerLayout = await page.evaluate(() => {
+      const header = document.querySelector('.commit-header').getBoundingClientRect();
+      const hash = document.querySelector('#dashboardCommitSummary > code').getBoundingClientRect();
+      const title = document.querySelector('.commit-summary-copy strong').getBoundingClientRect();
+      const button = document.getElementById('summarizeChangesButton').getBoundingClientRect();
+      return { afterHash: button.left > hash.right, inHeader: button.right <= header.right && button.top >= header.top && button.bottom <= header.bottom,
+        titleRow: Math.abs((button.top + button.bottom) / 2 - (title.top + title.bottom) / 2) <= 8,
+        bar: document.getElementById('changeSummary').hidden };
+    });
+    assert.deepEqual(headerLayout, { afterHash: true, inHeader: true, titleRow: true, bar: true });
     await snap(page, '02-commit-diff');
 
     // History context menu.
@@ -719,7 +732,7 @@ async function main() {
     // The toolbar has no Release group: the Copilot model sits next to the reviews it runs.
     assert.equal(await page.locator('[data-action="loadReleaseRange"]').count(), 0, 'Load range is still there');
     assert.equal(await page.locator('.history-controls .toolbar-model #summaryModelButton').isVisible(), true, 'the model button is not in the toolbar');
-    assert.equal(await page.locator('.change-summary-toolbar select').count(), 0, 'the summary bar still has a model select');
+    assert.equal(await page.locator('#commitHeaderActions select, #changeSummary select').count(), 0, 'the summary actions still have a model select');
     assert.deepEqual(await page.locator('.review-current-group button').allTextContents(), ['Review changes', 'Review commit', 'Review branch', '▾', 'Review ↗']);
     // ⚙ next to Model: when to ask before code goes to Copilot (never, by default) and all settings.
     await page.click('#copilotSettingsButton');
@@ -769,7 +782,7 @@ async function main() {
     assert.equal(reviewProbe.summaries.length, 0, 'loading the comparison started a summary');
     // The comparison status only names the range; its actions sit in one toolbar below.
     assert.equal(await page.locator('#commitCompareStatus button').count(), 1, 'the comparison status has more than its clear button');
-    assert.deepEqual(await page.locator('.change-summary-toolbar button:visible').allTextContents(),
+    assert.deepEqual(await page.locator('#commitHeaderActions button:visible').allTextContents(),
       ['Summarize changes']);
     await page.click('#summarizeChangesButton');
     for (let i = 0; i < 100 && !reviewProbe.summaries.length; i++) await page.waitForTimeout(20);
@@ -1083,7 +1096,7 @@ async function main() {
     assert.equal(await rv.textContent('#reviewMeta'), `Diff: ${baseHash.slice(0, 8)} → ${targetHash.slice(0, 8)}`);
     // All files: every file at the tip of the current branch, never at the selected commit. It is
     // only in the ▾ menu, which nothing remembers, and Escape closes the menu without a review.
-    assert.equal(await page.locator('.change-summary-toolbar [data-action="reviewSelection"], .change-summary-toolbar [data-scope]').count(), 0, 'a review button stayed in the changes toolbar');
+    assert.equal(await page.locator('#commitHeaderActions [data-action="reviewSelection"], #commitHeaderActions [data-scope]').count(), 0, 'a review button stayed in the header actions');
     assert.equal(await page.locator('.review-current-group [data-scope="branch"]').count(), 0, 'All files is a button again');
     await page.click('#reviewBranchMenuButton');
     assert.equal(await page.getAttribute('#reviewBranchMenuButton', 'aria-expanded'), 'true');
@@ -1791,6 +1804,19 @@ async function main() {
       assert.ok(layout.modelRight <= layout.controlsRight, `${width}px: the model select is cut off`);
       assert.ok(layout.settingsRight <= layout.controlsRight, `${width}px: the Copilot settings button is cut off`);
       assert.equal(layout.releaseText.toLowerCase(), 'changes commit branch ▾ clean code review ↗');
+      // The header actions stay inside the header and off the title, which keeps its width.
+      await narrow.locator('#commitHeaderActions:not([hidden])').waitFor();
+      const headerFit = await narrow.evaluate(() => {
+        const header = document.querySelector('.commit-header').getBoundingClientRect();
+        const actions = document.getElementById('commitHeaderActions').getBoundingClientRect();
+        const copy = document.querySelector('.commit-summary-copy').getBoundingClientRect();
+        const overlaps = !(actions.right <= copy.left || actions.left >= copy.right || actions.bottom <= copy.top || actions.top >= copy.bottom);
+        // The hash keeps to the right edge, above the actions, rather than floating in their column.
+        const hash = document.querySelector('#dashboardCommitSummary > code').getBoundingClientRect();
+        return { inside: actions.left >= header.left && actions.right <= header.right + 0.5 && actions.bottom <= header.bottom + 0.5, overlaps,
+          hashRight: Math.abs(hash.right - actions.right) <= 1 };
+      });
+      assert.deepEqual(headerFit, { inside: true, overlaps: false, hashRight: true }, `${width}px: the header actions spill out, cover the title, or leave the hash adrift`);
       // With a Base/Target selection, the comparison status stays on screen next to the release group.
       if (width > 760) {
         await narrow.locator('.graph-node-control').nth(1).click();
