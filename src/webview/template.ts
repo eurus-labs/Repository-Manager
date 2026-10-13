@@ -345,11 +345,14 @@ function renderDashboard(repositories: RepositoryInfo[], workspaceFolders: Works
           </section>
           <div class="dashboard-splitter dashboard-splitter-horizontal" id="historyDiffSplitter" role="separator" aria-label="Resize history and diff panels" aria-orientation="horizontal" tabindex="0"></div>
           <section class="commit-detail-region">
-            <div class="commit-summary" id="dashboardCommitSummary">
-              <div class="detail-placeholder">Select a commit to inspect its changed files and diff.</div>
+            <div class="commit-header">
+              <div class="commit-summary" id="dashboardCommitSummary">
+                <div class="detail-placeholder">Select a commit to inspect its changed files and diff.</div>
+              </div>
+              <div class="commit-header-actions" id="commitHeaderActions" role="group" aria-label="Actions on these changes" hidden><span class="working-tree-actions" id="workingTreeActions" hidden><button type="button" class="btn" data-action="openCommitChangesModal">Commit…</button><button type="button" class="btn" data-action="reviewLocal">Review changes</button></span><button type="button" class="btn" data-action="summarizeChanges" id="summarizeChangesButton" title="Summarize these changes with Copilot">Summarize changes</button><button type="button" class="btn" data-action="cancelChangeSummary" id="cancelChangeSummaryButton" hidden>Cancel</button></div>
             </div>
             <div class="change-summary" id="changeSummary" hidden>
-              <div class="change-summary-toolbar"><span class="working-tree-actions" id="workingTreeActions" hidden><button type="button" class="btn" data-action="openCommitChangesModal">Commit…</button><button type="button" class="btn" data-action="reviewLocal">Review changes</button></span><button type="button" class="btn" data-action="summarizeChanges" id="summarizeChangesButton" title="Summarize these changes with Copilot">Summarize changes</button><button type="button" class="btn" data-action="cancelChangeSummary" id="cancelChangeSummaryButton" hidden>Cancel</button><span id="changeSummaryStatus" role="status"></span></div>
+              <div class="change-summary-status" id="changeSummaryStatus" role="status"></div>
               <div class="change-summary-result" id="changeSummaryResult"></div>
             </div>
             <div class="commit-content" id="commitContent">

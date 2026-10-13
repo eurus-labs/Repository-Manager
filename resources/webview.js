@@ -316,20 +316,31 @@
     const status = document.getElementById('changeSummaryStatus');
     const cancel = document.getElementById('cancelChangeSummaryButton');
     const start = document.getElementById('summarizeChangesButton');
+    const actions = document.getElementById('commitHeaderActions');
     if (area) area.hidden = true;
+    if (actions) actions.hidden = true;
     if (result) result.innerHTML = '';
     if (status) status.textContent = '';
     if (cancel) cancel.hidden = true;
     if (start) start.disabled = false;
   }
 
+  // The bar under the commit header holds only the summary's status and result, so it shows only
+  // while one of them has something to say; its buttons sit in the header.
+  function syncChangeSummaryArea() {
+    const area = document.getElementById('changeSummary');
+    const status = document.getElementById('changeSummaryStatus');
+    const result = document.getElementById('changeSummaryResult');
+    if (area) area.hidden = !(status && status.textContent.trim()) && !(result && result.innerHTML.trim());
+  }
+
   function restoreChangeSummary() {
-    // Commit… and Review changes sit in the summary bar for uncommitted changes, before Summarize.
+    // The header's actions: Commit… and Review changes for uncommitted changes, then Summarize.
     const workingActions = document.getElementById('workingTreeActions');
     if (workingActions) workingActions.hidden = !(changeSummarySelection && changeSummarySelection.local);
     if (!changeSummarySelection) return;
     const record = changeSummaries.get(changeSummaryKey(changeSummarySelection));
-    document.getElementById('changeSummary').hidden = false;
+    document.getElementById('commitHeaderActions').hidden = false;
     document.getElementById('changeSummaryResult').innerHTML = '';
     document.getElementById('changeSummaryStatus').textContent = record ? record.status : '';
     document.getElementById('summarizeChangesButton').disabled = Boolean(record && record.pending);
@@ -338,6 +349,7 @@
       renderChangeSummary({ requestId: record.requestId, repositoryPath: record.repositoryPath,
         summary: record.summary, model: record.model });
     }
+    syncChangeSummaryArea();
   }
 
   function isCurrentChangeSummary(payload) {
@@ -379,6 +391,7 @@
       section('Possible breaking changes', data.possibleBreakingChanges) + section('Risk hints', data.riskHints) +
       section('Suggested tests', data.suggestedTests) +
       `<section><h4>Coverage limitations</h4><ul>${limitations.map(item => `<li>${escapeHtml(item)}</li>`).join('') || '<li>None reported.</li>'}</ul></section>`;
+    syncChangeSummaryArea();
   }
 
   // Save state helper
@@ -2350,6 +2363,7 @@
           summaryModelsState = 'idle';
           renderSummaryModelMenu();
           document.getElementById('changeSummaryStatus').textContent = message.payload?.message || 'Unable to load models.';
+          syncChangeSummaryArea();
           break;
         }
         case 'changeSummaryProgress':
