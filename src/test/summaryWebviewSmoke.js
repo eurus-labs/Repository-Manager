@@ -204,4 +204,13 @@ assert.equal(repositoryCheckboxes[2].disabled, true);
 assert.equal(posts.at(-1).type, 'getBaseBranchesForCreate');
 listeners.body_contextmenu({ target: { closest() { return null; } } });
 assert.equal(node('historyContextMenu').hidden, true);
+// A stash reads as one in the header: its own message, which stash it is and the branch it was made on.
+listeners.body_click({ target: { dataset: { action: 'selectHistoryCommit', commit: B }, parentElement: document.body,
+  tagName: 'BUTTON', closest() { return null; } }, preventDefault() {} });
+listeners.window_message({ data: { type: 'commitDetailLoaded', payload: { repositoryPath: '.', targetRevision: B, detail: {
+  hash: B, shortHash: B.slice(0, 7), parentHashes: [P], comparisonBaseHash: P, comparisonMode: 'parent', subject: 'On main: wip: try',
+  authorName: 'Test', authoredAt: new Date().toISOString(), files: [{ path: 'untracked.txt', status: 'added' }], refs: [],
+  stash: { ref: 'stash@{0}', branch: 'main', message: 'wip: <try>' } } } } });
+assert.match(node('dashboardCommitSummary').innerHTML, /stash-avatar/);
+assert.match(node('dashboardCommitSummary').innerHTML, /<strong>wip: &lt;try&gt;<\/strong><span>Stash stash@\{0\} · on main · /);
 console.log('UI summary switch smoke passed');

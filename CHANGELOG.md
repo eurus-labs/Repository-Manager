@@ -12,6 +12,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The **Load more commits** button below the history is gone: older commits load as you scroll toward the end of the list, or move the keyboard focus down it. A page that fits in the view without scrolling loads the next one by itself.
 - The actions on the selected commit or changes sit in the top-right of the detail header, next to the hash: **Summarize changes** (and **Cancel** while it runs), and for uncommitted changes **Commit…** and **Review changes** too. The row below the header appears only for a summary's status and result, so the changed files and diff start higher. In a narrow window the actions move to the header's second row.
 
+### Fixed
+
+- A stash made with untracked files (`git stash -u`) shows them: its changed files, diffs, **Summarize changes** and reviews now include the new files Git keeps apart from the stash's own changes. Nothing in the working tree, the index or the stash is changed to do this.
+- Selecting a stash shows it as one entry: the header names it ("Stash stash@{0} · on main") with its own message, and the history leaves out the "index on…" and "untracked files on…" commits Git keeps inside every stash.
+
 ## [2.4.0] - 2026-10-13
 
 ### Added

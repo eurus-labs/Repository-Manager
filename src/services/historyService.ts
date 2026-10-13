@@ -8,6 +8,7 @@ import { GitCommandService } from './gitCommandService';
 const activeSearches = new Map<string, AbortController>();
 import { GitRefLabel, GitRefKind, HistoryCommit, HistoryPage, HistoryQuery } from '../types';
 import { SNAPSHOT_REF_PREFIX } from './localChangesSnapshot';
+import { hideStashInternals, listStashes } from './stashTarget';
 
 const FIELD_SEPARATOR = '\x1f';
 const RECORD_SEPARATOR = '\x1e';
@@ -100,8 +101,10 @@ export class HistoryService {
       args.push(`--skip=${offset}`);
     }
 
+    let tip: string | undefined;
     if (query.branch) {
-      args.push(await this.gitCmd.resolveRevision(query.repositoryPath, query.branch));
+      tip = await this.gitCmd.resolveRevision(query.repositoryPath, query.branch);
+      args.push(tip);
     } else if (query.includeRemotes) {
       // Every ref but the snapshots kept for saved reviews of local changes, which are not history.
       args.push(`--exclude=${SNAPSHOT_REF_PREFIX}*`, '--all');
@@ -145,7 +148,8 @@ export class HistoryService {
     return {
       repositoryPath: query.repositoryPath,
       offset,
-      commits: commits.slice(0, limit),
+      // Git's index and untracked-files commits inside a stash are not history.
+      commits: hideStashInternals(commits.slice(0, limit), await listStashes(this.gitCmd, repositoryRoot), tip),
       nextOffset: hasMore ? offset + limit : null,
       upstream
     };

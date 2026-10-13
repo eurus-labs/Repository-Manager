@@ -8,6 +8,7 @@ const { HistoryService } = require('../../out/services/historyService.js');
 const { keepSnapshots, snapshotLocalChanges, SNAPSHOT_REF_PREFIX } = require('../../out/services/localChangesSnapshot.js');
 const { ReviewController } = require('../../out/reviewController.js');
 const { ReviewHistoryStore, MAX_PER_REPOSITORY } = require('../../out/reviewHistory.js');
+const { stashDiffTarget } = require('../../out/services/stashTarget.js');
 
 // A review of local changes reads a snapshot commit nothing points to, which `git gc` removes in
 // time. While the review is saved, a ref keeps it, so its evidence and explanations still open.
@@ -63,10 +64,13 @@ async function main() {
     const state = new Map();
     const history = new ReviewHistoryStore({ get: key => state.get(key), update: async (key, value) => { state.set(key, JSON.parse(JSON.stringify(value))); } });
     const posts = [];
+    // Like the real runner (ReviewSurveyService), a review reports the commit it read: for a stash with
+    // untracked files, the commit stashDiffTarget builds rather than the stash.
+    let reviewedAs = sha => sha;
     const controller = new ReviewController({
       workspaceRoot: () => repo, post: async message => { posts.push(message); }, ask: async () => undefined,
       alwaysConfirm: () => false, isConsentRemembered: () => true, rememberConsent: async () => {},
-      createRunner: () => ({ review: async request => ({ request, findings: [], policyResults: [], policyStatus: 'not_configured', limitations: [],
+      createRunner: () => ({ review: async request => ({ request: { ...request, targetSha: await reviewedAs(request.targetSha) }, findings: [], policyResults: [], policyStatus: 'not_configured', limitations: [],
         coverage: { surveyed: 1, analyzed: 1, skipped: [], failed: [], complete: true } }) }),
       createCancellation: () => ({ token: { isCancellationRequested: false }, cancel() {}, dispose() {} }),
       copyText: async () => {}, saveText: async () => true, openText: async () => {}, notify: () => {},
@@ -101,6 +105,26 @@ async function main() {
     for (let i = 0; i < MAX_PER_REPOSITORY; i++) await start({ scope: 'branch', targetRevision: 'main' });
     assert.equal(history.list(repo).some(entry => entry.context.kind === 'local'), false);
     assert.deepEqual(kept(), [], 'a snapshot outlived its review');
+
+    // 4. A saved review of a stash with untracked files reads the commit stashDiffTarget builds: it is
+    //    kept like a local snapshot, kept again when the review is opened, and let go with the review.
+    fs.writeFileSync(path.join(repo, 'note.txt'), 'untracked\n');
+    git('stash', 'push', '-u', '-q', '-m', 'wip');
+    const stashSha = git('rev-parse', 'stash@{0}');
+    reviewedAs = sha => stashDiffTarget(service, repo, sha);
+    const stashSnapshot = await stashDiffTarget(service, repo, stashSha);
+    assert.notEqual(stashSnapshot, stashSha);
+    await start({ scope: 'branch', targetRevision: 'stash@{0}' });
+    const stashReview = completed();
+    assert.equal(stashReview.result.request.targetSha, stashSnapshot);
+    assert.deepEqual(kept(), [`${SNAPSHOT_REF_PREFIX}${stashSnapshot}`], 'the commit a saved stash review read is not kept');
+    collectGarbage();
+    assert.ok(exists(stashSnapshot), 'gc removed the commit a saved stash review read');
+    git('update-ref', '-d', `${SNAPSHOT_REF_PREFIX}${stashSnapshot}`);
+    await controller.handle({ type: 'openStoredReview', payload: { requestId: ++requestId, id: stashReview.historyId } });
+    assert.deepEqual(kept(), [`${SNAPSHOT_REF_PREFIX}${stashSnapshot}`], 'opening a saved stash review did not keep its commit again');
+    await controller.handle({ type: 'deleteStoredReview', payload: { id: stashReview.historyId, repositoryPath: '.' } });
+    assert.deepEqual(kept(), []);
     console.log('Review snapshot keep smoke passed');
   } finally {
     fs.rmSync(repo, { recursive: true, force: true });

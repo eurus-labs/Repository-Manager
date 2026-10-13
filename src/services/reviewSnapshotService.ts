@@ -1,3 +1,4 @@
+import { stashDiffTarget } from './stashTarget';
 import { GitCommandService } from './gitCommandService';
 
 const MAX_TREE_ENTRIES = 50000;
@@ -143,7 +144,8 @@ export class ReviewSnapshotService {
 
   async open(repositoryPath: string, revision: string): Promise<ReviewSnapshot> {
     const root = this.git.resolveRepositoryPath(repositoryPath);
-    const targetSha = await this.git.resolveRevision(repositoryPath, revision);
+    // A stash is reviewed with its untracked files: the snapshot reads the commit holding them.
+    const targetSha = await stashDiffTarget(this.git, root, await this.git.resolveRevision(repositoryPath, revision));
     const output = await this.git.execGitRaw(['ls-tree', '-rz', '--full-tree', targetSha], root, 30000);
     const records = output.split('\0').filter(Boolean);
     const entries = records.slice(0, MAX_TREE_ENTRIES).map(record => {
