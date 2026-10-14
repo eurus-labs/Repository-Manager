@@ -469,6 +469,10 @@ async function main() {
     await page.waitForFunction(() => /update app in two places/.test(document.getElementById('dashboardCommitSummary').textContent));
     assert.equal(await page.isHidden('#workingDiffModes'), true);
     assert.equal(await page.locator('#uncommittedRow.active').count(), 0);
+    // A commit's files have nothing to discard: no Discard menu on them.
+    await page.locator('#dashboardChangedFiles .changed-file-item').first().click({ button: 'right' });
+    await page.waitForTimeout(100);
+    assert.equal(await page.isHidden('#changesContextMenu'), true, 'a commit\'s file offered Discard');
     // Live: a new file and a staged edit show up when the repository list refreshes (a file event's refresh).
     fs.writeFileSync(path.join(parent, 'live-new.txt'), 'new\n');
     fs.appendFileSync(path.join(parent, 'src/app.txt'), 'staged edit\n');
@@ -487,10 +491,36 @@ async function main() {
     await page.click('#dashboardChangedFiles .changed-file-item[data-path="live-new.txt"]');
     await page.waitForFunction(() => /\+new/.test(document.getElementById('dashboardDiff').textContent));
     await snap(page, '01c-uncommitted-changes');
+    // Right-click a changed file: Discard Changes (that file) and Discard All Changes.
+    const discardMenu = page.locator('#changesContextMenu');
+    const discardItems = () => discardMenu.locator('button:visible').allTextContents();
+    await page.click('#dashboardChangedFiles .changed-file-item[data-path="live-new.txt"]', { button: 'right' });
+    await discardMenu.waitFor();
+    assert.deepEqual(await discardItems(), ['Discard Changes…', 'Discard All Changes…']);
+    await snap(page, '01d-discard-menu');
+    // Discard Changes runs the real handler once it is confirmed: the new file is deleted, the rest stays.
+    const askedBefore = fakeVscode.window.showWarningMessage;
+    const discardQuestions = [];
+    fakeVscode.window.showWarningMessage = async (message, options, ...items) => {
+      discardQuestions.push(message);
+      return options && options.modal ? items[0] : undefined;
+    };
+    await discardMenu.locator('[data-action="contextDiscardFile"]').click();
+    await page.waitForFunction(() => /^Uncommitted changes\s*1 staged · 1 modified\s*Now/.test(document.getElementById('uncommittedRow').textContent.trim()));
+    fakeVscode.window.showWarningMessage = askedBefore;
+    assert.deepEqual(discardQuestions, ['Discard changes to live-new.txt?']);
+    assert.equal(fs.existsSync(path.join(parent, 'live-new.txt')), false);
+    assert.match(fs.readFileSync(path.join(parent, 'src/app.txt'), 'utf8'), /staged edit/, 'Discard Changes touched another file');
+    assert.equal(await discardMenu.isHidden(), true);
+    // Right-click the Uncommitted changes row: Discard All Changes only. Escape closes it.
+    await page.click('#uncommittedRow', { button: 'right' });
+    await discardMenu.waitFor();
+    assert.deepEqual(await discardItems(), ['Discard All Changes…']);
+    await page.keyboard.press('Escape');
+    await discardMenu.waitFor({ state: 'hidden' });
     // Clean again: the row goes, and the newest commit is shown.
     git(parent, 'reset', '-q', '--', 'src/app.txt');
     git(parent, 'checkout', '--', 'src/app.txt');
-    fs.rmSync(path.join(parent, 'live-new.txt'));
     await page.evaluate(() => window.dispatchEvent(new MessageEvent('message', { data: { type: 'updateSubmodules', payload: { submodules: window.__initialRepositories } } })));
     await page.waitForFunction(() => /^Uncommitted changes\s*1 modified/.test(document.getElementById('uncommittedRow').textContent.trim()));
     // A commit made outside the dashboard (a terminal): HEAD moves, so the history reloads with it.

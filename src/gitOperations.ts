@@ -19,6 +19,7 @@ import {
 } from './services';
 import { HistoryAction, HistoryActionService } from './services/historyActionService';
 import { StashActionService, StashOperation } from './services/stashActionService';
+import { DiscardPlan, DiscardService } from './services/discardService';
 import { StashEntry } from './services/stashTarget';
 import { HistoryRewriteAction, HistoryRewritePreview, HistoryRewriteService, ResetMode } from './services/historyRewriteService';
 
@@ -49,6 +50,7 @@ export class GitOperations {
   private referenceService: ReferenceService;
   private historyActionService: HistoryActionService;
   private stashActionService: StashActionService;
+  private discardService: DiscardService;
   private historyRewriteService: HistoryRewriteService;
 
   constructor(workspaceRoot: string) {
@@ -61,6 +63,7 @@ export class GitOperations {
     this.referenceService = new ReferenceService(this.gitCmd, this.branchService, this.commitService);
     this.historyActionService = new HistoryActionService(this.gitCmd);
     this.stashActionService = new StashActionService(this.gitCmd);
+    this.discardService = new DiscardService(this.gitCmd);
     this.historyRewriteService = new HistoryRewriteService(this.gitCmd);
   }
 
@@ -358,6 +361,15 @@ export class GitOperations {
 
   async runStashAction(repositoryPath: string, hash: string, operation: StashOperation): Promise<CommandResult> {
     return this.stashActionService.run(repositoryPath, hash, operation);
+  }
+
+  /** What discarding these uncommitted changes (all of them when `paths` is undefined) would do. */
+  async planDiscard(repositoryPath: string, paths?: string[]): Promise<DiscardPlan> {
+    return this.discardService.plan(repositoryPath, paths);
+  }
+
+  async discardChanges(repositoryPath: string, paths?: string[]): Promise<CommandResult> {
+    return this.discardService.discard(repositoryPath, paths);
   }
 
   /** The Git operation paused in the repository (rebase, merge, cherry-pick, ...), if any. */

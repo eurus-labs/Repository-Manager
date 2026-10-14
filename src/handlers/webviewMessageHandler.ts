@@ -942,6 +942,60 @@ export async function handleStashAction(ctx: MessageHandlerContext, payload: {
 }
 
 /**
+ * Discard Changes, from the uncommitted changes' context menus: one file (`paths`) or every change
+ * (`all`). Always asked first, from the host, naming what goes and that new files are deleted; the
+ * service keeps a copy before it changes anything, and its message says how to bring files back.
+ */
+export async function handleDiscardChanges(ctx: MessageHandlerContext, payload: {
+  repositoryPath: string; paths?: string[]; all?: boolean
+}): Promise<void> {
+  if (!payload || typeof payload.repositoryPath !== 'string') { return; }
+  const paths = Array.isArray(payload.paths) ? payload.paths.filter((item): item is string => typeof item === 'string' && item.length > 0) : undefined;
+  if (payload.all !== true && !(paths && paths.length)) { return; }
+  const target = payload.all === true ? undefined : paths;
+  let plan;
+  try {
+    plan = await ctx.gitOps.planDiscard(payload.repositoryPath, target);
+  } catch (error) {
+    showResult(false, error instanceof Error ? error.message : String(error));
+    return;
+  }
+  const count = plan.restored.length + plan.deleted.length;
+  if (!count) {
+    const why = plan.skipped.map(item => `${item.path} is ${item.reason}`).join('; ');
+    showResult(false, `Nothing to discard${why ? `: ${why}` : ''}.`);
+    return;
+  }
+  const single = target && count === 1 ? plan.restored[0] || plan.deleted[0] : undefined;
+  const label = single ? 'Discard' : 'Discard all';
+  const question = single
+    ? `Discard changes to ${single}?`
+    : `Discard all ${count} changed file${count === 1 ? '' : 's'} in ${payload.repositoryPath}?`;
+  const files = (n: number) => `${n} file${n === 1 ? '' : 's'}`;
+  const newFiles = (n: number) => `${n} new file${n === 1 ? ' is' : 's are'}`;
+  const shownDeleted = plan.deleted.slice(0, 5).join(', ') + (plan.deleted.length > 5 ? ', …' : '');
+  const lines: string[] = [];
+  if (plan.restored.length) {
+    lines.push(single ? 'Staged and unstaged changes go back to HEAD.'
+      : `${files(plan.restored.length)} ${plan.restored.length === 1 ? 'goes' : 'go'} back to HEAD.`);
+  }
+  if (plan.deleted.length) {
+    lines.push(single ? 'This new file is deleted.' : `${newFiles(plan.deleted.length)} deleted: ${shownDeleted}.`);
+  }
+  if (plan.skipped.length) {
+    lines.push(`Left alone: ${plan.skipped.map(item => `${item.path} (${item.reason})`).join('; ')}.`);
+  }
+  lines.push('A copy is kept first, and the message after says how to bring the files back.');
+  const approved = await vscode.window.showWarningMessage(question, { modal: true, detail: lines.join('\n') }, label);
+  if (approved !== label) { return; }
+  // Exactly the files the question named: one that appeared while it was open is not deleted unseen.
+  const result = await ctx.gitOps.discardChanges(payload.repositoryPath, [...plan.restored, ...plan.deleted]);
+  showResult(result.success, result.message);
+  await ctx.reloadDashboardHistory([payload.repositoryPath]);
+  await ctx.refresh();
+}
+
+/**
  * Report which Git operation is paused in a repository, so the history menu only offers
  * Continue/Abort rebase while a rebase is actually in progress.
  */
@@ -1116,6 +1170,7 @@ export const messageHandlers: Record<string, (ctx: MessageHandlerContext, payloa
   'rewriteHistoryCommit': (ctx, payload) => handleRewriteHistoryCommit(ctx, payload as { repositoryPath: string; commit: string; action: HistoryRewriteAction }),
   'resolveHistoryRebase': (ctx, payload) => handleResolveHistoryRebase(ctx, payload as { repositoryPath: string; command: 'continue' | 'abort' }),
   'getPendingOperation': (ctx, payload) => handleGetPendingOperation(ctx, payload),
+  'discardChanges': (ctx, payload) => handleDiscardChanges(ctx, payload as { repositoryPath: string; paths?: string[]; all?: boolean }),
   'stashAction': (ctx, payload) => handleStashAction(ctx, payload as { repositoryPath: string; stash: string; operation: StashOperation }),
   'getCommits': (ctx, payload) => handleGetCommits(ctx, payload as { submodule: string }),
   'getRecordedCommit': (ctx, payload) => handleGetRecordedCommit(ctx, payload as { submodule: string }),

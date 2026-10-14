@@ -10,6 +10,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - The dashboard's editor tab and the **Repository Review** tab each have an icon, so they are easy to tell apart: the repository tree of the Activity Bar, and a shield. Both follow light and dark themes.
+- **Discard changes** for uncommitted changes. Right-click a changed file for **Discard Changes…** (that file) or **Discard All Changes…**; right-click the **Uncommitted changes** row for **Discard All Changes…**.
+  - Staged and unstaged changes go back to HEAD, and new files are deleted (never ignored ones). It always asks first, naming what is deleted.
+  - A copy of the files is kept before anything changes, and the message after gives the `git restore --source=<copy> --worktree -- <path>` command that brings them back. The newest 20 copies are kept, out of the history.
+  - Linked repositories and new nested Git repositories are left alone and named; nothing runs while a merge, rebase, cherry-pick or revert is paused.
 
 ### Changed
 
