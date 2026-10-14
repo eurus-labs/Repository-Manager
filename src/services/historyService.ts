@@ -8,6 +8,7 @@ import { GitCommandService } from './gitCommandService';
 const activeSearches = new Map<string, AbortController>();
 import { GitRefLabel, GitRefKind, HistoryCommit, HistoryPage, HistoryQuery } from '../types';
 import { SNAPSHOT_REF_PREFIX } from './localChangesSnapshot';
+import { DISCARD_REF_PREFIX } from './discardService';
 import { hideStashInternals, listStashes } from './stashTarget';
 
 const FIELD_SEPARATOR = '\x1f';
@@ -107,7 +108,8 @@ export class HistoryService {
       args.push(tip);
     } else if (query.includeRemotes) {
       // Every ref but the snapshots kept for saved reviews of local changes, which are not history.
-      args.push(`--exclude=${SNAPSHOT_REF_PREFIX}*`, '--all');
+      // Review snapshots and the copies Discard keeps are not history.
+      args.push(`--exclude=${SNAPSHOT_REF_PREFIX}*`, `--exclude=${DISCARD_REF_PREFIX}*`, '--all');
     } else {
       args.push('HEAD');
     }

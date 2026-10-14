@@ -484,6 +484,11 @@ export function getHtmlForWebview(repositories: RepositoryInfo[], resourceUris: 
     <button type="button" role="menuitem" data-action="contextReviewSnapshot" title="Review every file as committed at this commit; uncommitted changes are not included">Review branch at this commit</button>
   </div>
 
+  <div class="history-context-menu" id="changesContextMenu" role="menu" aria-label="Uncommitted changes actions" hidden>
+    <button type="button" role="menuitem" data-action="contextDiscardFile" title="Put this file back as it is at HEAD (staged and unstaged changes); a new file is deleted. A copy is kept first">Discard Changes…</button>
+    <button type="button" role="menuitem" data-action="contextDiscardAll" title="Put every changed file back as it is at HEAD and delete new files (not ignored ones). A copy is kept first">Discard All Changes…</button>
+  </div>
+
   <div class="history-context-menu summary-model-menu" id="summaryModelMenu" role="menu" aria-label="Copilot model" hidden></div>
 
   <div class="history-context-menu copilot-settings-menu" id="copilotSettingsMenu" role="menu" aria-label="Copilot settings" hidden>

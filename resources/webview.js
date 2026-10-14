@@ -87,6 +87,28 @@
 
   function hideHistoryContextMenu() {
     document.getElementById('historyContextMenu').hidden = true;
+    const changesMenu = document.getElementById('changesContextMenu');
+    if (changesMenu) changesMenu.hidden = true;
+  }
+
+  // Discard for the uncommitted changes: right-click a changed file (that file, or all), or the
+  // Uncommitted changes row (all). The host asks first, keeps a copy, then discards.
+  let changesContextTarget = null;
+  function showChangesContextMenu(element, x, y) {
+    const file = element.closest('.changed-file-item');
+    if (file && selectedDashboardCommit !== WORKING_TREE) return false;
+    if (!dashboardWorkingChanges().length) return false;
+    hideHistoryContextMenu();
+    changesContextTarget = { repositoryPath: activeDashboardRepository, path: file ? file.dataset.path : null };
+    const menu = document.getElementById('changesContextMenu');
+    menu.querySelector('[data-action="contextDiscardFile"]').hidden = !file;
+    menu.hidden = false;
+    const width = window.innerWidth || document.documentElement.clientWidth;
+    const height = window.innerHeight || document.documentElement.clientHeight;
+    menu.style.left = `${Math.max(0, Math.min(x, width - menu.offsetWidth - 8))}px`;
+    menu.style.top = `${Math.max(0, Math.min(y, height - menu.offsetHeight - 8))}px`;
+    menu.querySelector('button:not([hidden])').focus();
+    return true;
   }
 
   // Review branch's menu: the changed files (the button's own review) or every file. Nothing is
@@ -597,6 +619,18 @@
       if (!changeSummarySelection || !changeSummarySelection.stash) return;
       postMessage('stashAction', { repositoryPath: activeDashboardRepository,
         stash: changeSummarySelection.targetSha, operation: el.dataset.operation });
+    },
+    contextDiscardFile: () => {
+      const target = changesContextTarget;
+      hideHistoryContextMenu();
+      if (!target || !target.path) return;
+      postMessage('discardChanges', { repositoryPath: target.repositoryPath, paths: [target.path] });
+    },
+    contextDiscardAll: () => {
+      const target = changesContextTarget;
+      hideHistoryContextMenu();
+      if (!target) return;
+      postMessage('discardChanges', { repositoryPath: target.repositoryPath, all: true });
     },
     cancelChangeSummary: () => {
       cancelPendingChangeSummary();
@@ -2232,7 +2266,7 @@
 
   // Event delegation - handle all clicks
   document.body.addEventListener('click', function (e) {
-    if (!e.target.closest('#historyContextMenu')) hideHistoryContextMenu();
+    if (!e.target.closest('#historyContextMenu, #changesContextMenu')) hideHistoryContextMenu();
     if (!e.target.closest('#reviewBranchMenu, #reviewBranchMenuButton')) hideReviewBranchMenu(false);
     if (!e.target.closest('#copilotSettingsMenu, #copilotSettingsButton')) hideCopilotSettingsMenu(false);
     if (!e.target.closest('#summaryModelMenu, #summaryModelButton')) hideSummaryModelMenu(false);
@@ -2253,6 +2287,11 @@
   });
 
   document.body.addEventListener('contextmenu', function (e) {
+    const changesElement = e.target.closest('#uncommittedRow, #dashboardChangedFiles .changed-file-item');
+    if (changesElement) {
+      if (showChangesContextMenu(changesElement, e.clientX, e.clientY)) e.preventDefault();
+      return;
+    }
     const commitElement = e.target.closest('.history-row, .graph-node-control[data-commit]');
     if (!commitElement) {
       hideHistoryContextMenu();
@@ -2277,7 +2316,13 @@
       hideSummaryModelMenu(true);
     }
     moveInSummaryModelMenu(e);
-    if ((e.key === 'ContextMenu' || (e.shiftKey && e.key === 'F10')) && e.target.closest('.history-row')) {
+    const changesKeyTarget = (e.key === 'ContextMenu' || (e.shiftKey && e.key === 'F10')) &&
+      e.target.closest('#uncommittedRow, #dashboardChangedFiles .changed-file-item');
+    if (changesKeyTarget) {
+      e.preventDefault();
+      const rect = changesKeyTarget.getBoundingClientRect();
+      showChangesContextMenu(changesKeyTarget, rect.left + 10, rect.top + 10);
+    } else if ((e.key === 'ContextMenu' || (e.shiftKey && e.key === 'F10')) && e.target.closest('.history-row')) {
       e.preventDefault();
       const rect = e.target.getBoundingClientRect();
       showHistoryContextMenu(e.target.closest('.history-row'), rect.left + 10, rect.top + 10);
