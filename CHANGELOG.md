@@ -5,7 +5,14 @@ All notable changes to Repository Manager will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [2.5.0] - Unreleased
+## [2.6.0] - Unreleased
+
+### Fixed
+
+- **Summarize changes** names its model as Copilot's menu does (for example "Completed · Claude Haiku 4.5"), not by its id twice ("claude-haiku-4.5:claude-haiku-4.5").
+- After a review ends or is cancelled, **Review changes** in the detail header no longer keeps the "A review is running" tooltip.
+
+## [2.5.0] - 2026-10-13
 
 ### Added
 

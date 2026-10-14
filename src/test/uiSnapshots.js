@@ -886,6 +886,12 @@ async function main() {
     assert.equal(await rv.textContent('#reviewMeta'), `Diff: 1.0.0 → feature/dashboard · ${releaseSha} → ${branchSha} · Scripted model`);
     assert.equal(await rv.getAttribute('#reviewMeta', 'title'), 'Reviewed with Scripted model (scripted:1)');
     await page.waitForFunction(() => document.querySelector('#reviewBranchMenuButton').getAttribute('aria-disabled') === null);
+    // The review buttons were locked through several progress updates; once it ends, none keeps the
+    // "A review is running" tooltip (a button with no title of its own used to get it back as its title).
+    assert.deepEqual(await page.evaluate(() => Array.from(document.querySelectorAll(
+      '[data-action="reviewRelease"], [data-action="reviewLocal"], #reviewBranchMenuButton, [data-action="contextReviewCommit"]'))
+      .filter(element => /A review is running/.test(element.getAttribute('title') || ''))
+      .map(element => element.id || element.dataset.action)), [], 'a review button still says a review is running');
     const blocking = await rv.locator('.review-body .review-blocking').textContent();
     const attention = await rv.locator('.review-body .review-attention').locator('.review-finding').first().textContent();
     // Review gaps (here: no compliance policy) are their own section, apart from the findings.

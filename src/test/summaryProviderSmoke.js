@@ -67,9 +67,12 @@ async function main() {
   for (const claim of [first.summary.intent, ...first.summary.behaviorChanges]) {
     assert.deepEqual(claim.evidence, ['large.ts']);
   }
+  // The summary names its model as people know it, not by the id:version its cache is keyed on.
+  assert.equal(first.model, 'Test model');
   const previous = requests;
-  await provider.summarize(makePacket(), token, () => {});
+  const cachedSummary = await provider.summarize(makePacket(), token, () => {});
   assert.equal(requests, previous, 'successful summary should be cached');
+  assert.equal(cachedSummary.model, 'Test model', 'a cached summary named its model by id:version');
 
   failPart = true;
   const retryProvider = new CopilotSummaryProvider();
