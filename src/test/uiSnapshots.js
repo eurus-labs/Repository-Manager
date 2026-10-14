@@ -445,7 +445,9 @@ async function main() {
     assert.equal(await page.textContent('#dashboardCommitSummary > code'), '*');
     // The actions sit in the header, top-right after the hash; the bar below stays hidden until a summary has a status.
     assert.equal(await page.isVisible('#commitHeaderActions'), true, 'the header actions are hidden for uncommitted changes');
-    assert.deepEqual(await page.locator('#commitHeaderActions button:visible').allTextContents(), ['Commit…', 'Review changes', 'Summarize changes']);
+    // Commit is the toolbar's (one Commit button on screen); the header keeps Review changes and Summarize.
+    assert.deepEqual(await page.locator('#commitHeaderActions button:visible').allTextContents(), ['Review changes', 'Summarize changes']);
+    assert.equal(await page.locator('[data-action="openCommitChangesModal"]:visible').count(), 1);
     assert.equal(await page.isVisible('#changeSummary'), false, 'an empty summary bar takes a row');
     assert.equal(await page.getAttribute('#reviewSelectionChangesButton', 'aria-disabled'), 'true');
     const summariesBeforeLocal = reviewProbe.summaries.length;

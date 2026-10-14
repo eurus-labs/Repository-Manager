@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [2.6.0] - Unreleased
 
+### Added
+
+- The dashboard's editor tab and the **Repository Review** tab each have an icon, so they are easy to tell apart: the repository tree of the Activity Bar, and a shield. Both follow light and dark themes.
+
+### Changed
+
+- **Commit…** is no longer in the header of the uncommitted changes: the toolbar's **Commit** opens the same dialog, so there is one Commit button.
+
 ### Fixed
 
 - **Summarize changes** names its model as Copilot's menu does (for example "Completed · Claude Haiku 4.5"), not by its id twice ("claude-haiku-4.5:claude-haiku-4.5").
