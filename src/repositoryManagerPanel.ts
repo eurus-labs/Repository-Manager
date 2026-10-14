@@ -102,6 +102,7 @@ export class RepositoryManagerPanel {
       }
     );
 
+    panel.iconPath = tabIcon(extensionUri, 'dashboard');
     RepositoryManagerPanel.currentPanel = new RepositoryManagerPanel(
       panel,
       extensionUri,
@@ -563,6 +564,7 @@ export class RepositoryManagerPanel {
     const panel = vscode.window.createWebviewPanel('repositoryManager.review', 'Repository Review',
       { viewColumn: vscode.ViewColumn.Beside, preserveFocus: false },
       { enableScripts: true, retainContextWhenHidden: true, localResourceRoots: [vscode.Uri.joinPath(this._extensionUri, 'resources')] });
+    panel.iconPath = tabIcon(this._extensionUri, 'review');
     this._reviewPanel = panel;
     panel.webview.html = getReviewHtml({
       scriptUri: panel.webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'resources', 'review.js')),
@@ -696,4 +698,16 @@ export class RepositoryManagerPanel {
       controller.dispose();
     }
   }
+}
+
+/**
+ * The editor tab's icon, so the dashboard and the review tab are told apart at a glance: the
+ * repository tree of the Activity Bar, and a shield for the review. A tab draws its icon as an
+ * image, which takes no theme color, so each comes in a light and a dark version.
+ */
+export function tabIcon(extensionUri: vscode.Uri, name: 'dashboard' | 'review'): { light: vscode.Uri; dark: vscode.Uri } {
+  return {
+    light: vscode.Uri.joinPath(extensionUri, 'resources', 'tab-icons', `${name}-light.svg`),
+    dark: vscode.Uri.joinPath(extensionUri, 'resources', 'tab-icons', `${name}-dark.svg`)
+  };
 }

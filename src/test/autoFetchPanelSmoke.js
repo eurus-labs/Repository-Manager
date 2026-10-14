@@ -15,6 +15,9 @@ const git = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8',
 
 // Minimal vscode surface used by RepositoryManagerPanel.
 const posted = [];
+// Every editor tab the panel opens, by view type: the dashboard and the review tab.
+const panels = new Map();
+const rememberPanel = (viewType, panel) => { panels.set(viewType, panel); return panel; };
 let panelVisible = true;
 let viewStateListener = () => {};
 const settings = { autoFetch: true, autoFetchInterval: 5 };
@@ -25,7 +28,7 @@ const fakeVscode = {
   window: {
     activeTextEditor: undefined,
     showInformationMessage() {}, showWarningMessage() {}, showErrorMessage() {},
-    createWebviewPanel: () => ({
+    createWebviewPanel: viewType => rememberPanel(viewType, {
       get visible() { return panelVisible; },
       webview: {
         html: '', cspSource: 'test',
@@ -89,6 +92,24 @@ async function main() {
     // Hidden panel: no background fetch.
     panelVisible = false;
     RepositoryManagerPanel.createOrShow({ fsPath: base }, local);
+    // Each tab has its own icon, in a light and a dark version that exist in resources.
+    const { existsSync, readFileSync } = require('node:fs');
+    const extensionRoot = path.join(__dirname, '..', '..');
+    RepositoryManagerPanel.currentPanel._openReviewPanel();
+    const icons = ['repositoryManager', 'repositoryManager.review'].map(viewType => {
+      const icon = panels.get(viewType) && panels.get(viewType).iconPath;
+      assert.ok(icon && icon.light && icon.dark, `the ${viewType} tab has no light and dark icon`);
+      return [icon.light.fsPath, icon.dark.fsPath].map(file => path.relative(base, file));
+    });
+    assert.deepEqual(icons, [['resources/tab-icons/dashboard-light.svg', 'resources/tab-icons/dashboard-dark.svg'],
+      ['resources/tab-icons/review-light.svg', 'resources/tab-icons/review-dark.svg']]);
+    for (const file of icons.flat()) {
+      const svg = readFileSync(path.join(extensionRoot, file), 'utf8');
+      // A tab draws its icon as an image: the color is in the file, dark on light and light on dark.
+      assert.match(svg, file.endsWith('-light.svg') ? /stroke="#424242"/ : /stroke="#C5C5C5"/, `${file} has the wrong color`);
+      assert.doesNotMatch(svg, /currentColor/, `${file} relies on a color a tab does not give it`);
+    }
+    assert.ok(existsSync(path.join(extensionRoot, 'resources/tab-icons/review-dark.svg')));
     await new Promise(resolve => setTimeout(resolve, 1500));
     assert.equal(git(local, 'rev-parse', 'origin/main'), git(local, 'rev-parse', 'main'), 'fetched while hidden');
 
