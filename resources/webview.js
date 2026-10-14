@@ -335,7 +335,7 @@
   }
 
   function restoreChangeSummary() {
-    // The header's actions: Commit… and Review changes for uncommitted changes, then Summarize.
+    // The header's actions: Review changes for uncommitted changes (Commit is in the toolbar), then Summarize.
     const workingActions = document.getElementById('workingTreeActions');
     if (workingActions) workingActions.hidden = !(changeSummarySelection && changeSummarySelection.local);
     // Apply, Pop and Drop for a stash shown on its own (not as one side of a comparison).
