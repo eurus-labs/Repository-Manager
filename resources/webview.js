@@ -3341,7 +3341,9 @@
       const nothingSelected = element.dataset.action === 'reviewSelection' && (!changeSummarySelection || changeSummarySelection.local);
       if (locked || nothingSelected) {
         element.setAttribute('aria-disabled', 'true');
-        if (!element.dataset.unlockedTitle) element.dataset.unlockedTitle = element.getAttribute('title') || '';
+        // Saved once per lock, even when it is empty: a button with no title of its own must not
+        // save the lock's hint on the next progress update and get it back as its title.
+        if (element.dataset.unlockedTitle === undefined) element.dataset.unlockedTitle = element.getAttribute('title') || '';
         element.setAttribute('title', locked ? REVIEW_LOCK_HINT : 'Select a commit, or load a comparison, to review it');
       } else if (element.getAttribute('aria-disabled') === 'true') {
         element.removeAttribute('aria-disabled');
