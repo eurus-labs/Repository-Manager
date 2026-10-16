@@ -9,7 +9,9 @@
  *
  * Options (environment): BENCH_RUNS (default 5), BENCH_COMMITS (parent, default 5000),
  * BENCH_SUB_COMMITS (each linked repository, default 1500), BENCH_FIXTURE (a folder to keep the
- * generated repository between runs), BENCH_JSON=1 (print the raw timings as JSON).
+ * generated repository between runs), BENCH_SPAWN_MS and BENCH_FETCH_MS (added to every Git process,
+ * and to every fetch, to stand for a slower machine and a remote over the network), BENCH_JSON=1
+ * (print the raw timings as JSON).
  */
 const fs = require('fs');
 const os = require('os');
@@ -23,6 +25,8 @@ const root = path.resolve(__dirname, '../..');
 const RUNS = Number(process.env.BENCH_RUNS || 5);
 const COMMITS = Number(process.env.BENCH_COMMITS || 5000);
 const SUB_COMMITS = Number(process.env.BENCH_SUB_COMMITS || 1500);
+const SPAWN_MS = Number(process.env.BENCH_SPAWN_MS || 0);
+const FETCH_MS = Number(process.env.BENCH_FETCH_MS || 0);
 const env = { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1',
   GIT_AUTHOR_NAME: 'Bench', GIT_AUTHOR_EMAIL: 'bench@example.com', GIT_COMMITTER_NAME: 'Bench', GIT_COMMITTER_EMAIL: 'bench@example.com' };
 Object.assign(process.env, env);
@@ -109,14 +113,20 @@ const gitLog = [];
 let t0 = 0;
 function instrumentGit() {
   const { GitCommandService } = require(path.join(root, 'out/services/gitCommandService'));
-  for (const method of ['execGit', 'execGitRaw']) {
+  // execGit goes through execGitRaw, so each process is counted once.
+  for (const method of ['execGitRaw', 'execGitBuffer']) {
     const original = GitCommandService.prototype[method];
     GitCommandService.prototype[method] = function (args, ...rest) {
       const entry = { cmd: args.filter(arg => !arg.startsWith('--format')).slice(0, 4).join(' '), start: Date.now() - t0 };
       gitLog.push(entry);
       const done = () => { entry.end = Date.now() - t0; };
-      const result = original.call(this, args, ...rest);
-      if (result && typeof result.then === 'function') result.then(done, done);
+      // A slower machine: every Git process costs SPAWN_MS more (Windows process start, a virus
+      // scanner), and a fetch FETCH_MS more (a remote over the network).
+      const extra = SPAWN_MS + (args.includes('fetch') ? FETCH_MS : 0);
+      const result = extra
+        ? new Promise(resolve => setTimeout(resolve, extra)).then(() => original.call(this, args, ...rest))
+        : original.call(this, args, ...rest);
+      result.then(done, done);
       return result;
     };
   }
@@ -213,9 +223,9 @@ async function measureOnce(browser, workspace, server, state) {
       postMessage(message) { window.__postToHost(message); } });</script>`);
   state.page = html;
   await page.goto(`http://127.0.0.1:${server.address().port}/`);
-  for (let i = 0; i < 600 && !('graphDrawn' in marks); i++) await new Promise(resolve => setTimeout(resolve, 25));
+  for (let i = 0; i < 2400 && !('graphDrawn' in marks); i++) await new Promise(resolve => setTimeout(resolve, 25));
   // Let the background work started at open (fetch, refresh) finish, to see when it ends.
-  await new Promise(resolve => setTimeout(resolve, 1500));
+  await new Promise(resolve => setTimeout(resolve, 1500 + 4 * FETCH_MS));
   const result = { ...marks, git: gitLog.map(entry => ({ ...entry })) };
   RepositoryManagerPanel.currentPanel && RepositoryManagerPanel.currentPanel.dispose();
   await page.close();
