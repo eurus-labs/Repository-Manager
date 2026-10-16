@@ -10,6 +10,7 @@
 import { spawn } from 'child_process';
 import { existsSync } from 'fs';
 import * as path from 'path';
+import { GitCommandService } from './gitCommandService';
 
 /** The ignored subset of `paths` (absolute). Throws when Git cannot answer: the caller refreshes. */
 export async function ignoredPaths(paths: string[], workspaceRoot: string, timeoutMs = 10000): Promise<Set<string>> {
@@ -47,13 +48,16 @@ function repositoryRoot(dir: string, workspaceRoot: string): string | undefined 
 /** `git check-ignore`: exit 0 lists the ignored paths, exit 1 means none is. */
 function checkIgnore(root: string, names: string[], timeoutMs: number): Promise<string[]> {
   return new Promise((resolve, reject) => {
-    const child = spawn('git', ['check-ignore', '--stdin', '-z'], { cwd: root, windowsHide: true });
+    const args = ['check-ignore', '--stdin', '-z'];
+    const started = Date.now();
+    const child = spawn('git', args, { cwd: root, windowsHide: true });
     const out: Buffer[] = [];
     const timer = setTimeout(() => { child.kill(); reject(new Error('git check-ignore timed out')); }, timeoutMs);
     child.stdout.on('data', chunk => out.push(chunk));
     child.on('error', error => { clearTimeout(timer); reject(error); });
     child.on('close', code => {
       clearTimeout(timer);
+      GitCommandService.observer?.({ args, cwd: root, ms: Date.now() - started, ok: code === 0 || code === 1 });
       if (code === 0 || code === 1) {
         resolve(Buffer.concat(out).toString('utf8').split('\0').filter(Boolean));
       } else {

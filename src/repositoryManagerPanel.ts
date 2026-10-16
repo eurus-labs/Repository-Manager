@@ -276,24 +276,16 @@ export class RepositoryManagerPanel {
     this._autoFetchHoldTimer = setTimeout(() => this._releaseAutoFetch(), FIRST_FETCH_DELAY_MS);
   }
 
-  /** Lets the background fetch run, and runs the first one as soon as nothing else is in flight. */
+  /**
+   * Lets the background fetch run. The first one starts now if nothing is in flight; otherwise the
+   * request that ends last starts it (see _handleMessage), however long the requests take.
+   */
   private _releaseAutoFetch(): void {
     if (!this._autoFetchHeld) { return; }
     this._autoFetchHeld = false;
     if (this._autoFetchHoldTimer) { clearTimeout(this._autoFetchHoldTimer); }
-    this._startFirstAutoFetch(0);
-  }
-
-  /**
-   * The first fetch, when it is due: it starts while the dashboard is still answering requests
-   * (the history page that released it, refs, the working tree), so it waits for them by retrying.
-   */
-  private _startFirstAutoFetch(attempt: number): void {
     this._autoFetchHoldTimer = undefined;
     this._autoFetchIfDue();
-    if (!this._autoFetchRun && this._lastAutoFetch === 0 && this._autoFetchIntervalMs() > 0 && attempt < 20) {
-      this._autoFetchHoldTimer = setTimeout(() => this._startFirstAutoFetch(attempt + 1), 250);
-    }
   }
 
   /** Background fetch interval in ms, or 0 when disabled. */
@@ -450,15 +442,16 @@ export class RepositoryManagerPanel {
   }
 
   /**
-   * The repositories of this folder as last listed, or the parent repository alone (its state not
-   * known yet) when the folder holds one; undefined when nothing is known, so the page waits.
+   * For a folder holding a repository: its repositories as last listed, or the parent repository
+   * alone (its state not known yet). Otherwise undefined, so the page waits for the list.
    */
   private _knownRepositories(): SubmoduleInfo[] | undefined {
+    // Nothing is shown before the list for a folder that is not (or no longer) a repository.
+    if (!fs.existsSync(path.join(this._workspaceRoot, '.git'))) { return undefined; }
     const saved = this._workspaceState?.get<{ root?: string; repositories?: SubmoduleInfo[] }>(REPOSITORY_LIST_KEY);
     if (saved && saved.root === this._workspaceRoot && Array.isArray(saved.repositories) && saved.repositories.length) {
       return saved.repositories;
     }
-    if (!fs.existsSync(path.join(this._workspaceRoot, '.git'))) { return undefined; }
     return [{ name: path.basename(this._workspaceRoot) || 'Parent Repository', path: '.', url: '', branch: '',
       currentCommit: '', currentBranch: '', status: 'unknown', hasChanges: false, ahead: 0, behind: 0, isParentRepo: true }];
   }
@@ -495,6 +488,8 @@ export class RepositoryManagerPanel {
       }
     } finally {
       this._messagesInFlight--;
+      // The first fetch, released while the dashboard was still answering, starts once it is done.
+      if (this._messagesInFlight === 0 && this._lastAutoFetch === 0) { this._autoFetchIfDue(); }
       if (action) {
         this._actionsInFlight--;
         // File events during the action asked for a refresh; the action's own refresh may cover them.

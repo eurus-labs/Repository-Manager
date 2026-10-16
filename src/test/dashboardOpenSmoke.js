@@ -142,6 +142,29 @@ async function main() {
     assert.deepEqual(embedded(panel.webview.html).map(repository => repository.path), ['.', 'lib'], 'the saved list was not used');
     // Without a history request, the fetch still starts, a few seconds after opening.
     await waitFor(() => commands.some(command => command.startsWith('fetch')), 'the fetch without a history request', 8000);
+    // Its fetches end before the next case counts any.
+    await RepositoryManagerPanel.currentPanel._autoFetchRun;
+    RepositoryManagerPanel.currentPanel.dispose();
+
+    // Requests still being answered when the history is sent (refs, here slower than the first
+    // fetch's 3 s hold): the fetch waits for them, then starts as soon as the last one ends.
+    commands.length = 0;
+    RepositoryManagerPanel.createOrShow(extension, workspace, state);
+    const dispatch = RepositoryManagerPanel.prototype._dispatchMessage;
+    let answerRefs;
+    const refsHeld = new Promise(resolve => { answerRefs = resolve; });
+    RepositoryManagerPanel.prototype._dispatchMessage = async function (message) {
+      if (message.type === 'getRepositoryRefs') { await refsHeld; }
+      return dispatch.call(this, message);
+    };
+    const refs = panel.listeners.message({ type: 'getRepositoryRefs', payload: { repositoryPath: '.' } });
+    await panel.listeners.message({ type: 'getHistory', payload: { repositoryPath: '.', limit: 100, offset: 0, includeRemotes: true } });
+    await tick(5600);
+    assert.equal(commands.filter(command => command.startsWith('fetch')).length, 0, 'fetched while a request was being answered');
+    answerRefs();
+    await refs;
+    RepositoryManagerPanel.prototype._dispatchMessage = dispatch;
+    await waitFor(() => commands.some(command => command.startsWith('fetch')), 'the fetch after the last request', 2000);
     RepositoryManagerPanel.currentPanel.dispose();
 
     // A folder that is not a repository, with nothing saved: the page waits for the list.
@@ -152,18 +175,29 @@ async function main() {
     await waitFor(() => panel.webview.html !== '', 'the page of a folder without a repository');
     assert.deepEqual(embedded(panel.webview.html), []);
     RepositoryManagerPanel.currentPanel.dispose();
+    // Nor does a folder that was a repository last time: the saved list is not shown without its .git.
+    const gone = memento();
+    await gone.update('repositoryManager.repositoryList', { root: plain, repositories: state.get('repositoryManager.repositoryList').repositories });
+    RepositoryManagerPanel.createOrShow(extension, plain, gone);
+    assert.equal(panel.webview.html, '', 'the saved list of a folder that is no longer a repository was shown');
+    await waitFor(() => panel.webview.html !== '', 'the page of a folder that is no longer a repository');
+    assert.deepEqual(embedded(panel.webview.html), []);
+    RepositoryManagerPanel.currentPanel.dispose();
 
     // repositoryManager.debug.timings: the steps of opening and every Git command, with durations.
     settings['debug.timings'] = true;
     RepositoryManagerPanel.createOrShow(extension, workspace, state);
     await panel.listeners.message({ type: 'getHistory', payload: { repositoryPath: '.', limit: 100, offset: 0, includeRemotes: true } });
     await panel.listeners.message({ type: 'dashboardTiming', payload: { name: 'history drawn' } });
+    // A search reads Git as a stream: it is in the timings too.
+    await panel.listeners.message({ type: 'getHistory', payload: { repositoryPath: '.', limit: 100, offset: 0, search: 'app' } });
     await waitFor(() => outputLines.some(line => / repositories listed$/.test(line)), 'the timings of listing');
     const steps = outputLines.filter(line => /^\+ *\d+ ms [a-z]/.test(line)).map(line => line.replace(/^\+ *\d+ ms /, ''));
     for (const step of ['page shown', 'history asked', 'history sent', 'history drawn', 'repositories listed']) {
       assert.ok(steps.includes(step), `no "${step}" in the timings: ${steps.join(', ')}`);
     }
     assert.ok(outputLines.some(line => /^\+ *\d+ ms {3}git log --max-count=101 .* \(\d+ ms\) in /.test(line)), 'no Git command in the timings');
+    assert.ok(outputLines.some(line => /^\+ *\d+ ms {3}git log --topo-order .* \(\d+ ms\) in /.test(line)), 'no search in the timings');
     RepositoryManagerPanel.currentPanel.dispose();
     assert.equal(GitCommandService.observer, undefined, 'the timings kept watching Git after the dashboard closed');
     console.log('Dashboard open smoke passed');

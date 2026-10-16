@@ -102,15 +102,18 @@ export class HistoryService {
       args.push(`--skip=${offset}`);
     }
 
-    // Looked up while the log runs, not after it: each is a Git process of its own, and on a slow
-    // machine (Windows, a virus scanner) every process waited for adds its whole start-up time.
+    // A page of history is read with its upstream and stashes: looked up while the log runs, not
+    // after it, since each is a Git process of its own and on a slow machine (Windows, a virus
+    // scanner) every process waited for adds its whole start-up time. A search starts them only
+    // once its scan is done: typing replaces searches, and a replaced one needs neither.
     // The configured upstream, not a same-named guess: `work` may track `upstream/release`.
-    // A detached HEAD or a branch without one has none.
-    const upstreamLookup = this.gitCmd.execGit(
-      ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}'], repositoryRoot, 5000
-    ).catch(() => '');
-    // Neither rejects (each falls back to none), so a failing log leaves nothing unhandled.
-    const stashLookup = listStashes(this.gitCmd, repositoryRoot);
+    // A detached HEAD or a branch without one has none. Neither lookup rejects (each falls back to
+    // none), so a failing log leaves nothing unhandled.
+    const lookUp = () => Promise.all([
+      this.gitCmd.execGit(['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}'], repositoryRoot, 5000).catch(() => ''),
+      listStashes(this.gitCmd, repositoryRoot)
+    ]);
+    const lookups = search ? undefined : lookUp();
 
     let tip: string | undefined;
     if (query.branch) {
@@ -151,7 +154,7 @@ export class HistoryService {
     }
 
     const hasMore = commits.length > limit;
-    const [upstreamName, stashes] = await Promise.all([upstreamLookup, stashLookup]);
+    const [upstreamName, stashes] = await (lookups || lookUp());
     const upstream = upstreamName.trim() || null;
     return {
       repositoryPath: query.repositoryPath,
