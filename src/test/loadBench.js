@@ -74,8 +74,14 @@ function importHistory(repo, count, label, extraRefs) {
 function createFixture(base) {
   const marker = path.join(base, '.complete');
   if (fs.existsSync(marker)) return path.join(base, 'workspace');
+  // Only a fixture this bench started (and did not finish) is replaced: never another folder.
+  const started = path.join(base, '.bench-fixture');
+  if (fs.existsSync(base) && fs.readdirSync(base).length && !fs.existsSync(started)) {
+    throw new Error(`${base} is not empty and is not a bench fixture; choose another BENCH_FIXTURE`);
+  }
   fs.rmSync(base, { recursive: true, force: true });
   fs.mkdirSync(base, { recursive: true });
+  fs.writeFileSync(started, '');
   const subs = [];
   for (const name of ['lib-a', 'lib-b', 'lib-c']) {
     const repo = path.join(base, 'origins', name);
