@@ -28,7 +28,7 @@ flowchart LR
 
 Existing write services remain separate:
 
-- `BranchService`: create, checkout, pull, push, fetch, and delete branches. Push uses the branch's own remote (`branch.<name>.remote`, else `origin`) and refuses a detached HEAD with a message instead of a Git error.
+- `BranchService`: create, checkout, pull, push, fetch, and delete branches. Push uses the branch's own remote (`branch.<name>.remote`, else `origin`) and refuses a detached HEAD with a message instead of a Git error. Push after creating a branch (Confirm & Push) pushes that branch by name, says for each repository that failed why, and reloads the history of those pushed so their new remote branch shows.
 - `SubmoduleService`: discover linked repositories and perform submodule-specific synchronization. Each repository's status carries `changeCounts` (staged, modified, untracked, conflicted) from the same `status --porcelain=v2` call.
 - `CommitService`: the commit dialog's working-tree changes, previews and commits, plus legacy recent-commit operations and remotes.
 
@@ -57,6 +57,16 @@ The dashboard asks for the active repository's working tree (`getWorkingTreeChan
 | Any failed read | `dashboardError` | Show an error in the affected view |
 
 History supports repository path, page limit, offset, text search, branch selection, and optional remote refs. Search covers commit hash, author, email, subject, and decorated refs.
+
+### Opening the dashboard
+
+The graph is the first thing the dashboard has to show, so opening it waits on as few Git processes as possible. Each process costs its start-up time, which on Windows with a virus scanner can be a large part of a second.
+
+- The page is shown before the repositories are listed. `RepositoryManagerPanel` keeps the last list in workspace state (`repositoryManager.repositoryList`, with the folder it belongs to) and shows it at once; with nothing saved it shows the folder's own repository alone, status unknown, when the folder has a `.git`. Listing the linked repositories and reading their status follows, and arrives as `updateSubmodules`. A folder that is not a repository waits for the list, so no repository appears that is not there.
+- The first background fetch waits until the first history page has been sent, or `FIRST_FETCH_DELAY_MS` (3 s) after opening, whichever is first, and then until no request is being answered: the request that ends last starts it. Before, it ran at once and listed every repository a second time and fetched each one while the history was being read.
+- `HistoryService` reads the upstream and the stashes while the log runs, not after it, so a history page waits on one Git process: the log. A search reads them after its scan, so a search replaced by the next keystroke starts neither.
+
+`repositoryManager.debug.timings` (off by default) writes the steps of opening (page shown, history asked and sent, repositories listed, history drawn) and every Git command with its duration and folder (searches, file contents and ignore checks included), for its first 30 seconds, to the **Repository Manager Timings** output. `npm run bench:load` opens the real panel on a generated repository (5000 commits, three linked repositories) with its page in Chromium, and can add a delay to every Git process (`BENCH_SPAWN_MS`) to stand in for a slow machine. It replaces a `BENCH_FIXTURE` folder only if it made it, and refuses any other non-empty folder.
 
 ## Data flow
 

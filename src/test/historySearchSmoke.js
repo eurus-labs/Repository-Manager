@@ -62,10 +62,16 @@ async function main() {
     const slow = service.scanGitRecords(['log', '--format=%H%x1e'], repo, '\x1e', () => false, 30000, controller.signal);
     controller.abort();
     await assert.rejects(slow, error => error instanceof SupersededError);
+    const ran = [];
+    GitCommandService.observer = timing => ran.push(timing.args.join(' '));
     const replaced = history.getHistory({ repositoryPath: '.', limit: 100, search: 'no such commit anywhere' });
     const replacing = history.getHistory({ repositoryPath: '.', limit: 50 });
     await assert.rejects(replaced, error => error.name === 'SupersededError');
     assert.equal((await replacing).commits.length, 50);
+    await new Promise(resolve => setTimeout(resolve, 300));
+    GitCommandService.observer = undefined;
+    // The replaced search looked up no upstream or stashes: only the page that replaced it did.
+    assert.equal(ran.filter(command => command.includes('@{upstream}')).length, 1, ran.join('\n'));
     // An exception thrown while handling a record rejects the scan instead of escaping.
     await assert.rejects(service.scanGitRecords(['log', '--format=%H%x1e'], repo, '\x1e', () => { throw new Error('boom'); }), /boom/);
     console.log('History search smoke passed');

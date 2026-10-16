@@ -635,6 +635,11 @@ async function main() {
     await page.keyboard.press('Escape');
     await page.locator('#baseBranchDropdown.open').waitFor({ state: 'detached' });
     assert.equal(await page.locator('#createBranchModal.active').count(), 1, 'Escape closed the dialog instead of the dropdown');
+    // An incomplete branch name is refused in the dialog, not with alert() (webviews have none).
+    await page.evaluate(() => { document.getElementById('branchName').value = ''; });
+    await page.click('#createBranchModal [data-action="createBranch"]');
+    assert.match(await page.locator('#createBranchHint').innerText(), /Fill in every field/);
+    assert.equal(await page.locator('#createBranchModal.active').count(), 1, 'an incomplete branch name closed the dialog');
     await page.keyboard.press('Escape');
     await page.locator('#createBranchModal.active').waitFor({ state: 'detached' });
     assert.equal(await newBranchButton.evaluate(button => button === document.activeElement), true, 'focus did not return to New branch');

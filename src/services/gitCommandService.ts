@@ -11,7 +11,13 @@ export class SupersededError extends Error {
   constructor() { super('Superseded by a newer request'); this.name = 'SupersededError'; }
 }
 
+/** One finished Git process: for repositoryManager.debug.timings. */
+export interface GitCommandTiming { args: string[]; cwd: string; ms: number; ok: boolean }
+
 export class GitCommandService {
+  /** Told about every Git process when set (repositoryManager.debug.timings); nothing else uses it. */
+  static observer?: (timing: GitCommandTiming) => void;
+
   constructor(protected workspaceRoot: string) {}
 
   /**
@@ -33,6 +39,7 @@ export class GitCommandService {
     env?: NodeJS.ProcessEnv
   ): Promise<string> {
     const workDir = cwd || this.workspaceRoot;
+    const started = Date.now();
 
     return new Promise((resolve, reject) => {
       execFile('git', args, {
@@ -43,6 +50,7 @@ export class GitCommandService {
         timeout: timeoutMs,
         windowsHide: true
       }, (error, stdout, stderr) => {
+        GitCommandService.observer?.({ args, cwd: workDir, ms: Date.now() - started, ok: !error });
         if (!error || (allowDiffExitCode && error.code === 1 && !error.killed && !stderr.trim())) {
           resolve(stdout);
           return;
@@ -60,11 +68,14 @@ export class GitCommandService {
 
   /** Read a Git object without UTF-8 conversion (binary detection and byte limits). */
   async execGitBuffer(args: string[], cwd?: string, timeoutMs = 30000): Promise<Buffer> {
+    const workDir = cwd || this.workspaceRoot;
+    const started = Date.now();
     return new Promise((resolve, reject) => {
       execFile('git', args, {
-        cwd: cwd || this.workspaceRoot, encoding: 'buffer',
+        cwd: workDir, encoding: 'buffer',
         maxBuffer: 2 * 1024 * 1024, timeout: timeoutMs, windowsHide: true
       }, (error, stdout, stderr) => {
+        GitCommandService.observer?.({ args, cwd: workDir, ms: Date.now() - started, ok: !error });
         if (error) {
           reject(new Error(error.killed ? `Git command timed out after ${timeoutMs}ms` : stderr.toString().trim() || error.message));
         } else {
@@ -131,6 +142,7 @@ export class GitCommandService {
     signal?: AbortSignal, maxRecordChars = 0): Promise<void> {
     return new Promise((resolve, reject) => {
       if (signal?.aborted) { reject(new SupersededError()); return; }
+      const started = Date.now();
       const child = spawn('git', args, { cwd, windowsHide: true });
       let pending = '';
       let stderr = '';
@@ -138,6 +150,7 @@ export class GitCommandService {
       const finish = (error?: Error) => {
         if (done) { return; }
         done = true;
+        GitCommandService.observer?.({ args, cwd, ms: Date.now() - started, ok: !error });
         clearTimeout(timer);
         if (error) { reject(error); } else { resolve(); }
       };
