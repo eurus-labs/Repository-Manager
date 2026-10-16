@@ -297,6 +297,14 @@
     return true;
   }
 
+  // Webviews cannot show alert(): what is missing is said in the dialog, next to its buttons.
+  function showCreateBranchHint(text) {
+    const hint = document.getElementById('createBranchHint');
+    if (!hint) return;
+    hint.textContent = text;
+    hint.hidden = !text;
+  }
+
   function restoreBranchModalControls() {
     branchFromCommitTarget = null;
     const baseInput = document.getElementById('baseBranchInput');
@@ -940,6 +948,7 @@
       } else {
         postMessage('getBaseBranchesForCreate', {});
       }
+      showCreateBranchHint('');
       document.getElementById('createBranchModal').classList.add('active');
       // Retry if branches haven't loaded after 2s
       if (!fromCommit) retryLoadBaseBranches(3);
@@ -957,6 +966,7 @@
     },
 
     createBranch: () => {
+      showCreateBranchHint('');
       const branchName = document.getElementById('branchName').value.trim();
       const baseBranch = document.getElementById('baseBranch').value.trim() || 'main';
 
@@ -966,7 +976,7 @@
           branchName.endsWith('-') ||
           branchName.endsWith('_') ||
           branchName.includes('x.x.x')) {
-        alert('Please fill in all required fields to generate a valid branch name.');
+        showCreateBranchHint('Fill in every field, so the branch name is complete.');
         return;
       }
 
@@ -982,7 +992,7 @@
       const checkboxes = document.querySelectorAll('.branch-repository:checked');
       const repositories = Array.from(checkboxes).map(cb => cb.value);
       if (repositories.length === 0) {
-        alert('Please select at least one repository.');
+        showCreateBranchHint('Select at least one repository.');
         return;
       }
 
@@ -2737,17 +2747,6 @@
           const createdBranch = message.payload.branchName;
           const results = message.payload.results;
           showReviewModal(createdBranch, results);
-          break;
-        }
-
-        case 'pushResults': {
-          const pushResults = message.payload.results || [];
-          const pushSuccessCount = pushResults.filter(r => r.success).length;
-          if (pushSuccessCount === pushResults.length) {
-            alert('Successfully pushed branch to ' + pushSuccessCount + ' remote(s)');
-          } else {
-            alert('Pushed to ' + pushSuccessCount + '/' + pushResults.length + ' remotes. Some pushes failed.');
-          }
           break;
         }
 

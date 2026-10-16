@@ -28,7 +28,7 @@ flowchart LR
 
 Existing write services remain separate:
 
-- `BranchService`: create, checkout, pull, push, fetch, and delete branches. Push uses the branch's own remote (`branch.<name>.remote`, else `origin`) and refuses a detached HEAD with a message instead of a Git error.
+- `BranchService`: create, checkout, pull, push, fetch, and delete branches. Push uses the branch's own remote (`branch.<name>.remote`, else `origin`) and refuses a detached HEAD with a message instead of a Git error. Push after creating a branch (Confirm & Push) pushes that branch by name, says for each repository that failed why, and reloads the history of those pushed so their new remote branch shows.
 - `SubmoduleService`: discover linked repositories and perform submodule-specific synchronization. Each repository's status carries `changeCounts` (staged, modified, untracked, conflicted) from the same `status --porcelain=v2` call.
 - `CommitService`: the commit dialog's working-tree changes, previews and commits, plus legacy recent-commit operations and remotes.
 

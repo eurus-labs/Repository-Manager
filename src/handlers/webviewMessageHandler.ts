@@ -393,43 +393,37 @@ export async function handlePushCreatedBranches(
   ctx: MessageHandlerContext,
   payload: { submodules: string[]; branchName: string }
 ): Promise<void> {
+  if (!payload || !Array.isArray(payload.submodules) || typeof payload.branchName !== 'string' || !payload.branchName) {
+    return;
+  }
   const results: Array<{ submodule: string; success: boolean; message: string }> = [];
 
   for (const submodulePath of payload.submodules) {
     try {
-      const result = await ctx.gitOps.pushChanges(submodulePath);
-      results.push({
-        submodule: submodulePath,
-        success: result.success,
-        message: result.message
-      });
+      // The branch just created, by name: not whatever happens to be checked out by now.
+      const result = await ctx.gitOps.pushChanges(submodulePath, payload.branchName);
+      results.push({ submodule: submodulePath, success: result.success, message: result.message });
     } catch (error) {
-      results.push({
-        submodule: submodulePath,
-        success: false,
-        message: error instanceof Error ? error.message : 'Unknown error'
-      });
+      results.push({ submodule: submodulePath, success: false, message: error instanceof Error ? error.message : 'Unknown error' });
     }
   }
 
-  const successCount = results.filter(r => r.success).length;
-
-  if (successCount === results.length) {
-    vscode.window.showInformationMessage(
-      `Branch '${payload.branchName}' pushed to ${successCount} remote(s)`
-    );
+  const pushed = results.filter(result => result.success);
+  const failed = results.filter(result => !result.success);
+  if (!failed.length) {
+    vscode.window.showInformationMessage(`Branch '${payload.branchName}' pushed to ${pushed.length} remote(s)`);
   } else {
+    // Each failure with Git's own reason: rejected, no remote, no access.
     vscode.window.showWarningMessage(
-      `Pushed to ${successCount}/${results.length} remotes`
+      `Pushed '${payload.branchName}' to ${pushed.length}/${results.length} remotes. ` +
+      failed.map(result => `${result.submodule}: ${result.message}`).join(' · ')
     );
   }
 
-  // Send results to webview
-  await sendToWebview(ctx, {
-    type: 'pushResults',
-    payload: { results }
-  });
-
+  // The new origin/<branch> is a ref the history shows; a push moves no HEAD, so reload it.
+  if (pushed.length) {
+    await ctx.reloadDashboardHistory(pushed.map(result => result.submodule));
+  }
   await ctx.refresh();
 }
 

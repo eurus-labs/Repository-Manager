@@ -124,6 +124,7 @@ function renderModals(repositories: RepositoryInfo[]): string {
           <label class="form-label" id="branchFromCommitCheckoutRow" hidden><input type="checkbox" id="branchFromCommitCheckout" checked> Checkout new branch</label>
         </div>
         <div class="modal-footer">
+          <span class="form-hint compare-hint" id="createBranchHint" role="alert" hidden></span>
           <button class="btn" data-action="closeModal" data-modal="createBranchModal">Cancel</button>
           <button class="btn btn-primary" data-action="createBranch">Review &amp; create</button>
         </div>
