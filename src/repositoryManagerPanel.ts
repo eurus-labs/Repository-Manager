@@ -4,7 +4,10 @@
 
 import * as vscode from 'vscode';
 import * as path from 'path';
+import * as fs from 'fs';
 import { GitOperations } from './gitOperations';
+import { OpenTimings } from './openTimings';
+import { SubmoduleInfo } from './types';
 import { PRManager } from './prManager';
 import { getHtmlForWebview, getReviewHtml, WebviewResourceUris, WorkspaceFolderInfo } from './webview/template';
 import { ReviewBridge } from './reviewBridge';
@@ -31,6 +34,11 @@ import { ASK_BEFORE_SENDING, ASK_BEFORE_SENDING_KEY, AskBeforeSending, askBefore
 const REVIEW_EVIDENCE_SCHEME = 'repository-manager-review';
 
 /** Webview requests that only read Git state and may run during a background fetch. */
+/** Where the repositories last listed in a folder are kept, to show the page before they are listed again. */
+const REPOSITORY_LIST_KEY = 'repositoryManager.repositoryList';
+/** The first background fetch starts at the latest this long after opening, if no history was asked for. */
+const FIRST_FETCH_DELAY_MS = 3000;
+
 const READ_ONLY_MESSAGES = new Set([
   'getHistory', 'getCommitDetail', 'getFileDiff', 'getRepositoryRefs', 'getWorkingTreeChanges',
   'getWorkingTreePreview', 'getBranches', 'getCommits', 'getRecordedCommit', 'getBaseBranchesForCreate',
@@ -44,7 +52,9 @@ const READ_ONLY_MESSAGES = new Set([
   // The Copilot settings menu and pinned models: VS Code settings and state only, no Git.
   'getCopilotSettings', 'setCopilotSettings', 'openExtensionSettings', 'setPinnedModels', 'setSelectedModel',
   // The Side Bar's copy of the repository list; no Git.
-  'sidebarSnapshot'
+  'sidebarSnapshot',
+  // When the page drew its first history (repositoryManager.debug.timings); no Git.
+  'dashboardTiming'
 ]);
 
 export class RepositoryManagerPanel {
@@ -72,6 +82,15 @@ export class RepositoryManagerPanel {
   private _autoFetchTimer?: NodeJS.Timeout;
   private _autoFetchRun?: Promise<void>;
   private _lastAutoFetch = 0;
+  /**
+   * The first background fetch waits for the first history page (or FIRST_FETCH_DELAY_MS), so the
+   * Git processes of opening the dashboard do not compete with it.
+   */
+  private _autoFetchHeld = true;
+  private _autoFetchHoldTimer?: NodeJS.Timeout;
+  /** Whether the webview has its HTML; until then a full update may show a list known from before. */
+  private _htmlShown = false;
+  private readonly _timings?: OpenTimings;
   private _messagesInFlight = 0;
   /** Git actions (not read-only requests) running now: a live refresh waits for them. */
   private _actionsInFlight = 0;
@@ -123,6 +142,7 @@ export class RepositoryManagerPanel {
     this._extensionUri = extensionUri;
     this._workspaceRoot = workspaceRoot;
     this._workspaceState = workspaceState;
+    this._timings = OpenTimings.fromSettings();
     this._gitOps = new GitOperations(workspaceRoot);
     this._prManager = new PRManager(workspaceRoot);
 
@@ -253,7 +273,27 @@ export class RepositoryManagerPanel {
       }
     }, null, this._disposables);
     this._scheduleAutoFetch();
+    this._autoFetchHoldTimer = setTimeout(() => this._releaseAutoFetch(), FIRST_FETCH_DELAY_MS);
+  }
+
+  /** Lets the background fetch run, and runs the first one as soon as nothing else is in flight. */
+  private _releaseAutoFetch(): void {
+    if (!this._autoFetchHeld) { return; }
+    this._autoFetchHeld = false;
+    if (this._autoFetchHoldTimer) { clearTimeout(this._autoFetchHoldTimer); }
+    this._startFirstAutoFetch(0);
+  }
+
+  /**
+   * The first fetch, when it is due: it starts while the dashboard is still answering requests
+   * (the history page that released it, refs, the working tree), so it waits for them by retrying.
+   */
+  private _startFirstAutoFetch(attempt: number): void {
+    this._autoFetchHoldTimer = undefined;
     this._autoFetchIfDue();
+    if (!this._autoFetchRun && this._lastAutoFetch === 0 && this._autoFetchIntervalMs() > 0 && attempt < 20) {
+      this._autoFetchHoldTimer = setTimeout(() => this._startFirstAutoFetch(attempt + 1), 250);
+    }
   }
 
   /** Background fetch interval in ms, or 0 when disabled. */
@@ -280,7 +320,7 @@ export class RepositoryManagerPanel {
    */
   private _autoFetchIfDue(): void {
     const interval = this._autoFetchIntervalMs();
-    if (!interval || !this._panel.visible || this._autoFetchRun || this._messagesInFlight > 0
+    if (this._autoFetchHeld || !interval || !this._panel.visible || this._autoFetchRun || this._messagesInFlight > 0
       || Date.now() - this._lastAutoFetch < interval - 1000) {
       return;
     }
@@ -379,16 +419,21 @@ export class RepositoryManagerPanel {
 
   private async _update(fullRefresh: boolean = true) {
     const gitOps = this._gitOps;
+    // Opening: the page is shown at once with the repositories known from the last time (or the
+    // parent alone), so its history loads while every repository's status is read; the fresh list
+    // follows as an update. Listing first made the page wait for one status per repository.
+    const early = fullRefresh && !this._htmlShown ? this._knownRepositories() : undefined;
+    if (early) { this._showHtml(early); }
     const allRepos = await this._listRepositories(gitOps);
     // A workspace folder switch while listing makes this result stale; the switch posts its own.
     if (gitOps !== this._gitOps) {
       return;
     }
+    this._timings?.mark('repositories listed');
+    void this._workspaceState?.update(REPOSITORY_LIST_KEY, { root: this._workspaceRoot, repositories: allRepos });
 
-    if (fullRefresh) {
-      const resourceUris = this._getResourceUris();
-      const workspaceFolders = this._getWorkspaceFolders();
-      this._panel.webview.html = getHtmlForWebview(allRepos, resourceUris, workspaceFolders);
+    if (fullRefresh && !early) {
+      this._showHtml(allRepos);
     } else {
       // Send data update instead of regenerating HTML
       this._panel.webview.postMessage({
@@ -396,6 +441,26 @@ export class RepositoryManagerPanel {
         payload: { submodules: allRepos }
       });
     }
+  }
+
+  private _showHtml(repositories: SubmoduleInfo[]): void {
+    this._htmlShown = true;
+    this._panel.webview.html = getHtmlForWebview(repositories, this._getResourceUris(), this._getWorkspaceFolders());
+    this._timings?.mark('page shown');
+  }
+
+  /**
+   * The repositories of this folder as last listed, or the parent repository alone (its state not
+   * known yet) when the folder holds one; undefined when nothing is known, so the page waits.
+   */
+  private _knownRepositories(): SubmoduleInfo[] | undefined {
+    const saved = this._workspaceState?.get<{ root?: string; repositories?: SubmoduleInfo[] }>(REPOSITORY_LIST_KEY);
+    if (saved && saved.root === this._workspaceRoot && Array.isArray(saved.repositories) && saved.repositories.length) {
+      return saved.repositories;
+    }
+    if (!fs.existsSync(path.join(this._workspaceRoot, '.git'))) { return undefined; }
+    return [{ name: path.basename(this._workspaceRoot) || 'Parent Repository', path: '.', url: '', branch: '',
+      currentCommit: '', currentBranch: '', status: 'unknown', hasChanges: false, ahead: 0, behind: 0, isParentRepo: true }];
   }
 
   /**
@@ -422,7 +487,12 @@ export class RepositoryManagerPanel {
       if (this._autoFetchRun && !READ_ONLY_MESSAGES.has(message.type)) {
         await this._autoFetchRun;
       }
+      if (message.type === 'getHistory') { this._timings?.markOnce('history asked'); }
       await this._dispatchMessage(message);
+      if (message.type === 'getHistory') {
+        this._timings?.markOnce('history sent');
+        this._releaseAutoFetch();
+      }
     } finally {
       this._messagesInFlight--;
       if (action) {
@@ -436,6 +506,11 @@ export class RepositoryManagerPanel {
   private async _dispatchMessage(message: { type: string; payload?: unknown }) {
     try {
       if (this._reviewBridge.fromDashboard(message)) { return; }
+      if (message.type === 'dashboardTiming') {
+        const name = (message.payload as { name?: unknown } | undefined)?.name;
+        if (typeof name === 'string') { this._timings?.markOnce(name); }
+        return;
+      }
       if (message.type === 'getReviewQuality') {
         await this._panel.webview.postMessage({ type: 'reviewQualityLoaded', payload: { includeQuality: this._skills.includeQuality() } });
         return;
@@ -585,6 +660,8 @@ export class RepositoryManagerPanel {
   }
 
   public dispose() {
+    if (this._autoFetchHoldTimer) { clearTimeout(this._autoFetchHoldTimer); }
+    this._timings?.dispose();
     this._cancelSummary();
     this._reviews.cancel();
     this._commitMessages.cancel();

@@ -63,6 +63,7 @@
   let uncommittedRowRendered = false;
   // The active repository's branch and commit at the last repository list, to notice HEAD moving.
   let activeHeadSignature = { repositoryPath: null, head: '' };
+  let historyDrawnReported = false;
   let workingTreePreviewRequestId = 0;
   let changeSummaryRequestId = 0;
   let changeSummarySelection = null;
@@ -1903,6 +1904,11 @@
     }
     historyNextOffset = payload.nextOffset;
     updateCommitCompareUI();
+    // Once, for repositoryManager.debug.timings: when the first history page is on screen.
+    if (!historyDrawnReported && loadedHistoryCommits.length) {
+      historyDrawnReported = true;
+      requestAnimationFrame(() => requestAnimationFrame(() => postMessage('dashboardTiming', { name: 'history drawn' })));
+    }
     // A page that does not reach past the view cannot be scrolled to its end: load the next one now.
     requestAnimationFrame(loadHistoryNearEnd);
 

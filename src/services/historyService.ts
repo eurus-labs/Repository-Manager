@@ -102,13 +102,22 @@ export class HistoryService {
       args.push(`--skip=${offset}`);
     }
 
+    // Looked up while the log runs, not after it: each is a Git process of its own, and on a slow
+    // machine (Windows, a virus scanner) every process waited for adds its whole start-up time.
+    // The configured upstream, not a same-named guess: `work` may track `upstream/release`.
+    // A detached HEAD or a branch without one has none.
+    const upstreamLookup = this.gitCmd.execGit(
+      ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}'], repositoryRoot, 5000
+    ).catch(() => '');
+    // Neither rejects (each falls back to none), so a failing log leaves nothing unhandled.
+    const stashLookup = listStashes(this.gitCmd, repositoryRoot);
+
     let tip: string | undefined;
     if (query.branch) {
       tip = await this.gitCmd.resolveRevision(query.repositoryPath, query.branch);
       args.push(tip);
     } else if (query.includeRemotes) {
-      // Every ref but the snapshots kept for saved reviews of local changes, which are not history.
-      // Review snapshots and the copies Discard keeps are not history.
+      // Every ref but the review snapshots and the copies Discard keeps, which are not history.
       args.push(`--exclude=${SNAPSHOT_REF_PREFIX}*`, `--exclude=${DISCARD_REF_PREFIX}*`, '--all');
     } else {
       args.push('HEAD');
@@ -142,16 +151,13 @@ export class HistoryService {
     }
 
     const hasMore = commits.length > limit;
-    // The configured upstream, not a same-named guess: `work` may track `upstream/release`.
-    // A detached HEAD or a branch without one has none.
-    const upstream = (await this.gitCmd.execGit(
-      ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}'], repositoryRoot, 5000
-    ).catch(() => '')).trim() || null;
+    const [upstreamName, stashes] = await Promise.all([upstreamLookup, stashLookup]);
+    const upstream = upstreamName.trim() || null;
     return {
       repositoryPath: query.repositoryPath,
       offset,
       // Git's index and untracked-files commits inside a stash are not history.
-      commits: hideStashInternals(commits.slice(0, limit), await listStashes(this.gitCmd, repositoryRoot), tip),
+      commits: hideStashInternals(commits.slice(0, limit), stashes, tip),
       nextOffset: hasMore ? offset + limit : null,
       upstream
     };

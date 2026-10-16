@@ -11,7 +11,13 @@ export class SupersededError extends Error {
   constructor() { super('Superseded by a newer request'); this.name = 'SupersededError'; }
 }
 
+/** One finished Git process: for repositoryManager.debug.timings. */
+export interface GitCommandTiming { args: string[]; cwd: string; ms: number; ok: boolean }
+
 export class GitCommandService {
+  /** Told about every Git process when set (repositoryManager.debug.timings); nothing else uses it. */
+  static observer?: (timing: GitCommandTiming) => void;
+
   constructor(protected workspaceRoot: string) {}
 
   /**
@@ -33,6 +39,7 @@ export class GitCommandService {
     env?: NodeJS.ProcessEnv
   ): Promise<string> {
     const workDir = cwd || this.workspaceRoot;
+    const started = Date.now();
 
     return new Promise((resolve, reject) => {
       execFile('git', args, {
@@ -43,6 +50,7 @@ export class GitCommandService {
         timeout: timeoutMs,
         windowsHide: true
       }, (error, stdout, stderr) => {
+        GitCommandService.observer?.({ args, cwd: workDir, ms: Date.now() - started, ok: !error });
         if (!error || (allowDiffExitCode && error.code === 1 && !error.killed && !stderr.trim())) {
           resolve(stdout);
           return;
