@@ -63,6 +63,7 @@
   let uncommittedRowRendered = false;
   // The active repository's branch and commit at the last repository list, to notice HEAD moving.
   let activeHeadSignature = { repositoryPath: null, head: '' };
+  let historyDrawnReported = false;
   let workingTreePreviewRequestId = 0;
   let changeSummaryRequestId = 0;
   let changeSummarySelection = null;
@@ -295,6 +296,14 @@
     // The cached state can be stale (e.g. a rebase continued in a terminal); refresh it while the menu is open.
     postMessage('getPendingOperation', { repositoryPath: activeDashboardRepository });
     return true;
+  }
+
+  // Webviews cannot show alert(): what is missing is said in the dialog, next to its buttons.
+  function showCreateBranchHint(text) {
+    const hint = document.getElementById('createBranchHint');
+    if (!hint) return;
+    hint.textContent = text;
+    hint.hidden = !text;
   }
 
   function restoreBranchModalControls() {
@@ -940,6 +949,7 @@
       } else {
         postMessage('getBaseBranchesForCreate', {});
       }
+      showCreateBranchHint('');
       document.getElementById('createBranchModal').classList.add('active');
       // Retry if branches haven't loaded after 2s
       if (!fromCommit) retryLoadBaseBranches(3);
@@ -957,6 +967,7 @@
     },
 
     createBranch: () => {
+      showCreateBranchHint('');
       const branchName = document.getElementById('branchName').value.trim();
       const baseBranch = document.getElementById('baseBranch').value.trim() || 'main';
 
@@ -966,7 +977,7 @@
           branchName.endsWith('-') ||
           branchName.endsWith('_') ||
           branchName.includes('x.x.x')) {
-        alert('Please fill in all required fields to generate a valid branch name.');
+        showCreateBranchHint('Fill in every field, so the branch name is complete.');
         return;
       }
 
@@ -982,7 +993,7 @@
       const checkboxes = document.querySelectorAll('.branch-repository:checked');
       const repositories = Array.from(checkboxes).map(cb => cb.value);
       if (repositories.length === 0) {
-        alert('Please select at least one repository.');
+        showCreateBranchHint('Select at least one repository.');
         return;
       }
 
@@ -1893,6 +1904,11 @@
     }
     historyNextOffset = payload.nextOffset;
     updateCommitCompareUI();
+    // Once, for repositoryManager.debug.timings: when the first history page is on screen.
+    if (!historyDrawnReported && loadedHistoryCommits.length) {
+      historyDrawnReported = true;
+      requestAnimationFrame(() => requestAnimationFrame(() => postMessage('dashboardTiming', { name: 'history drawn' })));
+    }
     // A page that does not reach past the view cannot be scrolled to its end: load the next one now.
     requestAnimationFrame(loadHistoryNearEnd);
 
@@ -2737,17 +2753,6 @@
           const createdBranch = message.payload.branchName;
           const results = message.payload.results;
           showReviewModal(createdBranch, results);
-          break;
-        }
-
-        case 'pushResults': {
-          const pushResults = message.payload.results || [];
-          const pushSuccessCount = pushResults.filter(r => r.success).length;
-          if (pushSuccessCount === pushResults.length) {
-            alert('Successfully pushed branch to ' + pushSuccessCount + ' remote(s)');
-          } else {
-            alert('Pushed to ' + pushSuccessCount + '/' + pushResults.length + ' remotes. Some pushes failed.');
-          }
           break;
         }
 

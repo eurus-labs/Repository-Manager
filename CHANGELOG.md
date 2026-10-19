@@ -5,6 +5,21 @@ All notable changes to Repository Manager will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.7.0] - Unreleased
+
+### Added
+
+- **repositoryManager.debug.timings** (off by default) writes how long opening the dashboard takes to the **Repository Manager Timings** output: each step and every Git command with its duration, for the first 30 seconds. Turn it on when the dashboard opens slowly, to see where the time goes.
+
+### Changed
+
+- The dashboard opens faster, most of all on Windows. The page shows at once with the repositories known from last time, the graph is read without waiting for every repository's status, and the first background fetch waits until the graph is shown.
+
+### Fixed
+
+- After **Confirm & Push** on a new branch, the graph shows its `origin/<branch>` label without a reload, and the branch is pushed by name even if another branch was checked out meanwhile. A failed push now says, for each repository, why.
+- Creating a branch with a field left empty or no repository selected says so in the dialog; before, nothing happened.
+
 ## [2.6.0] - 2026-10-14
 
 ### Added
