@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Right-click a changed file for **Review Changes in This File**: a review of just that file, for uncommitted changes, a commit or a comparison. Uncommitted files keep **Discard Changes…** and **Discard All Changes…** in the same menu.
 - The detail pane of a commit or a loaded comparison (including **Compare branches**) has a **Review changes** button beside **Summarize changes**.
+- Before **Cherry Pick**, **Revert**, **Merge**, **Rebase** and **Drop** run, their confirmation says which files will conflict, as Git predicts by simulating the action in memory (nothing changes until you confirm). A rebase names the first commit that will stop. Needs Git 2.40 or newer; otherwise the dialog says nothing was predicted.
 
 ### Changed
 

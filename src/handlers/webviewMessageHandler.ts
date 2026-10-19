@@ -11,6 +11,7 @@ import { HistoryQuery } from '../types';
 import { GitCommandService } from '../services/gitCommandService';
 import { HistoryAction } from '../services/historyActionService';
 import { HistoryRewriteAction, ResetMode } from '../services/historyRewriteService';
+import { ConflictPrediction, ConflictPredictionService, PredictedOperation } from '../services/conflictPredictionService';
 import { STASH_OPERATIONS, StashActionData, StashOperation } from '../services/stashActionService';
 
 export interface MessageHandlerContext {
@@ -772,6 +773,34 @@ export async function handleCreateTagFromCommit(ctx: MessageHandlerContext, payl
   }
 }
 
+/**
+ * What Git predicts the action will stop on, for its confirmation dialog: simulated in memory
+ * (ConflictPredictionService), so it is a fact, not a guess. A failed simulation never blocks the
+ * action; the dialog just says nothing was predicted.
+ */
+async function predictConflicts(ctx: MessageHandlerContext, repositoryPath: string, operation: PredictedOperation,
+  commit: string, mainline?: number): Promise<string> {
+  let prediction: ConflictPrediction;
+  try {
+    prediction = await new ConflictPredictionService(new GitCommandService(ctx.workspaceRoot)).predict(repositoryPath, operation, commit, mainline);
+  } catch (error) {
+    return `Conflicts were not predicted: ${error instanceof Error ? error.message : String(error)}`;
+  }
+  if (!prediction.supported) {
+    return `Conflicts were not predicted: ${prediction.reason}`;
+  }
+  if (!prediction.conflicts.length) {
+    return prediction.steps > 1 ? `Predicted by Git: no conflicts in the ${prediction.steps} commits replayed.` : 'Predicted by Git: no conflicts.';
+  }
+  return prediction.conflicts.map(conflict => {
+    const where = prediction.steps > 1 ? ` (commit ${prediction.replayed + 1} of ${prediction.steps})` : '';
+    const files = conflict.paths.length > 8 ? `${conflict.paths.slice(0, 8).join(', ')} and ${conflict.paths.length - 8} more` : conflict.paths.join(', ');
+    return `Predicted by Git: conflicts at ${conflict.commit.slice(0, 12)} ${conflict.subject}${where} in ${files}.` +
+      (prediction.stoppedEarly ? ' Later commits depend on how this is resolved, so they were not predicted.' : '') +
+      ' You resolve them in Source Control, then continue or abort.';
+  }).join('\n');
+}
+
 export async function handleApplyHistoryCommit(ctx: MessageHandlerContext, payload: {
   repositoryPath: string; commit: string; operation: HistoryAction
 }): Promise<void> {
@@ -795,7 +824,8 @@ export async function handleApplyHistoryCommit(ctx: MessageHandlerContext, paylo
   const label = payload.operation === 'cherry-pick' ? 'Cherry pick' : payload.operation === 'revert' ? 'Revert' : 'Merge';
   const approved = await vscode.window.showWarningMessage(
     `${label} ${sha.slice(0, 12)} ${payload.operation === 'merge' ? 'into' : 'on'} ${branch} in ${payload.repositoryPath}?`,
-    { modal: true, detail: `The working tree must be clean. Conflicts can be resolved in Source Control.` }, label
+    { modal: true, detail: `${await predictConflicts(ctx, payload.repositoryPath, payload.operation, sha, mainline)}\n` +
+      'The working tree must be clean. Conflicts can be resolved in Source Control.' }, label
   );
   if (approved !== label) {
     return;
@@ -848,7 +878,8 @@ export async function handleRewriteHistoryCommit(ctx: MessageHandlerContext, pay
       `HEAD: ${preview.head}\nSelected: ${preview.target} ${preview.targetSubject}\n` +
       `${payload.action === 'drop' ? 'Commits replayed after dropping the selected commit' : 'Commits affected'} (${preview.affectedCount}):` +
       `\n${shown || '(none)'}${more}\nWorking tree must be clean. ` +
-      `${payload.action === 'drop' || mode === 'hard' ? 'A local backup branch will be created.' : 'Commits may receive new hashes.'}`;
+      `${payload.action === 'drop' || mode === 'hard' ? 'A local backup branch will be created.' : 'Commits may receive new hashes.'}` +
+      (payload.action === 'reset' ? '' : `\n${await predictConflicts(ctx, payload.repositoryPath, payload.action, preview.target)}`);
     const approved = await vscode.window.showWarningMessage(
       `${label} on ${preview.branch}?`, { modal: true, detail }, label
     );

@@ -61,6 +61,7 @@ async function main() {
     typedName = branch;
     await handleRewriteHistoryCommit(ctx, payload);
     assert.match(promptDetail, new RegExp(head));
+    assert.doesNotMatch(promptDetail, /predict/i, 'a reset never conflicts, so it predicts nothing');
     assert.equal(run('rev-parse', 'HEAD'), base);
     assert.equal(reloads, 1);
     assert.equal(refreshes, 1);
