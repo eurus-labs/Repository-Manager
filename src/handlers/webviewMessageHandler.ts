@@ -12,6 +12,7 @@ import { GitCommandService } from '../services/gitCommandService';
 import { HistoryAction } from '../services/historyActionService';
 import { HistoryRewriteAction, ResetMode } from '../services/historyRewriteService';
 import { ConflictPrediction, ConflictPredictionService, PredictedOperation } from '../services/conflictPredictionService';
+import { ConflictExplainerHost, describeSides, explainPredictedConflicts, formatConflictExplanation } from '../services/conflictExplanation';
 import { STASH_OPERATIONS, StashActionData, StashOperation } from '../services/stashActionService';
 
 export interface MessageHandlerContext {
@@ -23,6 +24,8 @@ export interface MessageHandlerContext {
   reloadDashboardHistory: (repositoryPaths: string[]) => Promise<void>;
   /** Where small per-repository choices are remembered, such as Push after commit. */
   workspaceState?: vscode.Memento;
+  /** Copilot, for explaining a history action's predicted conflicts; absent, the dialog does not offer it. */
+  conflictExplainer?: ConflictExplainerHost;
 }
 
 const PUSH_AFTER_COMMIT_KEY = 'repositoryManager.pushAfterCommit';
@@ -779,26 +782,61 @@ export async function handleCreateTagFromCommit(ctx: MessageHandlerContext, payl
  * action; the dialog just says nothing was predicted.
  */
 async function predictConflicts(ctx: MessageHandlerContext, repositoryPath: string, operation: PredictedOperation,
-  commit: string, mainline?: number): Promise<string> {
+  commit: string, mainline?: number): Promise<{ text: string; prediction?: ConflictPrediction }> {
   let prediction: ConflictPrediction;
   try {
     prediction = await new ConflictPredictionService(new GitCommandService(ctx.workspaceRoot)).predict(repositoryPath, operation, commit, mainline);
   } catch (error) {
-    return `Conflicts were not predicted: ${error instanceof Error ? error.message : String(error)}`;
+    return { text: `Conflicts were not predicted: ${error instanceof Error ? error.message : String(error)}` };
   }
   if (!prediction.supported) {
-    return `Conflicts were not predicted: ${prediction.reason}`;
+    return { text: `Conflicts were not predicted: ${prediction.reason}` };
   }
   if (!prediction.conflicts.length) {
-    return prediction.steps > 1 ? `Predicted by Git: no conflicts in the ${prediction.steps} commits replayed.` : 'Predicted by Git: no conflicts.';
+    return { prediction, text: prediction.steps > 1 ? `Predicted by Git: no conflicts in the ${prediction.steps} commits replayed.` : 'Predicted by Git: no conflicts.' };
   }
-  return prediction.conflicts.map(conflict => {
+  return { prediction, text: prediction.conflicts.map(conflict => {
     const where = prediction.steps > 1 ? ` (commit ${prediction.replayed + 1} of ${prediction.steps})` : '';
-    const files = conflict.paths.length > 8 ? `${conflict.paths.slice(0, 8).join(', ')} and ${conflict.paths.length - 8} more` : conflict.paths.join(', ');
+    // A conflict that is not about lines (a file deleted on one side) says so: it is resolved differently.
+    const named = conflict.paths.map(path => {
+      const kinds = (conflict.kinds[path] || []).filter(kind => kind !== 'contents' && kind !== 'content');
+      return kinds.length ? `${path} (${kinds.join(', ')})` : path;
+    });
+    const files = named.length > 8 ? `${named.slice(0, 8).join(', ')} and ${named.length - 8} more` : named.join(', ');
     return `Predicted by Git: conflicts at ${conflict.commit.slice(0, 12)} ${conflict.subject}${where} in ${files}.` +
       (prediction.stoppedEarly ? ' Later commits depend on how this is resolved, so they were not predicted.' : '') +
       ' You resolve them in Source Control, then continue or abort.';
-  }).join('\n');
+  }).join('\n') };
+}
+
+const EXPLAIN_CONFLICTS = 'Explain conflicts';
+
+/**
+ * The action's confirmation. When Git predicted conflicts and Copilot is available, it also offers
+ * Explain conflicts: Copilot's reading is added to the same question, which is asked again, so the
+ * user decides with it in front of them. A failed explanation says so and still lets the action run.
+ */
+async function confirmHistoryAction(ctx: MessageHandlerContext, repositoryPath: string, question: string, detail: string,
+  label: string, prediction: ConflictPrediction | undefined): Promise<boolean> {
+  const explainer = ctx.conflictExplainer;
+  const explainable = Boolean(explainer && prediction && prediction.conflicts.length);
+  const first = await vscode.window.showWarningMessage(question, { modal: true, detail }, label, ...(explainable ? [EXPLAIN_CONFLICTS] : []));
+  if (first !== EXPLAIN_CONFLICTS || !explainer || !prediction) {
+    return first === label;
+  }
+  const outcome = await explainPredictedConflicts(explainer, new GitCommandService(ctx.workspaceRoot), repositoryPath, prediction,
+    work => Promise.resolve(vscode.window.withProgress({ location: vscode.ProgressLocation.Notification,
+      title: 'Explaining the predicted conflicts with Copilot…', cancellable: true }, (_progress, token) => work(token))));
+  if (outcome.kind === 'cancelled') {
+    return false;
+  }
+  const conflict = prediction.conflicts[0];
+  const reading = outcome.kind === 'explained'
+    ? formatConflictExplanation(outcome.explanation, describeSides(prediction, conflict), outcome.model,
+      conflict.paths.filter(path => !outcome.explanation.files.some(file => file.path === path)))
+    : `Copilot could not explain the conflicts: ${outcome.message}`;
+  const again = await vscode.window.showWarningMessage(question, { modal: true, detail: `${detail}\n\n${reading}` }, label);
+  return again === label;
 }
 
 export async function handleApplyHistoryCommit(ctx: MessageHandlerContext, payload: {
@@ -822,12 +860,11 @@ export async function handleApplyHistoryCommit(ctx: MessageHandlerContext, paylo
     mainline = picked.index;
   }
   const label = payload.operation === 'cherry-pick' ? 'Cherry pick' : payload.operation === 'revert' ? 'Revert' : 'Merge';
-  const approved = await vscode.window.showWarningMessage(
+  const predicted = await predictConflicts(ctx, payload.repositoryPath, payload.operation, sha, mainline);
+  const approved = await confirmHistoryAction(ctx, payload.repositoryPath,
     `${label} ${sha.slice(0, 12)} ${payload.operation === 'merge' ? 'into' : 'on'} ${branch} in ${payload.repositoryPath}?`,
-    { modal: true, detail: `${await predictConflicts(ctx, payload.repositoryPath, payload.operation, sha, mainline)}\n` +
-      'The working tree must be clean. Conflicts can be resolved in Source Control.' }, label
-  );
-  if (approved !== label) {
+    `${predicted.text}\nThe working tree must be clean. Conflicts can be resolved in Source Control.`, label, predicted.prediction);
+  if (!approved) {
     return;
   }
   const git = new GitCommandService(ctx.workspaceRoot);
@@ -878,12 +915,12 @@ export async function handleRewriteHistoryCommit(ctx: MessageHandlerContext, pay
       `HEAD: ${preview.head}\nSelected: ${preview.target} ${preview.targetSubject}\n` +
       `${payload.action === 'drop' ? 'Commits replayed after dropping the selected commit' : 'Commits affected'} (${preview.affectedCount}):` +
       `\n${shown || '(none)'}${more}\nWorking tree must be clean. ` +
-      `${payload.action === 'drop' || mode === 'hard' ? 'A local backup branch will be created.' : 'Commits may receive new hashes.'}` +
-      (payload.action === 'reset' ? '' : `\n${await predictConflicts(ctx, payload.repositoryPath, payload.action, preview.target)}`);
-    const approved = await vscode.window.showWarningMessage(
-      `${label} on ${preview.branch}?`, { modal: true, detail }, label
-    );
-    if (approved !== label) {
+      `${payload.action === 'drop' || mode === 'hard' ? 'A local backup branch will be created.' : 'Commits may receive new hashes.'}`;
+    // Reset never conflicts: nothing to predict.
+    const predicted = payload.action === 'reset' ? undefined : await predictConflicts(ctx, payload.repositoryPath, payload.action, preview.target);
+    const approved = await confirmHistoryAction(ctx, payload.repositoryPath, `${label} on ${preview.branch}?`,
+      predicted ? `${detail}\n${predicted.text}` : detail, label, predicted?.prediction);
+    if (!approved) {
       return;
     }
     if (mode === 'hard') {

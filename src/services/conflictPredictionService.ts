@@ -18,12 +18,23 @@ export interface PredictedConflict {
   commit: string;
   subject: string;
   paths: string[];
+  /** Git's kind of each path's conflict ("contents", "modify/delete", "rename/delete", …). */
+  kinds: Record<string, string[]>;
+  /** The simulated result: its conflicted files hold diff3 markers (side A, base, side B). */
+  tree: string;
+  /** The commit side A stands for: HEAD, or for a rebase the commit being replayed onto. */
+  sideA: string;
 }
 
 export interface ConflictPrediction {
   /** False when this Git cannot simulate it; `reason` says why, and nothing is claimed. */
   supported: boolean;
   reason?: string;
+  operation: PredictedOperation;
+  /** The selected commit (for rebase, the commit moved onto), resolved. */
+  target: string;
+  /** The current branch, or HEAD when detached. */
+  branch: string;
   conflicts: PredictedConflict[];
   /** Commits replayed before the first conflict, out of `steps`. */
   replayed: number;
@@ -45,17 +56,21 @@ export class ConflictPredictionService {
     const cwd = this.git.resolveRepositoryPath(repositoryPath);
     const sha = await this.git.resolveRevision(repositoryPath, commit);
     const head = await this.git.resolveRevision(repositoryPath, 'HEAD');
+    const branch = await this.git.execGit(['symbolic-ref', '--quiet', '--short', 'HEAD'], cwd, 5000).catch(() => 'HEAD');
+    const result = (conflicts: PredictedConflict[], replayed: number, steps: number, stoppedEarly = false): ConflictPrediction =>
+      ({ supported: true, operation, target: sha, branch, conflicts, replayed, steps, stoppedEarly });
     try {
-      if (operation === 'merge') {
-        const paths = await this.merge(cwd, undefined, head, sha);
-        return this.result(paths ? [await this.conflict(cwd, sha, paths)] : [], 1, 1, false);
-      }
-      if (operation === 'cherry-pick' || operation === 'revert') {
-        const parent = await this.git.execGit(['rev-parse', '--verify', `${sha}^${mainline || 1}^{commit}`], cwd, 5000)
-          .catch(() => { throw new Unsupported('A root commit cannot be simulated.'); });
-        // Picking applies parent → commit; reverting applies commit → parent.
-        const paths = operation === 'cherry-pick' ? await this.merge(cwd, parent, head, sha) : await this.merge(cwd, sha, head, parent);
-        return this.result(paths ? [await this.conflict(cwd, sha, paths)] : [], 1, 1, false);
+      if (operation === 'merge' || operation === 'cherry-pick' || operation === 'revert') {
+        let mergeBase: string | undefined;
+        let theirs = sha;
+        if (operation !== 'merge') {
+          const parent = await this.git.execGit(['rev-parse', '--verify', `${sha}^${mainline || 1}^{commit}`], cwd, 5000)
+            .catch(() => { throw new Unsupported('A root commit cannot be simulated.'); });
+          // Picking applies parent → commit; reverting applies commit → parent.
+          [mergeBase, theirs] = operation === 'cherry-pick' ? [parent, sha] : [sha, parent];
+        }
+        const merged = await this.mergeTree(cwd, mergeBase, head, theirs);
+        return result(merged.paths.length ? [await this.conflict(cwd, sha, merged, head)] : [], 1, 1);
       }
       // rebase onto `sha`, or drop `sha`: replay the branch's own commits, oldest first.
       const onto = operation === 'drop' ? `${sha}^` : sha;
@@ -68,42 +83,33 @@ export class ConflictPredictionService {
       let base = await this.git.resolveRevision(repositoryPath, onto);
       for (let index = 0; index < commits.length; index++) {
         const step = commits[index];
-        const tree = await this.mergeTree(cwd, `${step}^`, base, step);
-        if (tree.paths.length) {
-          return this.result([await this.conflict(cwd, step, tree.paths)], index, commits.length, index < commits.length - 1);
+        const merged = await this.mergeTree(cwd, `${step}^`, base, step);
+        if (merged.paths.length) {
+          return result([await this.conflict(cwd, step, merged, base)], index, commits.length, index < commits.length - 1);
         }
-        base = await this.git.execGit(['commit-tree', tree.tree, '-p', base, '-m', 'conflict prediction'], cwd, 10000);
+        base = await this.git.execGit(['commit-tree', merged.tree, '-p', base, '-m', 'conflict prediction'], cwd, 10000);
       }
-      return this.result([], commits.length, commits.length, false);
+      return result([], commits.length, commits.length);
     } catch (error) {
       if (error instanceof Unsupported) {
-        return { supported: false, reason: error.message, conflicts: [], replayed: 0, steps: 0, stoppedEarly: false };
+        return { supported: false, reason: error.message, operation, target: sha, branch, conflicts: [], replayed: 0, steps: 0, stoppedEarly: false };
       }
       throw error;
     }
   }
 
-  private result(conflicts: PredictedConflict[], replayed: number, steps: number, stoppedEarly: boolean): ConflictPrediction {
-    return { supported: true, conflicts, replayed, steps, stoppedEarly };
-  }
-
-  private async conflict(cwd: string, commit: string, paths: string[]): Promise<PredictedConflict> {
+  private async conflict(cwd: string, commit: string, merged: MergeTreeResult, sideA: string): Promise<PredictedConflict> {
     const subject = await this.git.execGit(['show', '-s', '--format=%s', commit], cwd, 5000).catch(() => '');
-    return { commit, subject, paths };
+    return { commit, subject, paths: merged.paths, kinds: merged.kinds, tree: merged.tree, sideA };
   }
 
-  /** The conflicted paths of one merge, or undefined when it is clean. */
-  private async merge(cwd: string, mergeBase: string | undefined, ours: string, theirs: string): Promise<string[] | undefined> {
-    const { paths } = await this.mergeTree(cwd, mergeBase, ours, theirs);
-    return paths.length ? paths : undefined;
-  }
-
-  private async mergeTree(cwd: string, mergeBase: string | undefined, ours: string, theirs: string): Promise<{ tree: string; paths: string[] }> {
+  private async mergeTree(cwd: string, mergeBase: string | undefined, sideA: string, sideB: string): Promise<MergeTreeResult> {
     let output: string;
     try {
       // -z: paths exactly as they are; exit code 1 means "conflicts", with the tree still written.
-      output = await this.git.execGitRaw(['merge-tree', '--write-tree', '--name-only', '-z', '--no-messages',
-        ...(mergeBase ? [`--merge-base=${mergeBase}`] : []), ours, theirs], cwd, 60000, true);
+      // diff3 keeps the base lines in the conflicted files, for an explanation of both changes.
+      output = await this.git.execGitRaw(['-c', 'merge.conflictStyle=diff3', 'merge-tree', '--write-tree', '--name-only', '-z',
+        ...(mergeBase ? [`--merge-base=${mergeBase}`] : []), sideA, sideB], cwd, 60000, true);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (/unknown option|usage: git merge-tree/i.test(message)) {
@@ -111,9 +117,35 @@ export class ConflictPredictionService {
       }
       throw error;
     }
-    const [tree, ...rest] = output.split('\0');
-    return { tree, paths: [...new Set(rest.filter(Boolean))] };
+    return parseMergeTree(output);
   }
+}
+
+interface MergeTreeResult { tree: string; paths: string[]; kinds: Record<string, string[]> }
+
+/**
+ * `merge-tree --write-tree --name-only -z` output: the tree, the conflicted paths, an empty entry,
+ * then messages as `<count> <path>… <type> <message>`. Only the conflict types are kept: the
+ * messages name the sides by the hashes given to merge-tree, which the user never chose.
+ */
+export function parseMergeTree(output: string): MergeTreeResult {
+  const entries = output.split('\0');
+  const tree = entries[0];
+  let index = 1;
+  const paths: string[] = [];
+  for (; index < entries.length && entries[index] !== ''; index++) { paths.push(entries[index]); }
+  const kinds: Record<string, string[]> = {};
+  for (index++; index < entries.length;) {
+    const count = Number(entries[index]);
+    if (!Number.isInteger(count) || count < 1) { break; }
+    const named = entries.slice(index + 1, index + 1 + count);
+    const type = /^CONFLICT \((.+)\)$/.exec(entries[index + 1 + count] || '');
+    if (type) {
+      for (const path of named) { kinds[path] = [...new Set([...(kinds[path] || []), type[1]])]; }
+    }
+    index += count + 3;
+  }
+  return { tree, paths: [...new Set(paths)], kinds };
 }
 
 class Unsupported extends Error {}

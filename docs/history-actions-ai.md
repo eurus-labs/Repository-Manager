@@ -1,6 +1,6 @@
 # AI support for history actions
 
-Status: approved design; phase 1 implemented, phases 2–3 proposed.
+Status: approved design; phases 1 and 2 implemented, phases 3–4 proposed.
 
 The commit menu already runs cherry-pick, revert, merge, rebase, reset (soft, mixed, hard) and drop
 (`HistoryActionService`, `HistoryRewriteService`), each behind a confirmation dialog. This adds
@@ -9,7 +9,8 @@ prediction and AI help around those operations. It adds no new Git operation.
 ## Decisions
 
 - **Predict, list the issues, then the user decides.** Before an action runs, the system says what
-  it will run into. For each issue the user resolves it themselves or asks AI for a suggestion.
+  it will run into, and AI can explain it, so the user decides whether to run the action at all.
+  Once it stops on a conflict, the user resolves each file themselves or asks AI for a suggestion.
   There is no mode in which AI carries an action through on its own: a resolution that keeps the
   text of both sides can still combine them wrongly, and no check here can see that. The extension
   cannot build or test an arbitrary repository either.
@@ -42,7 +43,35 @@ unreachable object. `--merge-base` needs Git 2.40 or newer. On older Git, for a 
 still runs. `src/test/conflictPredictionSmoke.js` checks each prediction against the real
 operation's result.
 
-## Phase 2: AI resolution of a conflict (proposed)
+Git's kind of conflict is kept per path from `merge-tree`'s messages (`parseMergeTree`): only the
+type (`contents`, `modify/delete`, …), never the message, which names the sides by the hashes passed
+to `merge-tree`. The dialog names the kind when it is not about lines, e.g. `gone.txt (modify/delete)`.
+
+## Phase 2: explaining predicted conflicts before running (implemented)
+
+When Git predicts conflicts and Copilot is available, the confirmation also offers **Explain
+conflicts** (`confirmHistoryAction` in `handlers/webviewMessageHandler.ts`, `services/conflictExplanation.ts`):
+
+1. Consent, as reviews and commit messages ask it (`repositoryManager.copilot.askBeforeSending`,
+   sharing their per-repository "Always allow"). Declining sends nothing and runs nothing.
+2. The first conflicting commit's conflicted files are read from the simulated tree, which
+   `merge-tree` writes with diff3 markers (`-c merge.conflictStyle=diff3`): each conflict with three
+   lines around it, up to 24 KB, markers relabelled `A`, `BASE`, `B`. A file with no lines to show
+   (deleted on one side, binary) is sent as Git's kind of conflict only.
+3. The prompt names A and B (`describeSides`: the current branch, the commit picked, the commit
+   rebased onto, your commit being replayed), never "ours" and "theirs"; treats code and subjects
+   as untrusted; and asks per file what each side changed, whether both can be kept, and how, plus
+   `proceed`, `reconsider` or `unclear`. Written in VS Code's display language.
+4. The reply must be that JSON; files it invents are dropped and files it skips are listed as not
+   explained. The same question is asked again with Git's facts first and Copilot's reading after,
+   labelled a suggestion with the model's name, and only the action's own button.
+
+The model is the toolbar's **Model**. A failed explanation never blocks the action: the second
+question says Copilot could not explain, and still offers it. Declining the consent question or
+cancelling the explanation closes the dialog and runs nothing; the action can be started again. Copilot is only reachable in VS
+Code, so `src/test/conflictExplanationSmoke.js` drives this with a scripted model.
+
+## Phase 3: AI resolution of a conflict (proposed)
 
 When an action stops on conflicts, each conflicted file can be resolved by hand (Source Control) or
 with **Suggest resolution**. The model gets the base, both sides (named after their commits or
@@ -50,7 +79,7 @@ branches) and the commits' messages. The suggestion is shown as a diff against t
 Before it is offered, code checks that each side's changes since the base are still in it, and names
 the side whose change is missing. Applying writes the file only.
 
-## Phase 3: plain-language undo (proposed)
+## Phase 4: plain-language undo (proposed)
 
 A request such as "undo my last 2 commits but keep the changes" is answered by the model with one
 existing action and its arguments only (here: reset, soft, to `HEAD~2`), never with a Git command.

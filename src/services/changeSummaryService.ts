@@ -49,14 +49,14 @@ export class CopilotSummaryProvider implements AIProvider {
         : 'No Copilot model available. Sign in to GitHub Copilot and try again.');
     }
     if (await model.countTokens(prompt) > model.maxInputTokens - 1024) {
-      throw new Error('The selected files\' diff does not fit this model. Select fewer files, or choose a model with a larger context window.');
+      throw new Error('What would be sent does not fit this model. Send less (for a commit message, select fewer files), or choose a model with a larger context window.');
     }
     const response = await model.sendRequest([api.LanguageModelChatMessage.User(prompt)], {}, token);
     let text = '';
     for await (const fragment of response.text) {
       if (token.isCancellationRequested) { throw new Error('Cancelled'); }
       text += fragment;
-      if (text.length > maxChars) { throw new Error('The model\'s reply is longer than a commit message should be.'); }
+      if (text.length > maxChars) { throw new Error('The model\'s reply is longer than expected. Try again, or choose another model.'); }
     }
     // The name people know the model by ("Claude Haiku 4.5"), for the status line; not its id:version.
     return { text, model: model.name || model.id };

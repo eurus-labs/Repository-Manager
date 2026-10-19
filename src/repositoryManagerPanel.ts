@@ -24,6 +24,7 @@ import { ReviewHistoryStore } from './reviewHistory';
 import { ReviewUnitCache } from './reviewUnitCache';
 import { ReviewSkillStore } from './reviewSkillStore';
 import { readPinnedModels, readSelectedModel, savePinnedModels, saveSelectedModel } from './modelPreferences';
+import { ConflictExplainerHost } from './services/conflictExplanation';
 import { RepositoryManagerLauncher } from './repositoryManagerLauncher';
 import { CommitMessageController } from './commitMessageController';
 import { LiveChanges } from './liveChanges';
@@ -467,7 +468,22 @@ export class RepositoryManagerPanel {
       workspaceRoot: this._workspaceRoot,
       refresh: () => this.refresh(),
       reloadDashboardHistory: (repositoryPaths) => this.reloadDashboardHistory(repositoryPaths),
-      workspaceState: this._workspaceState
+      workspaceState: this._workspaceState,
+      conflictExplainer: this._conflictExplainer()
+    };
+  }
+
+  /** Copilot for a history action's predicted conflicts: the toolbar's model, and the same consent as reviews. */
+  private _conflictExplainer(): ConflictExplainerHost {
+    const consentFor = consentHooks(() => this._askBeforeSending(), root => this._consent.has(root));
+    return {
+      ask: (message, detail, actions) => Promise.resolve(vscode.window.showInformationMessage(message, { modal: true, detail }, ...actions)),
+      alwaysConfirm: consentFor.alwaysConfirm,
+      isConsentRemembered: consentFor.isConsentRemembered,
+      rememberConsent: root => this._consent.allow(root),
+      complete: (prompt, token, maxChars) => this._summaryProvider.complete(prompt, readSelectedModel(RepositoryManagerPanel.globalState)?.id,
+        token as vscode.CancellationToken, maxChars),
+      language: () => vscode.env.language
     };
   }
 
