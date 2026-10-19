@@ -44,7 +44,7 @@ const READ_ONLY_MESSAGES = new Set([
   'getWorkingTreePreview', 'getBranches', 'getCommits', 'getRecordedCommit', 'getBaseBranchesForCreate',
   'getPendingOperation', 'summarizeChanges', 'cancelChangeSummary', 'loadSummaryModels', 'refreshRepositories',
   // Reviews read pinned commits only; they never touch refs a background fetch updates.
-  'requestReview', 'openReviewTab', 'dashboardContext', 'getReviewStatus', 'getReviewQuality', 'reviewReady', 'showReviewEvidence',
+  'requestReview', 'openReviewTab', 'dashboardContext', 'getReviewStatus', 'reviewReady', 'showReviewEvidence',
   'startReview', 'cancelReview', 'exportReviewReport', 'openReviewEvidence', 'setFindingTriage',
   'proposeReviewFix', 'discardReviewFix', 'cancelReviewFix', 'listReviewHistory', 'openStoredReview', 'deleteStoredReview',
   // Writing a commit message reads the working tree's diff; nothing is committed.
@@ -504,10 +504,6 @@ export class RepositoryManagerPanel {
       if (message.type === 'dashboardTiming') {
         const name = (message.payload as { name?: unknown } | undefined)?.name;
         if (typeof name === 'string') { this._timings?.markOnce(name); }
-        return;
-      }
-      if (message.type === 'getReviewQuality') {
-        await this._panel.webview.postMessage({ type: 'reviewQualityLoaded', payload: { includeQuality: this._skills.includeQuality() } });
         return;
       }
       if (this._reviews.handles(message.type)) {

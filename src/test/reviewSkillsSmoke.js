@@ -141,10 +141,11 @@ async function main() {
   for (let i = 0; i < 30; i++) assert.equal(typeof await user.import(skillText(`team-${i}`)), 'object');
   assert.match(await user.import(skillText('team-30')), /At most 30/);
   assert.equal(typeof await user.import(skillText('team-3', { guidance: '- Updated.' })), 'object', 'replacing an import counted against the limit');
-  // The Clean code choice is kept by the host, so a new dashboard panel keeps it.
-  assert.equal(user.includeQuality(), false);
-  await user.setIncludeQuality(true);
-  assert.equal(new ReviewSkillStore(bundledDir, state).includeQuality(), true);
+  // Clean code (the quality category) is on while a quality skill is: the skill's switch is the only one.
+  assert.equal(user.includeQuality(), true, 'the bundled clean code skill did not turn quality on');
+  await user.setEnabled('clean-code', false);
+  assert.equal(new ReviewSkillStore(bundledDir, state).includeQuality(), false);
+  await user.setEnabled('clean-code', true);
   // A missing folder is no skills, not a crash.
   assert.deepEqual(new ReviewSkillStore(path.join(bundledDir, 'missing')).list(), []);
 
@@ -246,7 +247,7 @@ async function main() {
     fs.rmSync(repo, { recursive: true, force: true });
   }
 
-  // 6. The controller: the panel lists, turns off, imports and removes skills, and Clean code adds the category.
+  // 6. The controller: the panel lists, turns off, imports and removes skills; the clean code skill adds the category.
   const posts = [];
   const notices = [];
   let picked;
@@ -271,13 +272,11 @@ async function main() {
   for (const type of ['listReviewSkills', 'setReviewSkillEnabled', 'importReviewSkill', 'removeReviewSkill']) assert.equal(controller.handles(type), true);
   await controller.handle({ type: 'listReviewSkills', payload: {} });
   assert.equal(last().skills.length, files.length);
-  assert.equal(last().includeQuality, false);
-  assert.equal(controller.handles('setReviewQuality'), true);
-  await controller.handle({ type: 'setReviewQuality', payload: { enabled: true } });
-  await controller.handle({ type: 'listReviewSkills', payload: {} });
-  assert.equal(last().includeQuality, true, 'the Clean code choice was not kept by the host');
+  assert.equal(last().includeQuality, true);
+  assert.equal(controller.handles('setReviewQuality'), false, 'the Clean code box is gone, so is its message');
   await controller.handle({ type: 'setReviewSkillEnabled', payload: { id: 'clean-code', enabled: false } });
   assert.equal(last().skills.find(skill => skill.id === 'clean-code').enabled, false);
+  assert.equal(last().includeQuality, false, 'turning the clean code skill off left quality on');
   picked = undefined;
   const before = posts.length;
   await controller.handle({ type: 'importReviewSkill', payload: {} });

@@ -111,6 +111,7 @@ async function main() {
     // The dashboard learns the labels the extension settled on.
     const labelled = of('reviewProgress').find(message => message.payload.requestId === 2 && message.payload.targetLabel);
     assert.deepEqual([labelled.payload.baseLabel, labelled.payload.targetLabel], ['1.5.0', 'main']);
+
     // "Start review" answers once; it does not remember.
     assert.equal(remembered.size, 0);
     assert.ok(of('reviewProgress').some(message => message.payload.message.includes('component 1/1')));
@@ -314,6 +315,30 @@ async function main() {
     assert.deepEqual([afterDelete.listId, afterDelete.entries.length], [2, 9]);
     assert.ok(!afterDelete.entries.some(entry => entry.id === all[0].id));
 
+    // Clean code (quality) rides along while a quality skill is on; Retry says so itself and wins.
+    host.skills = { includeQuality: () => true };
+    await start(3, { folder: repo });
+    assert.deepEqual(runs.at(-1).request.categories, ['security', 'compliance', 'quality']);
+    await start(4, { folder: repo, includeQuality: false });
+    assert.deepEqual(runs.at(-1).request.categories, ['security', 'compliance'], 'Retry of a review without clean code added it');
+    delete host.skills;
+
+    // One file's review: the request names it, and the target's label says which (once, after a Retry).
+    await start(5, { folder: repo, paths: ['app.js'] });
+    assert.deepEqual(runs.at(-1).request.paths, ['app.js']);
+    const fileLabel = () => of('reviewProgress').filter(message => message.payload.targetLabel).at(-1).payload.targetLabel;
+    assert.equal(fileLabel(), 'main · app.js');
+    await start(6, { folder: repo, paths: ['app.js'], targetLabel: 'main · app.js' });
+    assert.equal(fileLabel(), 'main · app.js', 'Retry added the file to the label again');
+    await start(7, { folder: repo, paths: ['a.js', 'b.js'] });
+    assert.equal(fileLabel(), 'main · 2 files');
+    // Files only narrow a changes review; anything else is not a request this extension sends.
+    const ranBeforeBadPaths = runs.length;
+    await start(8, { folder: repo, paths: 'app.js' });
+    await start(8, { folder: repo, paths: [] });
+    await start(8, { folder: repo, paths: [42] });
+    await start(8, { folder: repo, scope: 'branch', paths: ['app.js'] });
+    assert.equal(runs.length, ranBeforeBadPaths, 'a malformed file list started a review');
     // Review changes: HEAD → a snapshot of the working tree (staged, unstaged, new files), taken now.
     const localStart = (requestId, extra = {}) => controller.handle({ type: 'startReview', payload: {
       requestId, repositoryPath: '.', scope: 'changes', kind: 'local', ...extra } });
@@ -356,6 +381,13 @@ async function main() {
     assert.deepEqual([runs.at(-1).request.baseSha, runs.at(-1).request.targetSha], [local.baseSha, local.targetSha]);
     const retried = of('reviewCompleted').at(-1).payload;
     assert.deepEqual([retried.requestId, retried.context.kind, retried.context.targetLabel], [44, 'local', 'local changes']);
+    // One changed file: the question names it, and only that file is asked for.
+    alwaysConfirm = true;
+    await localStart(45, { paths: ['new.js'] });
+    alwaysConfirm = false;
+    assert.match(questions.at(-1).message, /^Review your local changes to new\.js in /);
+    assert.deepEqual(runs.at(-1).request.paths, ['new.js']);
+    assert.equal(of('reviewCompleted').at(-1).payload.context.targetLabel, 'local changes · new.js');
     git('checkout', '-q', '--', 'app.js');
     fs.rmSync(path.join(repo, 'new.js'));
 

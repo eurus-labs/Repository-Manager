@@ -103,6 +103,9 @@ export class ReviewSurveyService {
   }
 
   async plan(request: ReviewRequest): Promise<ReviewPlan> {
+    if (request.paths && (request.scope !== 'changes' || !request.paths.length)) {
+      throw new Error('Only a changes review can be limited to some files.');
+    }
     if (!['branch', 'changes'].includes(request.scope) || !request.categories.length ||
         request.categories.some(category => !['security', 'compliance', 'quality'].includes(category))) {
       throw new Error('Invalid review scope or categories');
@@ -125,7 +128,12 @@ export class ReviewSurveyService {
       const output = base
         ? await this.git.execGitRaw(['diff', '--name-status', '-z', '--find-renames', base.targetSha, snapshot.targetSha, '--'], root, 20000)
         : await this.git.execGitRaw(['diff-tree', '--root', '-r', '--name-status', '-z', '--no-commit-id', snapshot.targetSha, '--'], root, 20000);
-      const changedFiles = parseChangedFilesOutput(output);
+      const wanted = request.paths ? new Set(request.paths) : undefined;
+      const changedFiles = parseChangedFilesOutput(output)
+        .filter(file => !wanted || wanted.has(file.path) || Boolean(file.oldPath && wanted.has(file.oldPath)));
+      if (wanted && !changedFiles.length) {
+        throw new Error(`Nothing to review: ${request.paths!.length === 1 ? request.paths![0] : 'the chosen files'} did not change here.`);
+      }
       changedPaths = [...new Set(changedFiles.map(file => file.path))];
       for (const file of changedFiles) {
         if (file.oldPath) { oldPaths[file.path] = file.oldPath; }
