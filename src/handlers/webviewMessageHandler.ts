@@ -807,7 +807,8 @@ async function predictConflicts(ctx: MessageHandlerContext, repositoryPath: stri
       const kinds = (conflict.kinds[path] || []).filter(kind => kind !== 'contents' && kind !== 'content');
       return kinds.length ? `${path} (${kinds.join(', ')})` : path;
     });
-    const files = named.length > 8 ? `${named.slice(0, 8).join(', ')} and ${named.length - 8} more` : named.join(', ');
+    const files = !named.length ? 'a conflict Git ties to no single file (such as a directory rename)'
+      : named.length > 8 ? `${named.slice(0, 8).join(', ')} and ${named.length - 8} more` : named.join(', ');
     return `Predicted by Git: conflicts at ${conflict.commit.slice(0, 12)} ${conflict.subject}${where} in ${files}.` +
       (prediction.stoppedEarly ? ' Later commits depend on how this is resolved, so they were not predicted.' : '') +
       ' You resolve them in Source Control, then continue or abort.';
@@ -903,7 +904,8 @@ export async function handleSuggestConflictResolution(ctx: MessageHandlerContext
     return false;
   }
   const target = path.join(root, file.path);
-  if (fs.readFileSync(target, 'utf8') !== file.current) {
+  // Never through a link (it may point out of the repository), and never over newer edits.
+  if (fs.lstatSync(target).isSymbolicLink() || fs.readFileSync(target, 'utf8') !== file.current) {
     showResult(false, `${file.path} changed while the suggestion was open, so it was not written. Ask again for a new suggestion.`);
     return true;
   }
@@ -1051,6 +1053,11 @@ export async function handleApplyHistoryCommit(ctx: MessageHandlerContext, paylo
   }
   const git = new GitCommandService(ctx.workspaceRoot);
   const headBefore = await git.resolveRevision(payload.repositoryPath, 'HEAD');
+  // The prediction (and any explanation) was for the HEAD of then; a commit made meanwhile changes it.
+  if (predicted.prediction && predicted.prediction.head !== headBefore) {
+    showResult(false, `${branch} moved while the question was open, so the predicted conflicts no longer apply. Nothing was run; start the ${payload.operation} again.`);
+    return;
+  }
   const result = await ctx.gitOps.applyHistoryCommit(payload.repositoryPath, sha, payload.operation, mainline, branch);
   const pending = (result.data as { pending?: HistoryAction } | undefined)?.pending;
   if (pending) {

@@ -33,6 +33,8 @@ export interface ConflictPrediction {
   operation: PredictedOperation;
   /** The selected commit (for rebase, the commit moved onto), resolved. */
   target: string;
+  /** HEAD when predicted: the action must still start from it, or the prediction no longer holds. */
+  head: string;
   /** The current branch, or HEAD when detached. */
   branch: string;
   conflicts: PredictedConflict[];
@@ -68,7 +70,7 @@ export class ConflictPredictionService {
     const head = await this.git.resolveRevision(repositoryPath, 'HEAD');
     const branch = await this.git.execGit(['symbolic-ref', '--quiet', '--short', 'HEAD'], cwd, 5000).catch(() => 'HEAD');
     const result = (conflicts: PredictedConflict[], replayed: number, steps: number, stoppedEarly = false): ConflictPrediction =>
-      ({ supported: true, operation, target: sha, branch, conflicts, replayed, steps, stoppedEarly });
+      ({ supported: true, operation, target: sha, head, branch, conflicts, replayed, steps, stoppedEarly });
     try {
       if (operation === 'merge' || operation === 'cherry-pick' || operation === 'revert') {
         let mergeBase: string | undefined;
@@ -80,7 +82,7 @@ export class ConflictPredictionService {
           [mergeBase, theirs] = operation === 'cherry-pick' ? [parent, sha] : [sha, parent];
         }
         const merged = await this.mergeTree(cwd, mergeBase, head, theirs);
-        return result(merged.paths.length ? [await this.conflict(cwd, sha, merged, head)] : [], 1, 1);
+        return result(merged.conflicted ? [await this.conflict(cwd, sha, merged, head)] : [], 1, 1);
       }
       // rebase onto `sha`, or drop `sha`: replay the branch's own commits, oldest first.
       const onto = operation === 'drop' ? `${sha}^` : sha;
@@ -94,7 +96,7 @@ export class ConflictPredictionService {
       for (let index = 0; index < commits.length; index++) {
         const step = commits[index];
         const merged = await this.mergeTree(cwd, `${step}^`, base, step);
-        if (merged.paths.length) {
+        if (merged.conflicted) {
           return result([await this.conflict(cwd, step, merged, base)], index, commits.length, index < commits.length - 1);
         }
         base = (await this.git.execGitRaw(['commit-tree', merged.tree, '-p', base, '-m', 'conflict prediction'], cwd, 10000, false, SIMULATION_ENV)).trim();
@@ -102,7 +104,7 @@ export class ConflictPredictionService {
       return result([], commits.length, commits.length);
     } catch (error) {
       if (error instanceof Unsupported) {
-        return { supported: false, reason: error.message, operation, target: sha, branch, conflicts: [], replayed: 0, steps: 0, stoppedEarly: false };
+        return { supported: false, reason: error.message, operation, target: sha, head, branch, conflicts: [], replayed: 0, steps: 0, stoppedEarly: false };
       }
       throw error;
     }
@@ -115,11 +117,13 @@ export class ConflictPredictionService {
 
   private async mergeTree(cwd: string, mergeBase: string | undefined, sideA: string, sideB: string): Promise<MergeTreeResult> {
     let output: string;
+    let exitCode = 0;
     try {
-      // -z: paths exactly as they are; exit code 1 means "conflicts", with the tree still written.
+      // -z: paths exactly as they are. Exit code 1 means "conflicts", with the tree still written; it is
+      // the answer, since some conflicts (a directory rename) have no file in the list.
       // diff3 keeps the base lines in the conflicted files, for an explanation of both changes.
       output = await this.git.execGitRaw(['-c', 'merge.conflictStyle=diff3', 'merge-tree', '--write-tree', '--name-only', '-z',
-        ...(mergeBase ? [`--merge-base=${mergeBase}`] : []), sideA, sideB], cwd, 60000, true);
+        ...(mergeBase ? [`--merge-base=${mergeBase}`] : []), sideA, sideB], cwd, 60000, code => { exitCode = code; return code === 1; });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (/unknown option|usage: git merge-tree/i.test(message)) {
@@ -127,18 +131,18 @@ export class ConflictPredictionService {
       }
       throw error;
     }
-    return parseMergeTree(output);
+    return parseMergeTree(output, exitCode === 1);
   }
 }
 
-interface MergeTreeResult { tree: string; paths: string[]; kinds: Record<string, string[]> }
+interface MergeTreeResult { tree: string; conflicted: boolean; paths: string[]; kinds: Record<string, string[]> }
 
 /**
  * `merge-tree --write-tree --name-only -z` output: the tree, the conflicted paths, an empty entry,
  * then messages as `<count> <path>… <type> <message>`. Only the conflict types are kept: the
  * messages name the sides by the hashes given to merge-tree, which the user never chose.
  */
-export function parseMergeTree(output: string): MergeTreeResult {
+export function parseMergeTree(output: string, conflicted: boolean): MergeTreeResult {
   const entries = output.split('\0');
   const tree = entries[0];
   let index = 1;
@@ -155,7 +159,9 @@ export function parseMergeTree(output: string): MergeTreeResult {
     }
     index += count + 3;
   }
-  return { tree, paths: [...new Set(paths)], kinds };
+  // A conflict with no file in the list: name the paths its messages give.
+  const listed = paths.length ? paths : Object.keys(kinds);
+  return { tree, conflicted, paths: [...new Set(listed)], kinds };
 }
 
 class Unsupported extends Error {}

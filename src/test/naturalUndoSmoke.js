@@ -200,6 +200,17 @@ async function main() {
     await handleNaturalUndo({ ...ctx, conflictExplainer: undefined }, { repositoryPath: '.' });
     assert.equal(errors.at(-1), 'Undo in plain language needs Copilot in VS Code.');
     assert.equal(existsSync(path.join(root, '.git', 'rebase-merge')), false);
+    // A paused `git am` cannot be aborted from the dashboard, so it is not offered as one that can.
+    const patch = path.join(base, 'change.patch');
+    git('checkout', '-q', '-b', 'patch-source');
+    commit('a.txt', 'from the patch\n', 'patched a');
+    writeFileSync(patch, git('format-patch', '-1', '--stdout') + '\n');
+    git('checkout', '-q', 'main');
+    commit('a.txt', 'conflicting\n', 'conflict with the patch');
+    assert.throws(() => git('am', patch));
+    assert.equal(await new HistoryActionService(service).pendingOperation('.'), 'am');
+    assert.equal((await collectUndoContext(service, '.')).pending, undefined);
+    git('am', '--abort');
     console.log('Natural undo smoke passed');
   } finally {
     rmSync(base, { recursive: true, force: true });

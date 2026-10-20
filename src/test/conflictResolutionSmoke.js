@@ -3,7 +3,7 @@
 // only when the file did not change meanwhile.
 const assert = require('node:assert/strict');
 const { execFileSync } = require('node:child_process');
-const { mkdtempSync, readFileSync, rmSync, writeFileSync } = require('node:fs');
+const { mkdtempSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } = require('node:fs');
 const { tmpdir } = require('node:os');
 const path = require('node:path');
 const Module = require('node:module');
@@ -103,6 +103,51 @@ async function main() {
     await assert.rejects(readConflictedFile(service, '.', 'gone.txt'), /One side deleted gone\.txt and the other changed it/);
     git('cherry-pick', '--abort');
 
+    // 3b. What can be suggested for, and what is refused before anything is read or sent.
+    const conflictOn = (file, base, a, b, name) => {
+      git('checkout', '-q', '-B', `${name}-base`, 'main');
+      commit(file, base, `${name}: base`);
+      git('checkout', '-q', '-b', `${name}-b`);
+      commit(file, b, `${name}: b`);
+      git('checkout', '-q', `${name}-base`);
+      commit(file, a, `${name}: a`);
+      assert.equal(gitMayFail('cherry-pick', `${name}-b`), false, `${name}: the scenario did not conflict`);
+    };
+    // Two conflicts in one file: merge-file exits 2 (its conflict count), which is not an error.
+    const lines = Array.from({ length: 12 }, (_, index) => `line ${index}`);
+    const edit = (marks) => lines.map((line, index) => marks[index] ? `${line} ${marks[index]}` : line).join('\n') + '\n';
+    conflictOn('two.txt', lines.join('\n') + '\n', edit({ 1: 'A', 10: 'A' }), edit({ 1: 'B', 10: 'B' }), 'two');
+    assert.equal((await readConflictedFile(service, '.', 'two.txt')).blocks.length, 2);
+    git('cherry-pick', '--abort');
+    // One version over 60 KB is refused, even when the other two are small (all three would be sent).
+    conflictOn('big.txt', 'x'.repeat(61000) + '\n', 'a\n', 'b\n', 'big');
+    await assert.rejects(readConflictedFile(service, '.', 'big.txt'), /too large to send for a suggestion \(over 60 KB\)/);
+    git('cherry-pick', '--abort');
+    // A file Git converts on checkout (an encoding, a filter such as LFS) is left to Source Control.
+    conflictOn('data.bin.txt', 'v1\n', 'v2\n', 'v3\n', 'filtered');
+    write('.gitattributes', 'data.bin.txt filter=custom\n');
+    await assert.rejects(readConflictedFile(service, '.', 'data.bin.txt'), /has filter=custom in \.gitattributes/);
+    rmSync(path.join(root, '.gitattributes'));
+    git('cherry-pick', '--abort');
+    // A conflicted symlink: refused, and the file it points to (here outside the repository) is untouched.
+    const outside = path.join(tmpdir(), `repository-manager-outside-${process.pid}.txt`);
+    writeFileSync(outside, 'outside\n');
+    try {
+      git('checkout', '-q', '-B', 'link-base', 'main');
+      symlinkSync('one.txt', path.join(root, 'link')); git('add', 'link'); git('commit', '-qm', 'link: base');
+      git('checkout', '-q', '-b', 'link-b');
+      unlinkSync(path.join(root, 'link')); symlinkSync('two.txt', path.join(root, 'link')); git('add', 'link'); git('commit', '-qm', 'link: b');
+      git('checkout', '-q', 'link-base');
+      unlinkSync(path.join(root, 'link')); symlinkSync(outside, path.join(root, 'link')); git('add', 'link'); git('commit', '-qm', 'link: a');
+      assert.equal(gitMayFail('cherry-pick', 'link-b'), false, 'the symlink scenario did not conflict');
+      await assert.rejects(readConflictedFile(service, '.', 'link'), /symbolic link/);
+      assert.equal(readFileSync(outside, 'utf8'), 'outside\n');
+      git('cherry-pick', '--abort');
+    } finally {
+      rmSync(outside, { force: true });
+    }
+    git('checkout', '-q', 'main');
+
     // 4. The handler: the diff is shown, the check is in the question, and Apply writes the file only.
     const sent = [];
     let modelReply = reply([{ index: 0, lines: '    return max(round(a * 0.02, 2), 1.0)', note: 'Kept the minimum and the rounding.' }]);
@@ -170,6 +215,14 @@ async function main() {
     await handleSuggestConflictResolution(ctx, { repositoryPath: '.', path: 'fee.py' });
     assert.equal(read('fee.py'), 'def fee(a):\r\n    return max(round(a * 0.02, 2), 1.0)\r\n\r\n\r\ndef other():\r\n    return 1\r\n');
     git('cherry-pick', '--abort');
+
+    // A commit made while the question is open (another terminal): the prediction no longer holds, nothing runs.
+    const headBeforeMove = git('rev-parse', 'HEAD');
+    answers = [() => { commit('elsewhere.txt', 'meanwhile\n', 'made in another terminal'); return 'Cherry pick'; }];
+    await handleApplyHistoryCommit(ctx, { repositoryPath: '.', commit: pick, operation: 'cherry-pick' });
+    assert.match(errors.at(-1), /^main moved while the question was open, so the predicted conflicts no longer apply\. Nothing was run/);
+    assert.equal(await actions.pendingOperation('.'), undefined, 'the cherry-pick ran on a HEAD it was not predicted for');
+    git('reset', '-q', '--hard', headBeforeMove);
 
     // 5. From the message when a cherry-pick stops: Suggest resolution goes through the conflicted files.
     warnings.length = 0;

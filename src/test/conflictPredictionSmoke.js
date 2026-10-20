@@ -11,7 +11,7 @@ for (const key of ['GIT_AUTHOR_NAME', 'GIT_AUTHOR_EMAIL', 'GIT_COMMITTER_NAME', 
 process.env.GIT_CONFIG_GLOBAL = '/dev/null';
 process.env.GIT_CONFIG_NOSYSTEM = '1';
 const { GitCommandService } = require('../../out/services/gitCommandService.js');
-const { ConflictPredictionService } = require('../../out/services/conflictPredictionService.js');
+const { ConflictPredictionService, parseMergeTree } = require('../../out/services/conflictPredictionService.js');
 
 const root = mkdtempSync(path.join(tmpdir(), 'repository-manager-predict-'));
 const env = { ...process.env, GIT_AUTHOR_NAME: 'T', GIT_AUTHOR_EMAIL: 't@example.com', GIT_COMMITTER_NAME: 'T',
@@ -81,6 +81,11 @@ async function main() {
     const unsupported = await service.predict('.', 'revert', rootCommit);
     assert.deepEqual([unsupported.supported, unsupported.conflicts], [false, []]);
     assert.match(unsupported.reason, /root commit/);
+    // The exit code decides, not the list: Git says some conflicts (a directory rename) list no file.
+    const noFile = parseMergeTree(['tree1', '', '2', 'new/c.txt', 'old/c.txt', 'CONFLICT (file location)', 'moved', ''].join('\0'), true);
+    assert.deepEqual([noFile.conflicted, noFile.paths, noFile.kinds['old/c.txt']], [true, ['new/c.txt', 'old/c.txt'], ['file location']]);
+    assert.deepEqual(parseMergeTree(['tree2', '', ''].join('\0'), true), { tree: 'tree2', conflicted: true, paths: [], kinds: {} });
+    assert.equal(parseMergeTree(['tree3', '', '1', 'a.txt', 'Auto-merging', 'Auto-merging a.txt', ''].join('\0'), false).conflicted, false);
     console.log('Conflict prediction smoke passed');
   } finally {
     rmSync(root, { recursive: true, force: true });

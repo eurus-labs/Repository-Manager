@@ -22,6 +22,7 @@ import { GitCommandService } from './gitCommandService';
 import { HistoryActionService } from './historyActionService';
 import { ConflictSides } from './conflictExplanation';
 
+/** Per version (base, A, B): each is sent whole. */
 const MAX_FILE_CHARS = 60000;
 const MAX_BLOCKS = 40;
 
@@ -61,16 +62,32 @@ export interface ResolutionCheck { a: SideCheck; b: SideCheck }
 export async function readConflictedFile(git: GitCommandService, repositoryPath: string, filePath: string): Promise<ConflictedFile> {
   const root = git.resolveRepositoryPath(repositoryPath);
   const stages = await git.execGitRaw(['--literal-pathspecs', 'ls-files', '-u', '-z', '--', filePath], root, 10000);
-  const present = new Set(stages.split('\0').filter(Boolean).map(entry => /^\d+ [0-9a-f]+ (\d)\t/.exec(entry)?.[1]));
+  const entries = stages.split('\0').filter(Boolean).map(entry => /^(\d+) [0-9a-f]+ (\d)\t/.exec(entry)).filter((match): match is RegExpExecArray => Boolean(match));
+  const present = new Set(entries.map(match => match[2]));
   if (!present.size) { throw new Error(`${filePath} is not in conflict (any more).`); }
   if (!present.has('2') || !present.has('3')) {
     throw new Error(`One side deleted ${filePath} and the other changed it: keep or delete it in Source Control, there are no lines to combine.`);
+  }
+  // Only regular files: a symlink's "content" is where it points (reading or writing the path would
+  // follow it, maybe out of the repository), and a linked repository is a commit, not lines.
+  if (entries.some(match => match[1] !== '100644' && match[1] !== '100755') || fs.lstatSync(path.join(root, filePath)).isSymbolicLink()) {
+    throw new Error(`${filePath} is a symbolic link or a linked repository: choose a side in Source Control.`);
+  }
+  // Git converts these files on checkout (another encoding, a filter such as Git LFS); the index holds
+  // the converted-back text, so writing a suggestion straight to the file would be wrong.
+  const attributes = await git.execGitRaw(['check-attr', '-z', 'working-tree-encoding', 'filter', '--', filePath], root, 10000);
+  const values = attributes.split('\0');
+  for (let index = 0; index + 2 < values.length; index += 3) {
+    if (!['unspecified', 'unset', ''].includes(values[index + 2])) {
+      throw new Error(`${filePath} has ${values[index + 1]}=${values[index + 2]} in .gitattributes, so Git converts it on checkout: resolve it in Source Control.`);
+    }
   }
   const show = (stage: string) => present.has(stage)
     ? git.execGitRaw(['show', `:${stage}:${filePath}`], root, 10000) : Promise.resolve('');
   const [base, a, b] = await Promise.all([show('1'), show('2'), show('3')]);
   if ([base, a, b].some(text => text.includes('\0'))) { throw new Error(`${filePath} is a binary file: choose a side in Source Control.`); }
-  if (a.length + b.length + base.length > MAX_FILE_CHARS * 3) { throw new Error(`${filePath} is too large to send for a suggestion.`); }
+  // Each version: all three are sent, and the question says "up to 60 KB".
+  if ([base, a, b].some(text => text.length > MAX_FILE_CHARS)) { throw new Error(`${filePath} is too large to send for a suggestion (over 60 KB).`); }
   const current = fs.readFileSync(path.join(root, filePath), 'utf8');
   const merged = await mergeFile(git, root, a, base, b);
   const blocks = conflictBlocks(merged);
@@ -89,13 +106,9 @@ async function mergeFile(git: GitCommandService, root: string, a: string, base: 
       fs.writeFileSync(file, text);
       return file;
     });
-    // Exit code: the number of conflicts (capped at 127), so non-zero is expected.
-    return await git.execGitRaw(['merge-file', '-p', '--diff3', '-L', 'A', '-L', 'BASE', '-L', 'B', ...files], root, 30000, true)
-      .catch(error => {
-        const output = (error as { stdout?: string }).stdout;
-        if (typeof output === 'string' && output) { return output; }
-        throw error;
-      });
+    // The exit code is the number of conflicts (capped at 127); an error is negative (255).
+    return await git.execGitRaw(['merge-file', '-p', '--diff3', '-L', 'A', '-L', 'BASE', '-L', 'B', ...files], root, 30000,
+      code => code >= 1 && code <= 127);
   } finally {
     fs.rmSync(folder, { recursive: true, force: true });
   }

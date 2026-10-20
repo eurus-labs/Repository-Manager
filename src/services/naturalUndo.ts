@@ -68,7 +68,9 @@ export async function collectUndoContext(git: GitCommandService, repositoryPath:
     path: change.path,
     status: change.conflicted ? 'conflicted' : change.untracked ? 'new' : [change.staged ? 'staged' : '', change.unstaged ? 'modified' : ''].filter(Boolean).join('+')
   }));
-  const pending = await new HistoryActionService(git).pendingOperation(repositoryPath).catch(() => undefined);
+  // Only what the dashboard can abort is offered: a paused `git am` is finished or aborted in a terminal.
+  const paused = await new HistoryActionService(git).pendingOperation(repositoryPath).catch(() => undefined);
+  const pending = paused && ['rebase', 'cherry-pick', 'revert', 'merge'].includes(paused) ? paused : undefined;
   return { branch, head, ...(upstream ? { upstream } : {}), commits, reflog, changes, ...(pending ? { pending } : {}) };
 }
 

@@ -43,9 +43,16 @@ unreachable object. `--merge-base` needs Git 2.40 or newer. On older Git, for a 
 still runs. `src/test/conflictPredictionSmoke.js` checks each prediction against the real
 operation's result.
 
-Git's kind of conflict is kept per path from `merge-tree`'s messages (`parseMergeTree`): only the
-type (`contents`, `modify/delete`, …), never the message, which names the sides by the hashes passed
-to `merge-tree`. The dialog names the kind when it is not about lines, e.g. `gone.txt (modify/delete)`.
+`merge-tree`'s exit code decides whether a step conflicts, not its list of conflicted files: Git
+documents that some conflicts (a directory rename) list no file. Git's kind of conflict is kept per
+path from its messages (`parseMergeTree`): only the type (`contents`, `modify/delete`, …), never the
+message, which names the sides by the hashes passed to `merge-tree`; a conflict that lists no file is
+named by the paths its messages give. The dialog names the kind when it is not about lines, e.g.
+`gone.txt (modify/delete)`.
+
+A cherry-pick, revert or merge runs only if HEAD is still the one predicted: a commit made while the
+question was open (another terminal) refuses it, and nothing runs. Rebase and drop already recheck
+the branch and HEAD of their preview.
 
 ## Phase 2: explaining predicted conflicts before running (implemented)
 
@@ -82,8 +89,13 @@ from a terminal or a stash.
 
 1. The file is rebuilt from the index's three versions (`:1:` base, `:2:` A, `:3:` B) with `git
    merge-file -p --diff3 -L A -L BASE -L B` on temporary copies, so the markers do not depend on the
-   user's `merge.conflictStyle` or on edits already made. A file deleted on one side, a binary file,
-   one over 60 KB per version or with more than 40 conflicts is refused with the reason.
+   user's `merge.conflictStyle` or on edits already made (`merge-file` exits with its conflict count,
+   which is not an error). Refused with the reason, before anything is sent: a file deleted on one
+   side; a binary file; any version over 60 KB (each is sent whole); more than 40 conflicts; a symbolic
+   link or linked repository (by the stages' modes, or a link at the path: reading or writing it would
+   follow the link, maybe out of the repository); and a file with `working-tree-encoding` or a
+   `filter` (such as Git LFS) in `.gitattributes`, since Git converts it on checkout and the index
+   holds the converted-back text.
 2. The sides are named from the pending operation: for a rebase, A is the commit rebased onto with
    the commits already replayed (`HEAD`) and B is the user's commit (`REBASE_HEAD`); for a pick,
    revert or merge, A is the current branch and B the picked commit, the undoing of the reverted
@@ -115,7 +127,8 @@ commits but keep the changes", "undo the rebase I just did"; `services/naturalUn
    the last 20 first-parent commits (hash, subject, merge or not, **pushed** or not: reachable from a
    remote branch), the last 15 reflog entries (where HEAD has been, so a finished rebase, reset,
    merge or amend can be undone), the uncommitted files with their state (names only), and a paused
-   operation.
+   operation the dashboard can abort (a rebase, cherry-pick, revert or merge; a paused `git am` is
+   left out, since it is finished or aborted in a terminal).
 2. Consent as in phase 2; the question says no file contents are sent.
 3. The model answers with ONE action the dashboard already has: `reset` (a commit from the commits
    or the reflog, and soft, mixed or hard), `revert` or `drop` (a commit from the commits), `discard`
