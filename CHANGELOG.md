@@ -5,6 +5,21 @@ All notable changes to Repository Manager will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.8.0] - Unreleased
+
+### Added
+
+- Right-click a changed file for **Review Changes in This File**: a review of just that file, for uncommitted changes, a commit or a comparison. Uncommitted files keep **Discard Changes…** and **Discard All Changes…** in the same menu.
+- The detail pane of a commit or a loaded comparison (including **Compare branches**) has a **Review changes** button beside **Summarize changes**.
+
+### Changed
+
+- The **Clean code** checkbox is gone: the **Clean code** review skill is the switch. While it is on (the default), every review also adds maintainability notes, which never block; turn the skill off in the Repository Review tab's skills to stop them. Before, the checkbox was off by default.
+
+### Fixed
+
+- A long change summary no longer squeezes the changed files and diff to a sliver: the summary scrolls in the space left, and the files keep room to scroll.
+
 ## [2.7.0] - 2026-10-19
 
 ### Added

@@ -60,7 +60,7 @@ export interface ReviewControllerHost {
 
 const REVIEW_MESSAGES = new Set(['startReview', 'cancelReview', 'exportReviewReport', 'openReviewEvidence', 'setFindingTriage',
   'proposeReviewFix', 'applyReviewFix', 'discardReviewFix', 'cancelReviewFix', 'listReviewHistory', 'openStoredReview',
-  'deleteStoredReview', 'listReviewSkills', 'setReviewSkillEnabled', 'importReviewSkill', 'removeReviewSkill', 'setReviewQuality',
+  'deleteStoredReview', 'listReviewSkills', 'setReviewSkillEnabled', 'importReviewSkill', 'removeReviewSkill',
   'explainReviewFinding', 'cancelReviewExplanation']);
 const START = 'Start review';
 const EXPLAIN = 'Explain';
@@ -70,6 +70,7 @@ const EXPLAIN_PROGRESS_INTERVAL = 250;
 const CATEGORIES: Array<'security' | 'compliance'> = ['security', 'compliance'];
 type ReviewCategory = ReviewRequest['categories'][number];
 const MAX_OPEN_REVIEWS = 10;
+const MAX_REVIEW_PATHS = 200;
 const FIX_STEP_MESSAGES: Record<FixStep, string> = {
   checking: 'Checking the cited files in your working tree…',
   sending: 'Sending the findings and files to Copilot…',
@@ -126,7 +127,6 @@ export class ReviewController {
       case 'setReviewSkillEnabled': return this.setSkillEnabled(payload);
       case 'importReviewSkill': return this.importSkill();
       case 'removeReviewSkill': return this.removeSkill(payload);
-      case 'setReviewQuality': return this.host.skills?.setIncludeQuality(payload.enabled === true);
       case 'explainReviewFinding': return this.explain(payload);
       case 'cancelReviewExplanation': return this.cancelExplanation();
     }
@@ -212,6 +212,13 @@ export class ReviewController {
         (kind === 'local' && scope !== 'changes') ||
         (kind === 'review' ? !targetRevision : kind === 'local' ? !localAgain && Boolean(targetRevision || baseRevision)
           : Boolean(targetRevision || baseRevision))) {
+      return;
+    }
+    // Some changed files only (one file's Review from the dashboard): a changes review, names only.
+    const paths = payload.paths === undefined ? undefined
+      : Array.isArray(payload.paths) && payload.paths.length > 0 && payload.paths.length <= MAX_REVIEW_PATHS &&
+        payload.paths.every(item => typeof item === 'string' && item.length > 0) ? [...new Set(payload.paths as string[])] : null;
+    if (paths === null || (paths && scope !== 'changes')) {
       return;
     }
     // The review tab may start a review the dashboard asked for after the dashboard switched
@@ -308,12 +315,15 @@ export class ReviewController {
     }
     const chosenBaseLabel = branchBaseLabel || optionalString(payload.baseLabel) || baseRevision;
     const baseLabel = scope === 'changes' ? (comparedFromMergeBase ? `${chosenBaseLabel} (merge-base)` : chosenBaseLabel) : undefined;
-    const targetLabel = localTargetLabel || optionalString(payload.targetLabel) || target;
+    // The files reviewed follow the target's name; Retry sends that name back, so it is added once.
+    const chosenTargetLabel = localTargetLabel || optionalString(payload.targetLabel) || target;
+    const filesLabel = paths ? ` · ${paths.length === 1 ? paths[0] : `${paths.length} files`}` : '';
+    const targetLabel = chosenTargetLabel.endsWith(filesLabel) ? chosenTargetLabel : chosenTargetLabel + filesLabel;
     const needsConsent = this.host.alwaysConfirm() || !this.host.isConsentRemembered(root);
     await reply('reviewProgress', { message: needsConsent ? 'Waiting for confirmation…' : 'Planning the review…', baseLabel, targetLabel });
     if (needsConsent) {
       const what = kind === 'local'
-        ? 'your local changes (staged, unstaged and new files)'
+        ? paths ? `your local changes to ${filesLabel.slice(3)}` : 'your local changes (staged, unstaged and new files)'
         : scope === 'changes'
           ? `changes ${baseLabel || 'from the parent commit'} → ${targetLabel}`
           : `every file at ${targetLabel}`;
@@ -341,9 +351,11 @@ export class ReviewController {
     }
     const cancellation = this.host.createCancellation();
     this.running = cancellation;
-    // Clean code is asked for per review (the dashboard's "Clean code" box), on top of security and compliance.
-    const categories: ReviewCategory[] = payload.includeQuality === true ? [...CATEGORIES, 'quality'] : [...CATEGORIES];
-    const request: ReviewRequest = { repositoryPath, targetSha, baseSha, scope, categories };
+    // Clean code rides on security and compliance while a quality skill is on. Retry says so itself,
+    // so it runs with the categories of the review it repeats (and finds its saved components).
+    const includeQuality = typeof payload.includeQuality === 'boolean' ? payload.includeQuality : this.host.skills?.includeQuality() === true;
+    const categories: ReviewCategory[] = includeQuality ? [...CATEGORIES, 'quality'] : [...CATEGORIES];
+    const request: ReviewRequest = { repositoryPath, targetSha, baseSha, scope, categories, ...(paths ? { paths } : {}) };
     const context: ReviewReportContext = { kind, repositoryName, baseLabel, targetLabel, generatedAt: new Date() };
     try {
       const modelId = optionalString(payload.modelId);

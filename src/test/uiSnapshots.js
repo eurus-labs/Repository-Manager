@@ -469,10 +469,13 @@ async function main() {
     await page.waitForFunction(() => /update app in two places/.test(document.getElementById('dashboardCommitSummary').textContent));
     assert.equal(await page.isHidden('#workingDiffModes'), true);
     assert.equal(await page.locator('#uncommittedRow.active').count(), 0);
-    // A commit's files have nothing to discard: no Discard menu on them.
+    // A commit's files have nothing to discard: their menu only reviews that file.
     await page.locator('#dashboardChangedFiles .changed-file-item').first().click({ button: 'right' });
-    await page.waitForTimeout(100);
-    assert.equal(await page.isHidden('#changesContextMenu'), true, 'a commit\'s file offered Discard');
+    await page.locator('#changesContextMenu').waitFor();
+    assert.deepEqual(await page.locator('#changesContextMenu button:visible').allTextContents(), ['Review Changes in This File'],
+      'a commit\'s file offered Discard');
+    await page.keyboard.press('Escape');
+    await page.locator('#changesContextMenu').waitFor({ state: 'hidden' });
     // Live: a new file and a staged edit show up when the repository list refreshes (a file event's refresh).
     fs.writeFileSync(path.join(parent, 'live-new.txt'), 'new\n');
     fs.appendFileSync(path.join(parent, 'src/app.txt'), 'staged edit\n');
@@ -491,12 +494,12 @@ async function main() {
     await page.click('#dashboardChangedFiles .changed-file-item[data-path="live-new.txt"]');
     await page.waitForFunction(() => /\+new/.test(document.getElementById('dashboardDiff').textContent));
     await snap(page, '01c-uncommitted-changes');
-    // Right-click a changed file: Discard Changes (that file) and Discard All Changes.
+    // Right-click a changed file: Review (that file), Discard Changes (that file) and Discard All Changes.
     const discardMenu = page.locator('#changesContextMenu');
     const discardItems = () => discardMenu.locator('button:visible').allTextContents();
     await page.click('#dashboardChangedFiles .changed-file-item[data-path="live-new.txt"]', { button: 'right' });
     await discardMenu.waitFor();
-    assert.deepEqual(await discardItems(), ['Discard Changes…', 'Discard All Changes…']);
+    assert.deepEqual(await discardItems(), ['Review Changes in This File', 'Discard Changes…', 'Discard All Changes…']);
     await snap(page, '01d-discard-menu');
     // Discard Changes runs the real handler once it is confirmed: the new file is deleted, the rest stays.
     const askedBefore = fakeVscode.window.showWarningMessage;
@@ -819,8 +822,9 @@ async function main() {
     assert.equal(reviewProbe.summaries.length, 0, 'loading the comparison started a summary');
     // The comparison status only names the range; its actions sit in one toolbar below.
     assert.equal(await page.locator('#commitCompareStatus button').count(), 1, 'the comparison status has more than its clear button');
+    // A loaded comparison is reviewed from its header too, beside Summarize.
     assert.deepEqual(await page.locator('#commitHeaderActions button:visible').allTextContents(),
-      ['Summarize changes']);
+      ['Review changes', 'Summarize changes']);
     await page.click('#summarizeChangesButton');
     for (let i = 0; i < 100 && !reviewProbe.summaries.length; i++) await page.waitForTimeout(20);
     assert.equal(reviewProbe.summaries.length, 1, 'the release summary did not start');
@@ -829,6 +833,18 @@ async function main() {
     await page.waitForFunction(() => document.getElementById('changeSummaryStatus').textContent === 'Waiting for confirmation…');
     assert.equal(await page.isVisible('#changeSummary'), true);
     await snap(page, '08b-release-summary');
+    // A long summary (many coverage notes) in a short pane gives way: the changed files keep room to scroll.
+    const summaryBefore = await page.evaluate(() => document.getElementById('changeSummaryResult').innerHTML);
+    await page.evaluate(() => {
+      document.getElementById('changeSummaryResult').innerHTML = `<ul>${'<li>Only part of the files was supplied.</li>'.repeat(40)}</ul>`;
+    });
+    await page.setViewportSize({ width: 1256, height: 760 });
+    const squeezed = await page.evaluate(() => ({ files: document.getElementById('dashboardChangedFiles').clientHeight,
+      summary: document.getElementById('changeSummary').clientHeight }));
+    assert.ok(squeezed.files >= 100, `a long summary left the changed files ${squeezed.files}px (summary ${squeezed.summary}px)`);
+    await snap(page, '08c-long-summary-files');
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.evaluate(html => { document.getElementById('changeSummaryResult').innerHTML = html; }, summaryBefore);
 
     // W6–W7: review of the release diff (from the comparison), results, evidence jump and export.
     // Reviews run and are read in the Repository Review tab (rv); the dashboard starts them.
@@ -864,8 +880,9 @@ async function main() {
     // The consent question is held open so the header can be checked while it waits.
     let answerConsent;
     reviewProbe.ask = () => new Promise(resolve => { answerConsent = resolve; });
-    // The comparison names its ends after the tag and the branch, and so does the review.
-    await page.click('#reviewSelectionChangesButton');
+    // The comparison names its ends after the tag and the branch, and so does the review (here from
+    // the header's Review changes, which reviews what the toolbar's Review commit does).
+    await page.click('#reviewSelectionHeaderButton');
     const rv = await page.reviewTab();
     await rv.waitForFunction(() => document.getElementById('reviewMeta').textContent === 'Diff: 1.0.0 → feature/dashboard');
     // The labels come from the page itself now, so wait for the extension's own reply too.
@@ -1134,12 +1151,16 @@ async function main() {
     await page.waitForFunction(() => /Compare/.test(document.getElementById('dashboardCommitSummary').textContent));
     await snap(page, '12-compare-review-buttons');
     await page.click('#reviewSelectionChangesButton');
-    await rv.waitForFunction(() => /^Diff: /.test(document.getElementById('reviewMeta').textContent) && document.querySelector('.review-readiness'));
+    // The tab still shows the previous review (also a Diff): wait for this one by its own range.
+    await rv.waitForFunction(meta => document.getElementById('reviewMeta').textContent === meta && document.querySelector('.review-readiness'),
+      `Diff: ${baseHash.slice(0, 8)} → ${targetHash.slice(0, 8)}`);
+    for (let i = 0; i < 100 && !runs.length; i++) await page.waitForTimeout(20);
     assert.deepEqual([runs.at(-1).scope, runs.at(-1).baseSha, runs.at(-1).targetSha], ['changes', baseHash, targetHash]);
     assert.equal(await rv.textContent('#reviewMeta'), `Diff: ${baseHash.slice(0, 8)} → ${targetHash.slice(0, 8)}`);
     // All files: every file at the tip of the current branch, never at the selected commit. It is
     // only in the ▾ menu, which nothing remembers, and Escape closes the menu without a review.
-    assert.equal(await page.locator('#commitHeaderActions [data-action="reviewSelection"], #commitHeaderActions [data-scope]').count(), 0, 'a review button stayed in the header actions');
+    // The header reviews what it shows (Review changes); Review branch and All files stay in the toolbar.
+    assert.deepEqual(await page.locator('#commitHeaderActions [data-action="reviewSelection"]:visible, #commitHeaderActions [data-scope]').allTextContents(), ['Review changes']);
     assert.equal(await page.locator('.review-current-group [data-scope="branch"]').count(), 0, 'All files is a button again');
     await page.click('#reviewBranchMenuButton');
     assert.equal(await page.getAttribute('#reviewBranchMenuButton', 'aria-expanded'), 'true');
@@ -1159,7 +1180,8 @@ async function main() {
     assert.equal(runs.at(-1).scope, 'changes');
     assert.ok(runs.at(-1).baseSha, 'the branch review has no base');
     await rv.waitForFunction(() => /^Diff: main \(merge-base\) → /.test(document.getElementById('reviewMeta').textContent));
-    assert.deepEqual(runs.at(-1).categories, ['security', 'compliance']);
+    // Clean code rides along while its skill is on (the default).
+    assert.deepEqual(runs.at(-1).categories, ['security', 'compliance', 'quality']);
     // Compare branches: a review of that comparison keeps the branch names, not the resolved hashes.
     await page.click('[data-action="openBranchCompareModal"]');
     await page.locator('#branchCompareModal.active').waitFor();
@@ -1243,8 +1265,7 @@ async function main() {
     await rv.waitForFunction(() => document.getElementById('reviewSkillsCount').textContent === '8/9');
     await rv.click('#reviewSkills > summary');
 
-    // Clean code: the checkbox adds the quality category; its notes have their own section and never block.
-    await page.check('#reviewQualityToggle');
+    // Clean code: its skill adds the quality category; its notes have their own section and never block.
     reviewProbe.runner = async request => {
       runs.push(request);
       const sha = request.targetSha;
@@ -1312,9 +1333,11 @@ async function main() {
     assert.match(await chip.textContent(), /^Dismissed · Accepted risk · earlier review$/);
     assert.match(await chip.getAttribute('title'), /Taken over from the review of/);
     assert.match(await rv.textContent('.review-triage-summary'), /1 dismissed.*0 not triaged/);
-    // The choice is remembered for the next review.
-    assert.equal(await page.isChecked('#reviewQualityToggle'), true);
-    await page.uncheck('#reviewQualityToggle');
+    // Turning the clean code skill off turns the quality notes off for the next review.
+    await rv.click('#reviewSkills > summary');
+    await rv.click('#reviewSkillsList [data-action="toggleReviewSkill"][data-skill-id="clean-code"]');
+    await rv.waitForFunction(() => document.getElementById('reviewSkillsCount').textContent === '7/9');
+    await rv.click('#reviewSkills > summary');
 
     // Review changes: the local changes as they are now (staged, unstaged, new files), before committing.
     fs.writeFileSync(path.join(parent, 'src/app.txt'), fs.readFileSync(path.join(parent, 'src/app.txt'), 'utf8') + 'local edit\n');
@@ -1339,6 +1362,8 @@ async function main() {
     assert.equal(await rv.textContent('#reviewTitle'), 'Local changes review');
     assert.match(await rv.textContent('#reviewMeta'), /^Diff: HEAD → local changes · [0-9a-f]{8} → [0-9a-f]{8}/);
     assert.equal(localRequest.baseSha, headBeforeLocal);
+    assert.deepEqual(localRequest.categories, ['security', 'compliance'], 'clean code ran with its skill off');
+    assert.equal(localRequest.paths, undefined);
     assert.match(git(parent, 'show', `${localRequest.targetSha}:src/app.txt`), /local edit/);
     assert.equal(git(parent, 'show', `${localRequest.targetSha}:local-new.txt`), 'new file\n');
     assert.equal(git(parent, 'rev-parse', 'HEAD').trim(), headBeforeLocal, 'Review changes moved HEAD');
@@ -1348,6 +1373,14 @@ async function main() {
     assert.match(await rv.getAttribute('[data-action="proposeReviewFix"]', 'title'), /Auto-fix needs committed files/);
     assert.match(await rv.textContent('.review-uncommitted-note'), /as they were when it started/);
     await snap(rv, '10h-review-local-changes');
+    // Right-click one changed file: Review reviews only that file, on a snapshot of the changes taken now.
+    const runsBeforeFile = runs.length;
+    await page.click('#uncommittedRow');
+    await page.click('#dashboardChangedFiles .changed-file-item[data-path="local-new.txt"]', { button: 'right' });
+    await page.click('#changesContextMenu [data-action="contextReviewFile"]');
+    for (let i = 0; i < 150 && runs.length === runsBeforeFile; i++) await page.waitForTimeout(20);
+    assert.deepEqual([localRequest.scope, localRequest.paths, localRequest.baseSha], ['changes', ['local-new.txt'], headBeforeLocal]);
+    await rv.waitForFunction(() => /^Diff: HEAD → local changes · local-new\.txt · /.test(document.getElementById('reviewMeta').textContent));
     git(parent, 'checkout', '--', 'src/app.txt');
     fs.rmSync(path.join(parent, 'local-new.txt'));
     // Once the edits are gone, the review still says it read a snapshot.
@@ -1890,7 +1923,7 @@ async function main() {
       assert.ok(layout.releaseRight <= layout.controlsRight, `${width}px: the release review buttons are cut off`);
       assert.ok(layout.modelRight <= layout.controlsRight, `${width}px: the model select is cut off`);
       assert.ok(layout.settingsRight <= layout.controlsRight, `${width}px: the Copilot settings button is cut off`);
-      assert.equal(layout.releaseText.toLowerCase(), 'changes commit branch ▾ clean code review ↗');
+      assert.equal(layout.releaseText.toLowerCase(), 'changes commit branch ▾ review ↗');
       // The header actions stay inside the header and off the title, which keeps its width.
       await narrow.locator('#commitHeaderActions:not([hidden])').waitFor();
       const headerFit = await narrow.evaluate(() => {

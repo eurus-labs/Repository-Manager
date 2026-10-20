@@ -111,6 +111,8 @@ export interface ReviewRequest {
   scope: 'changes' | 'branch';
   categories: ('security' | 'compliance' | 'quality')[];
   policyHash?: string;
+  /** Changes reviews only: just these changed files (a file's old path matches a rename too). */
+  paths?: string[];
 }
 
 export interface ReviewEvidence {

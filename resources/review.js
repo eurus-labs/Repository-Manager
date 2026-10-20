@@ -110,7 +110,8 @@
       baseRevision: scope === 'changes' ? options.base : undefined, targetRevision: options.target,
       baseLabel: scope === 'changes' && options.base ? options.baseLabel || shortRevision(options.base) : undefined,
       targetLabel: options.target ? options.targetLabel || shortRevision(options.target) : undefined, modelId: options.modelId || undefined,
-      includeQuality: Boolean(options.includeQuality), folder: reviewState.folder || undefined });
+      includeQuality: typeof options.includeQuality === 'boolean' ? options.includeQuality : undefined,
+      paths: Array.isArray(options.paths) && options.paths.length ? options.paths : undefined, folder: reviewState.folder || undefined });
   }
 
   function renderReviewSkills(message) {
@@ -124,7 +125,7 @@
       const id = escapeHtml(skill.id);
       const globs = skill.appliesTo.length > 4 ? `${skill.appliesTo.slice(0, 4).join(', ')} +${skill.appliesTo.length - 4}` : skill.appliesTo.join(', ');
       return `<li class="review-skill${skill.enabled ? '' : ' off'}">
-        <button type="button" class="review-skill-switch" data-action="toggleReviewSkill" data-skill-id="${id}" data-enabled="${!skill.enabled}" aria-pressed="${skill.enabled}" title="${skill.enabled ? 'Turn off' : 'Turn on'}">${skill.enabled ? 'On' : 'Off'}</button>
+        <button type="button" class="review-skill-switch" data-action="toggleReviewSkill" data-skill-id="${id}" data-enabled="${!skill.enabled}" aria-pressed="${skill.enabled}" title="${skill.enabled ? 'Turn off' : 'Turn on'}${skill.category === 'quality' ? ': while a clean code skill is on, every review also checks maintainability (notes that never block)' : ''}">${skill.enabled ? 'On' : 'Off'}</button>
         <span class="review-skill-copy"><strong>${escapeHtml(skill.name)}</strong> <span class="review-skill-kind">${skill.category === 'quality' ? 'clean code' : 'security'}${skill.source === 'imported' ? ' · imported' : ''}</span>
           <small title="${escapeHtml(skill.appliesTo.join(', '))}">${escapeHtml(globs)}</small>${skill.references ? `<small>${escapeHtml(skill.references)}</small>` : ''}</span>
         ${skill.source === 'imported' ? `<button type="button" class="review-history-delete" data-action="removeReviewSkill" data-skill-id="${id}" aria-label="Remove ${escapeHtml(skill.name)}" title="Remove this imported skill">×</button>` : ''}
@@ -749,7 +750,7 @@
       startReview({ kind: reviewState.kind === 'local' ? 'local' : undefined,
         scope: request.scope, target: request.targetSha, base: request.scope === 'changes' ? request.baseSha : undefined,
         targetLabel: reviewContext.targetLabel, baseLabel: reviewContext.baseLabel, includeQuality: (request.categories || []).includes('quality'),
-        repositoryPath: reviewState.repositoryPath, folder: reviewState.folder, modelId });
+        paths: request.paths, repositoryPath: reviewState.repositoryPath, folder: reviewState.folder, modelId });
     },
     importReviewSkill: () => postMessage('importReviewSkill', {}),
     toggleReviewSkill: (el) => {

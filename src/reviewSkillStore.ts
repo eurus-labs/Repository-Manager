@@ -11,7 +11,6 @@ import { parseReviewSkill, ReviewSkill } from './services/reviewSkills';
 
 const IMPORTED_KEY = 'repositoryManager.reviewSkills.imported';
 const DISABLED_KEY = 'repositoryManager.reviewSkills.disabled';
-const QUALITY_KEY = 'repositoryManager.review.includeQuality';
 const MAX_IMPORTED = 30;
 
 export interface ReviewSkillSummary {
@@ -84,13 +83,13 @@ export class ReviewSkillStore {
     return skill;
   }
 
-  /** Whether reviews also check clean code: the dashboard checkbox, kept across panels and sessions. */
+  /**
+   * Whether reviews also check maintainability (the `quality` category): while a quality skill such
+   * as clean code is on. Turning those skills off in the review tab turns the notes off.
+   */
   includeQuality(): boolean {
-    return this.memento?.get<unknown>(QUALITY_KEY) === true;
-  }
-
-  async setIncludeQuality(enabled: boolean): Promise<void> {
-    await this.memento?.update(QUALITY_KEY, enabled);
+    const { skills, disabled } = this.snapshot();
+    return skills.some(skill => skill.category === 'quality' && !disabled.has(skill.id));
   }
 
   async remove(id: string): Promise<void> {

@@ -149,6 +149,22 @@ async function main() {
       suggestedAction: 'Remove eval', evidence: oldEvidence };
     assert.ok(await validateReviewFinding(candidate, renamePlan, renamePlan.units.find(unit => unit.paths.includes('src/runner.js'))));
 
+    // One file's review: only that changed file is planned; a rename is found by either path.
+    const fileSurvey = new ReviewSurveyService(new GitCommandService(repo));
+    const onePlan = await fileSurvey.plan({ repositoryPath: '.', baseSha: base, targetSha: target, scope: 'changes',
+      categories: ['security'], paths: ['src/app.js'] });
+    assert.deepEqual(onePlan.changedPaths, ['src/app.js'], 'the policy file changed too, but was not asked for');
+    assert.deepEqual(onePlan.units.flatMap(unit => unit.paths), ['src/app.js']);
+    assert.deepEqual(onePlan.request.paths, ['src/app.js'], 'the planned request lost its files (Retry and history need them)');
+    for (const wanted of ['src/runner.js', 'src/app.js']) {
+      const plan = await fileSurvey.plan({ repositoryPath: '.', baseSha: target, targetSha: renamed, scope: 'changes', categories: ['security'], paths: [wanted] });
+      assert.deepEqual(plan.changedPaths, ['src/runner.js'], `the rename was not found by ${wanted}`);
+    }
+    await assert.rejects(fileSurvey.plan({ repositoryPath: '.', baseSha: target, targetSha: renamed, scope: 'changes', categories: ['security'],
+      paths: ['.repository-manager/review-policy.json'] }), /Nothing to review: \.repository-manager\/review-policy\.json did not change here/);
+    await assert.rejects(fileSurvey.plan({ repositoryPath: '.', targetSha: renamed, scope: 'branch', categories: ['security'], paths: ['src/runner.js'] }),
+      /Only a changes review/);
+
     git('rm', 'src/runner.js');
     const deleted = commit('delete source');
     const deletePlan = await new ReviewSurveyService(new GitCommandService(repo)).plan({

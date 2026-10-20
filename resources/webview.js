@@ -32,8 +32,6 @@
   let historyPanelHeight = Number(previousState.historyPanelHeight) || 0;
   let historyAppendPending = false; // a Load more page is on its way (also started by scrolling)
   let summaryModelsState = 'idle'; // the Model menu's list: idle (not loaded), loading, loaded
-  // Reviews also check clean code when this is on (the "Clean code" box); remembered across reloads.
-  let reviewQuality = Boolean(previousState.reviewQuality);
   let filesPanelWidth = Number(previousState.filesPanelWidth) || 0;
   const defaultHistoryColumnWidths = [76, 420, 150, 110, 80];
   let historyColumnWidths = Array.isArray(previousState.historyColumnWidths)
@@ -92,17 +90,20 @@
     if (changesMenu) changesMenu.hidden = true;
   }
 
-  // Discard for the uncommitted changes: right-click a changed file (that file, or all), or the
-  // Uncommitted changes row (all). The host asks first, keeps a copy, then discards.
+  // Right-click a changed file to review just that file; for uncommitted changes, also Discard
+  // (that file, or all). The Uncommitted changes row offers Discard All. The host asks before a
+  // discard and keeps a copy first.
   let changesContextTarget = null;
   function showChangesContextMenu(element, x, y) {
     const file = element.closest('.changed-file-item');
-    if (file && selectedDashboardCommit !== WORKING_TREE) return false;
-    if (!dashboardWorkingChanges().length) return false;
+    const local = selectedDashboardCommit === WORKING_TREE || !file;
+    if (local ? !dashboardWorkingChanges().length : !changeSummarySelection || changeSummarySelection.local) return false;
     hideHistoryContextMenu();
-    changesContextTarget = { repositoryPath: activeDashboardRepository, path: file ? file.dataset.path : null };
+    changesContextTarget = { repositoryPath: activeDashboardRepository, path: file ? file.dataset.path : null, local };
     const menu = document.getElementById('changesContextMenu');
-    menu.querySelector('[data-action="contextDiscardFile"]').hidden = !file;
+    menu.querySelector('[data-action="contextReviewFile"]').hidden = !file;
+    menu.querySelector('[data-action="contextDiscardFile"]').hidden = !file || !local;
+    menu.querySelector('[data-action="contextDiscardAll"]').hidden = !local;
     menu.hidden = false;
     const width = window.innerWidth || document.documentElement.clientWidth;
     const height = window.innerHeight || document.documentElement.clientHeight;
@@ -366,9 +367,12 @@
   }
 
   function restoreChangeSummary() {
-    // The header's actions: Review changes for uncommitted changes (Commit is in the toolbar), then Summarize.
+    // The header's actions: Review changes (of the uncommitted changes, or of the commit or comparison
+    // shown; Commit is in the toolbar), then Summarize.
     const workingActions = document.getElementById('workingTreeActions');
     if (workingActions) workingActions.hidden = !(changeSummarySelection && changeSummarySelection.local);
+    const selectionActions = document.getElementById('selectionReviewActions');
+    if (selectionActions) selectionActions.hidden = !changeSummarySelection || Boolean(changeSummarySelection.local);
     // Apply, Pop and Drop for a stash shown on its own (not as one side of a comparison).
     const stashActions = document.getElementById('stashActions');
     if (stashActions) stashActions.hidden = !(changeSummarySelection && changeSummarySelection.stash);
@@ -438,7 +442,6 @@
       comparisonRepository,
       dashboardHistoryState,
       historyPanelHeight,
-      reviewQuality,
       filesPanelWidth,
       historyColumnWidths
     });
@@ -628,6 +631,13 @@
       if (!changeSummarySelection || !changeSummarySelection.stash) return;
       postMessage('stashAction', { repositoryPath: activeDashboardRepository,
         stash: changeSummarySelection.targetSha, operation: el.dataset.operation });
+    },
+    contextReviewFile: () => {
+      const target = changesContextTarget;
+      hideHistoryContextMenu();
+      if (!target || !target.path || target.repositoryPath !== activeDashboardRepository) return;
+      if (target.local) startReview({ kind: 'local', scope: 'changes', paths: [target.path] });
+      else actions.reviewSelection(undefined, undefined, [target.path]);
     },
     contextDiscardFile: () => {
       const target = changesContextTarget;
@@ -1047,12 +1057,12 @@
     reviewLocal: () => startReview({ kind: 'local', scope: 'changes' }),
     // Review the changes the detail pane shows: the selected commit against its parent, or the
     // loaded comparison from Base to Target. Every file at the branch tip is reviewed from All files in the Review branch menu.
-    reviewSelection: () => {
+    reviewSelection: (el, event, paths) => {
       if (!changeSummarySelection || changeSummarySelection.local) return;
       const { baseSha, targetSha } = changeSummarySelection;
       const labels = comparisonLabels || {};
       startReview({ scope: 'changes', base: comparisonSource ? baseSha || undefined : undefined, target: targetSha,
-        baseLabel: labels.base, targetLabel: labels.target });
+        baseLabel: labels.base, targetLabel: labels.target, paths });
     },
 
 
@@ -2737,10 +2747,6 @@
           }
           break;
 
-        case 'reviewQualityLoaded':
-          if (message.payload && typeof message.payload.includeQuality === 'boolean') setReviewQuality(message.payload.includeQuality, false);
-          break;
-
         case 'publishSidebar':
           publishSidebar();
           break;
@@ -3335,17 +3341,7 @@
     if (!activeDashboardRepository || reviewLocked()) return;
     const repository = getRepository(activeDashboardRepository);
     postMessage('requestReview', Object.assign({}, options, { repositoryPath: activeDashboardRepository, folder: currentWorkspaceFolder(),
-      repositoryName: repository ? repository.name : activeDashboardRepository, modelId: selectedSummaryModelId || undefined,
-      includeQuality: reviewQuality }));
-  }
-
-  // Clean code is remembered by the host (global state), so a new dashboard panel keeps it.
-  function setReviewQuality(value, save) {
-    reviewQuality = value;
-    const toggle = document.getElementById('reviewQualityToggle');
-    if (toggle) toggle.checked = value;
-    saveState();
-    if (save) postMessage('setReviewQuality', { enabled: value });
+      repositoryName: repository ? repository.name : activeDashboardRepository, modelId: selectedSummaryModelId || undefined }));
   }
 
   // A review runs in the background: the rest of the dashboard stays usable (other repositories,
@@ -3386,7 +3382,8 @@
     }
     if (locked) hideReviewBranchMenu(false);
     const lockable = '[data-action="reviewRelease"], [data-action="reviewSelection"], [data-action="reviewLocal"], #reviewBranchMenuButton, ' +
-      '#historyContextMenu [data-action="contextReviewCommit"], #historyContextMenu [data-action="contextReviewSnapshot"]';
+      '#historyContextMenu [data-action="contextReviewCommit"], #historyContextMenu [data-action="contextReviewSnapshot"], ' +
+      '#changesContextMenu [data-action="contextReviewFile"]';
     document.querySelectorAll(lockable).forEach(element => {
       const nothingSelected = element.dataset.action === 'reviewSelection' && (!changeSummarySelection || changeSummarySelection.local);
       if (locked || nothingSelected) {
@@ -3495,13 +3492,7 @@
     activateDashboardRepository(activeDashboardRepository);
   }
   renderRepositorySwitcher();
-  const qualityToggle = document.getElementById('reviewQualityToggle');
-  if (qualityToggle) {
-    qualityToggle.checked = reviewQuality;
-    qualityToggle.addEventListener('change', () => setReviewQuality(qualityToggle.checked, true));
-  }
-  // The Clean code choice and the review tab's status live in the extension; the tab follows here.
-  postMessage('getReviewQuality', {});
+  // The review tab's status lives in the extension; the tab follows here.
   postMessage('getCopilotSettings', {});
   postMessage('getReviewStatus', {});
   publishReviewContext();

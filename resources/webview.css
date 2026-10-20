@@ -2598,8 +2598,10 @@ body.vscode-high-contrast .graph-node-control[data-marker="T"] .graph-node-hit {
   .remote-toggle { white-space: nowrap; }
 }
 
-/* Detail pane: explicit rows so hidden siblings never shift the main content into an auto row. */
-.commit-detail-region { grid-template-rows: auto auto minmax(0, 1fr); }
+/* Detail pane: explicit rows so hidden siblings never shift the main content into an auto row.
+   A long summary gives way first (it scrolls), so the changed files and diff keep room to scroll;
+   when even that does not fit, the pane itself scrolls. */
+.commit-detail-region { grid-template-rows: auto minmax(0, auto) minmax(150px, 1fr); overflow-y: auto; }
 .commit-detail-region > .commit-header { grid-row: 1; }
 .commit-detail-region > .change-summary { grid-row: 2; }
 .commit-detail-region > .commit-content { grid-row: 3; }
@@ -2892,8 +2894,6 @@ body.sidebar-view { overflow: hidden; background: var(--vscode-sideBar-backgroun
 .sidebar-closed { display: grid; gap: 10px; padding: 12px 4px; }
 
 /* Review skills and the clean code review */
-.review-quality-toggle { display: inline-flex; align-items: center; gap: 4px; padding: 0 8px; color: var(--text-secondary); background: var(--bg-tertiary); cursor: pointer; }
-.review-quality-toggle input { margin: 0; }
 .review-quality { margin: 12px 0; }
 .review-skills { padding: 6px 20px; border-bottom: 1px solid var(--border); font-size: 12px; }
 .review-skills > summary { color: var(--text-secondary); cursor: pointer; font-size: 11px; }

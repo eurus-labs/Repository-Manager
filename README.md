@@ -14,7 +14,7 @@ A VS Code extension for Git workflows across a parent repository and its linked 
   - **Write with Copilot** drafts a commit message that follows the repository's commit convention (or Conventional Commits);
   - results open in their own **Repository Review** tab, and a review keeps running when you close it;
   - stopped reviews continue where they left off, and past reviews are saved;
-  - review skills (security checklists by file type) turn on automatically, and **Clean code** adds maintainability notes that never block.
+  - review skills (checklists by file type) turn on automatically; the **Clean code** skill, on unless you turn it off in the review tab's skills, adds maintainability notes that never block.
 
   Results are advisory. See [docs/security-compliance-review-engine.md](docs/security-compliance-review-engine.md) for how a review works.
 
