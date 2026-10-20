@@ -101,6 +101,9 @@
     hideHistoryContextMenu();
     changesContextTarget = { repositoryPath: activeDashboardRepository, path: file ? file.dataset.path : null, local };
     const menu = document.getElementById('changesContextMenu');
+    // A file still in conflict (after a merge, rebase, pick, revert or stash) can get a suggested resolution.
+    menu.querySelector('[data-action="contextSuggestResolution"]').hidden =
+      !(file && local && dashboardWorkingChanges().some(change => change.path === file.dataset.path && change.conflicted));
     menu.querySelector('[data-action="contextReviewFile"]').hidden = !file;
     menu.querySelector('[data-action="contextDiscardFile"]').hidden = !file || !local;
     menu.querySelector('[data-action="contextDiscardAll"]').hidden = !local;
@@ -638,6 +641,12 @@
       if (!target || !target.path || target.repositoryPath !== activeDashboardRepository) return;
       if (target.local) startReview({ kind: 'local', scope: 'changes', paths: [target.path] });
       else actions.reviewSelection(undefined, undefined, [target.path]);
+    },
+    contextSuggestResolution: () => {
+      const target = changesContextTarget;
+      hideHistoryContextMenu();
+      if (!target || !target.path) return;
+      postMessage('suggestConflictResolution', { repositoryPath: target.repositoryPath, path: target.path });
     },
     contextDiscardFile: () => {
       const target = changesContextTarget;

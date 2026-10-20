@@ -203,20 +203,29 @@ export function formatConflictExplanation(explanation: ConflictExplanation, side
   return lines.join('\n');
 }
 
+/**
+ * Whether code may be sent: asked only when repositoryManager.copilot.askBeforeSending says so, with
+ * the per-repository "Always allow" that reviews and commit messages share.
+ */
+export async function confirmSending(host: ConflictExplainerHost, root: string, allow: string, message: string, detail: string): Promise<boolean> {
+  if (!host.alwaysConfirm() && host.isConsentRemembered(root)) { return true; }
+  const actions = host.alwaysConfirm() ? [allow] : [allow, ALWAYS];
+  const answer = await host.ask(message, detail + (actions.includes(ALWAYS) ? ' "Always allow" is shared with reviews of this repository.' : ''), actions);
+  if (answer === ALWAYS) { await host.rememberConsent(root); }
+  return answer === allow || answer === ALWAYS;
+}
+
 /** Asks (when the setting says so), sends the conflicting lines, and returns the explanation. */
 export async function explainPredictedConflicts(host: ConflictExplainerHost, git: GitCommandService, repositoryPath: string,
   prediction: ConflictPrediction, run: <T>(work: (token: { isCancellationRequested: boolean }) => Promise<T>) => Promise<T>): Promise<ExplainOutcome> {
   const conflict = prediction.conflicts[0];
   if (!conflict) { return { kind: 'failed', message: 'Git predicted no conflicts to explain.' }; }
   const root = git.resolveRepositoryPath(repositoryPath);
-  if (host.alwaysConfirm() || !host.isConsentRemembered(root)) {
-    const actions = host.alwaysConfirm() ? [ALLOW] : [ALLOW, ALWAYS];
-    const answer = await host.ask(`Explain the predicted conflicts in ${conflict.paths.length} file${conflict.paths.length === 1 ? '' : 's'} with Copilot?`,
-      'The conflicting lines (with a few lines around them, up to 24 KB) and the commit subject are sent to the selected Copilot model. ' +
-        'Nothing runs and nothing is written.' + (actions.includes(ALWAYS) ? ' "Always allow" is shared with reviews of this repository.' : ''),
-      actions);
-    if (answer !== ALLOW && answer !== ALWAYS) { return { kind: 'cancelled' }; }
-    if (answer === ALWAYS) { await host.rememberConsent(root); }
+  if (!await confirmSending(host, root, ALLOW,
+    `Explain the predicted conflicts in ${conflict.paths.length} file${conflict.paths.length === 1 ? '' : 's'} with Copilot?`,
+    'The conflicting lines (with a few lines around them, up to 24 KB) and the commit subject are sent to the selected Copilot model. ' +
+      'Nothing runs and nothing is written.')) {
+    return { kind: 'cancelled' };
   }
   try {
     return await run(async token => {

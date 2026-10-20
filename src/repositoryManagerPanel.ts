@@ -469,7 +469,16 @@ export class RepositoryManagerPanel {
       refresh: () => this.refresh(),
       reloadDashboardHistory: (repositoryPaths) => this.reloadDashboardHistory(repositoryPaths),
       workspaceState: this._workspaceState,
-      conflictExplainer: this._conflictExplainer()
+      conflictExplainer: this._conflictExplainer(),
+      showProposedFile: async (filePath, current, proposed) => {
+        // Read-only documents of the review scheme: nothing here can be edited or saved by mistake.
+        const stamp = Date.now();
+        const left = vscode.Uri.from({ scheme: REVIEW_EVIDENCE_SCHEME, path: `/conflict-${stamp}/now/${filePath}` });
+        const right = vscode.Uri.from({ scheme: REVIEW_EVIDENCE_SCHEME, path: `/conflict-${stamp}/suggested/${filePath}` });
+        this._evidenceDocuments.set(left.toString(), current);
+        this._evidenceDocuments.set(right.toString(), proposed);
+        await vscode.commands.executeCommand('vscode.diff', left, right, `${path.basename(filePath)}: now ↔ suggested resolution`, { preview: true });
+      }
     };
   }
 

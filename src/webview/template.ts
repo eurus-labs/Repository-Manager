@@ -485,6 +485,7 @@ export function getHtmlForWebview(repositories: RepositoryInfo[], resourceUris: 
   </div>
 
   <div class="history-context-menu" id="changesContextMenu" role="menu" aria-label="Changed file actions" hidden>
+    <button type="button" role="menuitem" data-action="contextSuggestResolution" title="Ask Copilot to resolve this file's conflicts. You see the result as a diff first; applying writes the file only, without staging it or continuing" hidden>Suggest Resolution…</button>
     <button type="button" role="menuitem" data-action="contextReviewFile" title="Review only this file's changes with Copilot; the model may still read other files for context">Review Changes in This File</button>
     <button type="button" role="menuitem" data-action="contextDiscardFile" title="Put this file back as it is at HEAD (staged and unstaged changes); a new file is deleted. A copy is kept first">Discard Changes…</button>
     <button type="button" role="menuitem" data-action="contextDiscardAll" title="Put every changed file back as it is at HEAD and delete new files (not ignored ones). A copy is kept first">Discard All Changes…</button>

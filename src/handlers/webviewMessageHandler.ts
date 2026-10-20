@@ -5,6 +5,7 @@
 
 import * as vscode from 'vscode';
 import * as path from 'path';
+import * as fs from 'fs';
 import { GitOperations } from '../gitOperations';
 import { PRManager } from '../prManager';
 import { HistoryQuery } from '../types';
@@ -12,7 +13,8 @@ import { GitCommandService } from '../services/gitCommandService';
 import { HistoryAction } from '../services/historyActionService';
 import { HistoryRewriteAction, ResetMode } from '../services/historyRewriteService';
 import { ConflictPrediction, ConflictPredictionService, PredictedOperation } from '../services/conflictPredictionService';
-import { ConflictExplainerHost, describeSides, explainPredictedConflicts, formatConflictExplanation } from '../services/conflictExplanation';
+import { ConflictExplainerHost, confirmSending, describeSides, explainPredictedConflicts, formatConflictExplanation } from '../services/conflictExplanation';
+import { buildResolutionPrompt, checkResolution, describeSuggestion, parseResolutions, readConflictedFile, spliceResolutions } from '../services/conflictResolution';
 import { STASH_OPERATIONS, StashActionData, StashOperation } from '../services/stashActionService';
 
 export interface MessageHandlerContext {
@@ -26,6 +28,8 @@ export interface MessageHandlerContext {
   workspaceState?: vscode.Memento;
   /** Copilot, for explaining a history action's predicted conflicts; absent, the dialog does not offer it. */
   conflictExplainer?: ConflictExplainerHost;
+  /** Shows a suggested resolution as a diff from the file as it is now. */
+  showProposedFile?: (filePath: string, current: string, proposed: string) => Promise<void>;
 }
 
 const PUSH_AFTER_COMMIT_KEY = 'repositoryManager.pushAfterCommit';
@@ -839,6 +843,85 @@ async function confirmHistoryAction(ctx: MessageHandlerContext, repositoryPath: 
   return again === label;
 }
 
+const SUGGEST_RESOLUTION = 'Suggest resolution';
+const APPLY_SUGGESTION = 'Apply suggestion';
+
+/**
+ * Suggest resolution for one conflicted file (services/conflictResolution.ts): Copilot resolves each
+ * conflict block, code checks each side's change, the result is shown as a diff, and Apply writes the
+ * file only, if it has not changed meanwhile. It is never staged and the operation never continues.
+ * Returns false when the user stopped, so a run over several files ends there.
+ */
+export async function handleSuggestConflictResolution(ctx: MessageHandlerContext, payload: { repositoryPath: string; path: string }): Promise<boolean> {
+  if (!payload || typeof payload.repositoryPath !== 'string' || typeof payload.path !== 'string' || !payload.path) {
+    return false;
+  }
+  const copilot = ctx.conflictExplainer;
+  if (!copilot) {
+    showResult(false, 'Suggesting a resolution needs Copilot in VS Code.');
+    return false;
+  }
+  const git = new GitCommandService(ctx.workspaceRoot);
+  const root = git.resolveRepositoryPath(payload.repositoryPath);
+  let file;
+  try {
+    file = await readConflictedFile(git, payload.repositoryPath, payload.path);
+  } catch (error) {
+    showResult(false, error instanceof Error ? error.message : String(error));
+    return true;
+  }
+  if (!await confirmSending(copilot, root, SUGGEST_RESOLUTION, `Suggest a resolution for ${file.path} with Copilot?`,
+    `Its ${file.blocks.length} conflict${file.blocks.length === 1 ? '' : 's'}, both sides and the base, and the file around them (up to 60 KB) ` +
+      'are sent to the selected Copilot model. Nothing is written until you apply the suggestion.')) {
+    return false;
+  }
+  let suggestion;
+  try {
+    suggestion = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification,
+      title: `Suggesting a resolution for ${file.path} with Copilot…`, cancellable: true }, async (_progress, token) => {
+      const reply = await copilot.complete(buildResolutionPrompt(file, copilot.language()), token, 120000);
+      if (token.isCancellationRequested) { return undefined; }
+      return { ...parseResolutions(reply.text, file.blocks), model: reply.model };
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message !== 'Cancelled') { showResult(false, `No suggestion for ${file.path}: ${message}`); }
+    return message !== 'Cancelled';
+  }
+  if (!suggestion) {
+    return false;
+  }
+  // The file keeps its own line endings (Git's versions are usually LF; Windows checkouts often CRLF).
+  const merged = spliceResolutions(file.merged, file.blocks, suggestion.resolutions);
+  const proposed = file.current.includes('\r\n') ? merged.replace(/\r?\n/g, '\r\n') : merged;
+  await ctx.showProposedFile?.(file.path, file.current, proposed);
+  const check = checkResolution(file.blocks, suggestion.resolutions);
+  const answer = await vscode.window.showWarningMessage(`Apply the suggested resolution to ${file.path}?`,
+    { modal: true, detail: describeSuggestion(file, check, suggestion.resolutions, suggestion.summary, suggestion.model) }, APPLY_SUGGESTION);
+  if (answer !== APPLY_SUGGESTION) {
+    return false;
+  }
+  const target = path.join(root, file.path);
+  if (fs.readFileSync(target, 'utf8') !== file.current) {
+    showResult(false, `${file.path} changed while the suggestion was open, so it was not written. Ask again for a new suggestion.`);
+    return true;
+  }
+  fs.writeFileSync(target, proposed);
+  showResult(true, `Wrote the suggested resolution to ${file.path}. It is not staged: check it, then stage it and continue in Source Control.`);
+  await ctx.refresh();
+  return true;
+}
+
+/** Suggest resolution for each file still in conflict, one at a time, until the user stops. */
+async function suggestForConflictedFiles(ctx: MessageHandlerContext, repositoryPath: string): Promise<void> {
+  const git = new GitCommandService(ctx.workspaceRoot);
+  const conflicted = (await git.execGitRaw(['diff', '--name-only', '-z', '--diff-filter=U'], git.resolveRepositoryPath(repositoryPath), 10000)
+    .catch(() => '')).split('\0').filter(Boolean);
+  for (const filePath of [...new Set(conflicted)]) {
+    if (!await handleSuggestConflictResolution(ctx, { repositoryPath, path: filePath })) { return; }
+  }
+}
+
 export async function handleApplyHistoryCommit(ctx: MessageHandlerContext, payload: {
   repositoryPath: string; commit: string; operation: HistoryAction
 }): Promise<void> {
@@ -872,10 +955,12 @@ export async function handleApplyHistoryCommit(ctx: MessageHandlerContext, paylo
   const result = await ctx.gitOps.applyHistoryCommit(payload.repositoryPath, sha, payload.operation, mainline, branch);
   const pending = (result.data as { pending?: HistoryAction } | undefined)?.pending;
   if (pending) {
-    const choice = await vscode.window.showWarningMessage(result.message, 'Abort operation');
+    const choice = await vscode.window.showWarningMessage(result.message, ...(ctx.conflictExplainer ? [SUGGEST_RESOLUTION] : []), 'Abort operation');
     if (choice === 'Abort operation') {
       const aborted = await ctx.gitOps.abortHistoryAction(payload.repositoryPath, pending);
       showResult(aborted.success, aborted.message);
+    } else if (choice === SUGGEST_RESOLUTION) {
+      await suggestForConflictedFiles(ctx, payload.repositoryPath);
     }
   } else {
     showResult(result.success, result.message);
@@ -937,8 +1022,11 @@ export async function handleRewriteHistoryCommit(ctx: MessageHandlerContext, pay
     const pending = (result.data as { pending?: string } | undefined)?.pending;
     let resolved = false;
     if (pending === 'rebase') {
-      const choice = await vscode.window.showWarningMessage(result.message, 'Continue rebase', 'Abort rebase');
-      if (choice) {
+      const choice = await vscode.window.showWarningMessage(result.message, ...(ctx.conflictExplainer ? [SUGGEST_RESOLUTION] : []),
+        'Continue rebase', 'Abort rebase');
+      if (choice === SUGGEST_RESOLUTION) {
+        await suggestForConflictedFiles(ctx, payload.repositoryPath);
+      } else if (choice) {
         const recovery = await ctx.gitOps.resolveHistoryRebase(payload.repositoryPath, choice === 'Continue rebase' ? 'continue' : 'abort');
         showResult(recovery.success, recovery.message);
         resolved = recovery.success;
@@ -1233,6 +1321,7 @@ export const messageHandlers: Record<string, (ctx: MessageHandlerContext, payloa
   'resolveHistoryRebase': (ctx, payload) => handleResolveHistoryRebase(ctx, payload as { repositoryPath: string; command: 'continue' | 'abort' }),
   'getPendingOperation': (ctx, payload) => handleGetPendingOperation(ctx, payload),
   'discardChanges': (ctx, payload) => handleDiscardChanges(ctx, payload as { repositoryPath: string; paths?: string[]; all?: boolean }),
+  'suggestConflictResolution': async (ctx, payload) => { await handleSuggestConflictResolution(ctx, payload as { repositoryPath: string; path: string }); },
   'stashAction': (ctx, payload) => handleStashAction(ctx, payload as { repositoryPath: string; stash: string; operation: StashOperation }),
   'getCommits': (ctx, payload) => handleGetCommits(ctx, payload as { submodule: string }),
   'getRecordedCommit': (ctx, payload) => handleGetRecordedCommit(ctx, payload as { submodule: string }),

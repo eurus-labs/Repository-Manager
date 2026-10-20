@@ -1,6 +1,6 @@
 # AI support for history actions
 
-Status: approved design; phases 1 and 2 implemented, phases 3–4 proposed.
+Status: approved design; phases 1–3 implemented, phase 4 proposed.
 
 The commit menu already runs cherry-pick, revert, merge, rebase, reset (soft, mixed, hard) and drop
 (`HistoryActionService`, `HistoryRewriteService`), each behind a confirmation dialog. This adds
@@ -71,13 +71,39 @@ question says Copilot could not explain, and still offers it. Declining the cons
 cancelling the explanation closes the dialog and runs nothing; the action can be started again. Copilot is only reachable in VS
 Code, so `src/test/conflictExplanationSmoke.js` drives this with a scripted model.
 
-## Phase 3: AI resolution of a conflict (proposed)
+## Phase 3: suggesting a resolution for a conflicted file (implemented)
 
-When an action stops on conflicts, each conflicted file can be resolved by hand (Source Control) or
-with **Suggest resolution**. The model gets the base, both sides (named after their commits or
-branches) and the commits' messages. The suggestion is shown as a diff against the conflicted file.
-Before it is offered, code checks that each side's changes since the base are still in it, and names
-the side whose change is missing. Applying writes the file only.
+When an operation has stopped on conflicts, each conflicted file can be resolved by hand (Source
+Control) or with **Suggest resolution** (`services/conflictResolution.ts`,
+`handleSuggestConflictResolution`). It is offered in the message shown when a cherry-pick, revert,
+merge or rebase stops (it then goes through the conflicted files one by one, until the user stops),
+and on a conflicted file's right-click menu in **Uncommitted changes**, which also covers conflicts
+from a terminal or a stash.
+
+1. The file is rebuilt from the index's three versions (`:1:` base, `:2:` A, `:3:` B) with `git
+   merge-file -p --diff3 -L A -L BASE -L B` on temporary copies, so the markers do not depend on the
+   user's `merge.conflictStyle` or on edits already made. A file deleted on one side, a binary file,
+   one over 60 KB per version or with more than 40 conflicts is refused with the reason.
+2. The sides are named from the pending operation: for a rebase, A is the commit rebased onto with
+   the commits already replayed (`HEAD`) and B is the user's commit (`REBASE_HEAD`); for a pick,
+   revert or merge, A is the current branch and B the picked commit, the undoing of the reverted
+   one, or the merged one; otherwise (a stash) B is "the change being applied".
+3. Consent as in phase 2. The model gets each block's A, BASE and B lines and the whole file for
+   context, and returns **one replacement per block**; code splices them in, so lines outside the
+   conflicts cannot change. A reply that skips a block or leaves a marker is refused.
+4. **The check is code, not the model** (`checkResolution`). Lines are compared as tokens (words,
+   numbers, symbols), since a correct combination of two edits to one line usually contains neither
+   line: `max(round(a * 0.02, 2), 1.0)` from `max(a * 0.02, 1.0)` and `round(a * 0.02, 2)`. For each
+   token, a side's change is its count minus the base's; an addition is kept when the result has at
+   least the base's count plus it (less what the other side removed), a removal when the result has at
+   most the base's count less it (plus what the other side added); both sides adding the same token
+   need it once. Symbols are reported only when no word or number is affected. The check finds a
+   side's change dropped or undone; it cannot find a wrong combination of both (`round(max(…), 2)`
+   passes as well), and the question says so.
+5. The suggestion opens as a diff (read-only documents: the file now ↔ suggested), and the question
+   gives the check per side (✓, or ⚠ with the tokens) and the model's notes. **Apply** writes the file
+   in its own line endings, only if it has not changed since it was read, and nothing else: the file
+   stays unmerged and the operation stays paused, so the user checks it, stages it and continues.
 
 ## Phase 4: plain-language undo (proposed)
 
