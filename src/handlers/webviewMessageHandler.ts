@@ -5,12 +5,17 @@
 
 import * as vscode from 'vscode';
 import * as path from 'path';
+import * as fs from 'fs';
 import { GitOperations } from '../gitOperations';
 import { PRManager } from '../prManager';
 import { HistoryQuery } from '../types';
 import { GitCommandService } from '../services/gitCommandService';
 import { HistoryAction } from '../services/historyActionService';
 import { HistoryRewriteAction, ResetMode } from '../services/historyRewriteService';
+import { ConflictPrediction, ConflictPredictionService, PredictedOperation } from '../services/conflictPredictionService';
+import { ConflictExplainerHost, confirmSending, describeSides, explainPredictedConflicts, formatConflictExplanation } from '../services/conflictExplanation';
+import { buildUndoPrompt, collectUndoContext, describeUndoPlan, parseUndoPlan, UndoPlan } from '../services/naturalUndo';
+import { buildResolutionPrompt, checkResolution, describeSuggestion, parseResolutions, readConflictedFile, spliceResolutions } from '../services/conflictResolution';
 import { STASH_OPERATIONS, StashActionData, StashOperation } from '../services/stashActionService';
 
 export interface MessageHandlerContext {
@@ -22,6 +27,10 @@ export interface MessageHandlerContext {
   reloadDashboardHistory: (repositoryPaths: string[]) => Promise<void>;
   /** Where small per-repository choices are remembered, such as Push after commit. */
   workspaceState?: vscode.Memento;
+  /** Copilot, for explaining a history action's predicted conflicts; absent, the dialog does not offer it. */
+  conflictExplainer?: ConflictExplainerHost;
+  /** Shows a suggested resolution as a diff from the file as it is now. */
+  showProposedFile?: (filePath: string, current: string, proposed: string) => Promise<void>;
 }
 
 const PUSH_AFTER_COMMIT_KEY = 'repositoryManager.pushAfterCommit';
@@ -772,6 +781,248 @@ export async function handleCreateTagFromCommit(ctx: MessageHandlerContext, payl
   }
 }
 
+/**
+ * What Git predicts the action will stop on, for its confirmation dialog: simulated in memory
+ * (ConflictPredictionService), so it is a fact, not a guess. A failed simulation never blocks the
+ * action; the dialog just says nothing was predicted.
+ */
+async function predictConflicts(ctx: MessageHandlerContext, repositoryPath: string, operation: PredictedOperation,
+  commit: string, mainline?: number): Promise<{ text: string; prediction?: ConflictPrediction }> {
+  let prediction: ConflictPrediction;
+  try {
+    prediction = await new ConflictPredictionService(new GitCommandService(ctx.workspaceRoot)).predict(repositoryPath, operation, commit, mainline);
+  } catch (error) {
+    return { text: `Conflicts were not predicted: ${error instanceof Error ? error.message : String(error)}` };
+  }
+  if (!prediction.supported) {
+    return { text: `Conflicts were not predicted: ${prediction.reason}` };
+  }
+  if (!prediction.conflicts.length) {
+    return { prediction, text: prediction.steps > 1 ? `Predicted by Git: no conflicts in the ${prediction.steps} commits replayed.` : 'Predicted by Git: no conflicts.' };
+  }
+  return { prediction, text: prediction.conflicts.map(conflict => {
+    const where = prediction.steps > 1 ? ` (commit ${prediction.replayed + 1} of ${prediction.steps})` : '';
+    // A conflict that is not about lines (a file deleted on one side) says so: it is resolved differently.
+    const named = conflict.paths.map(path => {
+      const kinds = (conflict.kinds[path] || []).filter(kind => kind !== 'contents' && kind !== 'content');
+      return kinds.length ? `${path} (${kinds.join(', ')})` : path;
+    });
+    const files = !named.length ? 'a conflict Git ties to no single file (such as a directory rename)'
+      : named.length > 8 ? `${named.slice(0, 8).join(', ')} and ${named.length - 8} more` : named.join(', ');
+    return `Predicted by Git: conflicts at ${conflict.commit.slice(0, 12)} ${conflict.subject}${where} in ${files}.` +
+      (prediction.stoppedEarly ? ' Later commits depend on how this is resolved, so they were not predicted.' : '') +
+      ' You resolve them in Source Control, then continue or abort.';
+  }).join('\n') };
+}
+
+const EXPLAIN_CONFLICTS = 'Explain conflicts';
+
+/**
+ * The action's confirmation. When Git predicted conflicts and Copilot is available, it also offers
+ * Explain conflicts: Copilot's reading is added to the same question, which is asked again, so the
+ * user decides with it in front of them. A failed explanation says so and still lets the action run.
+ */
+async function confirmHistoryAction(ctx: MessageHandlerContext, repositoryPath: string, question: string, detail: string,
+  label: string, prediction: ConflictPrediction | undefined): Promise<boolean> {
+  const explainer = ctx.conflictExplainer;
+  const explainable = Boolean(explainer && prediction && prediction.conflicts.length);
+  const first = await vscode.window.showWarningMessage(question, { modal: true, detail }, label, ...(explainable ? [EXPLAIN_CONFLICTS] : []));
+  if (first !== EXPLAIN_CONFLICTS || !explainer || !prediction) {
+    return first === label;
+  }
+  const outcome = await explainPredictedConflicts(explainer, new GitCommandService(ctx.workspaceRoot), repositoryPath, prediction,
+    work => Promise.resolve(vscode.window.withProgress({ location: vscode.ProgressLocation.Notification,
+      title: 'Explaining the predicted conflicts with Copilot…', cancellable: true }, (_progress, token) => work(token))));
+  if (outcome.kind === 'cancelled') {
+    return false;
+  }
+  const conflict = prediction.conflicts[0];
+  const reading = outcome.kind === 'explained'
+    ? formatConflictExplanation(outcome.explanation, describeSides(prediction, conflict), outcome.model,
+      conflict.paths.filter(path => !outcome.explanation.files.some(file => file.path === path)))
+    : `Copilot could not explain the conflicts: ${outcome.message}`;
+  const again = await vscode.window.showWarningMessage(question, { modal: true, detail: `${detail}\n\n${reading}` }, label);
+  return again === label;
+}
+
+const SUGGEST_RESOLUTION = 'Suggest resolution';
+const APPLY_SUGGESTION = 'Apply suggestion';
+
+/**
+ * Suggest resolution for one conflicted file (services/conflictResolution.ts): Copilot resolves each
+ * conflict block, code checks each side's change, the result is shown as a diff, and Apply writes the
+ * file only, if it has not changed meanwhile. It is never staged and the operation never continues.
+ * Returns false when the user stopped, so a run over several files ends there.
+ */
+export async function handleSuggestConflictResolution(ctx: MessageHandlerContext, payload: { repositoryPath: string; path: string }): Promise<boolean> {
+  if (!payload || typeof payload.repositoryPath !== 'string' || typeof payload.path !== 'string' || !payload.path) {
+    return false;
+  }
+  const copilot = ctx.conflictExplainer;
+  if (!copilot) {
+    showResult(false, 'Suggesting a resolution needs Copilot in VS Code.');
+    return false;
+  }
+  const git = new GitCommandService(ctx.workspaceRoot);
+  const root = git.resolveRepositoryPath(payload.repositoryPath);
+  let file;
+  try {
+    file = await readConflictedFile(git, payload.repositoryPath, payload.path);
+  } catch (error) {
+    showResult(false, error instanceof Error ? error.message : String(error));
+    return true;
+  }
+  if (!await confirmSending(copilot, root, SUGGEST_RESOLUTION, `Suggest a resolution for ${file.path} with Copilot?`,
+    `Its ${file.blocks.length} conflict${file.blocks.length === 1 ? '' : 's'}, both sides and the base, and the file around them (up to 60 KB) ` +
+      'are sent to the selected Copilot model. Nothing is written until you apply the suggestion.')) {
+    return false;
+  }
+  let suggestion;
+  try {
+    suggestion = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification,
+      title: `Suggesting a resolution for ${file.path} with Copilot…`, cancellable: true }, async (_progress, token) => {
+      const reply = await copilot.complete(buildResolutionPrompt(file, copilot.language()), token, 120000);
+      if (token.isCancellationRequested) { return undefined; }
+      return { ...parseResolutions(reply.text, file.blocks), model: reply.model };
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message !== 'Cancelled') { showResult(false, `No suggestion for ${file.path}: ${message}`); }
+    return message !== 'Cancelled';
+  }
+  if (!suggestion) {
+    return false;
+  }
+  // The file keeps its own line endings (Git's versions are usually LF; Windows checkouts often CRLF).
+  const merged = spliceResolutions(file.merged, file.blocks, suggestion.resolutions);
+  const proposed = file.current.includes('\r\n') ? merged.replace(/\r?\n/g, '\r\n') : merged;
+  await ctx.showProposedFile?.(file.path, file.current, proposed);
+  const check = checkResolution(file.blocks, suggestion.resolutions);
+  const answer = await vscode.window.showWarningMessage(`Apply the suggested resolution to ${file.path}?`,
+    { modal: true, detail: describeSuggestion(file, check, suggestion.resolutions, suggestion.summary, suggestion.model) }, APPLY_SUGGESTION);
+  if (answer !== APPLY_SUGGESTION) {
+    return false;
+  }
+  const target = path.join(root, file.path);
+  // Never through a link (it may point out of the repository), and never over newer edits.
+  if (fs.lstatSync(target).isSymbolicLink() || fs.readFileSync(target, 'utf8') !== file.current) {
+    showResult(false, `${file.path} changed while the suggestion was open, so it was not written. Ask again for a new suggestion.`);
+    return true;
+  }
+  fs.writeFileSync(target, proposed);
+  showResult(true, `Wrote the suggested resolution to ${file.path}. It is not staged: check it, then stage it and continue in Source Control.`);
+  await ctx.refresh();
+  return true;
+}
+
+const UNDO_ACTION_NAMES: Record<UndoPlan['action'], string> = {
+  reset: 'Reset the branch', revert: 'Revert a commit', drop: 'Drop a commit', discard: 'Discard uncommitted changes',
+  abort: 'Abort the paused operation', none: 'Nothing'
+};
+
+/**
+ * Undo in plain language (services/naturalUndo.ts): the user says what to undo, Copilot picks one
+ * existing action with a commit or files it was shown, code checks it and says from Git what it does,
+ * and on Continue the action runs through its own dialog, as from its menu. Nothing runs before that.
+ */
+export async function handleNaturalUndo(ctx: MessageHandlerContext, payload: { repositoryPath: string; request?: string }): Promise<void> {
+  if (!payload || typeof payload.repositoryPath !== 'string') {
+    return;
+  }
+  const copilot = ctx.conflictExplainer;
+  if (!copilot) {
+    showResult(false, 'Undo in plain language needs Copilot in VS Code.');
+    return;
+  }
+  const request = (payload.request ?? await vscode.window.showInputBox({
+    title: `Undo in ${payload.repositoryPath}`, ignoreFocusOut: true,
+    prompt: 'Say what to undo. Copilot picks one of the dashboard\'s actions; you see it, and its own confirmation, before anything runs.',
+    placeHolder: 'e.g. undo my last 2 commits but keep the changes · undo the rebase I just did'
+  }) ?? '').trim();
+  if (!request) {
+    return;
+  }
+  const git = new GitCommandService(ctx.workspaceRoot);
+  const root = git.resolveRepositoryPath(payload.repositoryPath);
+  let context;
+  try {
+    context = await collectUndoContext(git, payload.repositoryPath);
+  } catch (error) {
+    showResult(false, error instanceof Error ? error.message : String(error));
+    return;
+  }
+  if (!await confirmSending(copilot, root, 'Ask Copilot', 'Ask Copilot how to undo this?',
+    'Your request, the last 20 commits\' hashes and subjects, recent reflog entries and the names of changed files are sent to the ' +
+      'selected Copilot model. No file contents are sent, and nothing runs until you confirm.')) {
+    return;
+  }
+  let answer;
+  try {
+    answer = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: 'Asking Copilot how to undo it…', cancellable: true },
+      async (_progress, token) => {
+        const reply = await copilot.complete(buildUndoPrompt(context, request, copilot.language()), token, 4000);
+        return token.isCancellationRequested ? undefined : { plan: parseUndoPlan(reply.text, context), model: reply.model };
+      });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message !== 'Cancelled') { showResult(false, `Could not plan the undo: ${message}`); }
+    return;
+  }
+  if (!answer) {
+    return;
+  }
+  const { plan, model } = answer;
+  if (plan.action === 'none') {
+    const again = await vscode.window.showWarningMessage('Copilot found no undo action for that.',
+      { modal: true, detail: `${plan.question}\n\nYour request: "${request}"` }, 'Ask again');
+    if (again === 'Ask again') { await handleNaturalUndo(ctx, { repositoryPath: payload.repositoryPath }); }
+    return;
+  }
+  const facts = await describeUndoPlan(git, payload.repositoryPath, plan, context);
+  const go = await vscode.window.showWarningMessage(`${UNDO_ACTION_NAMES[plan.action]}?`, { modal: true, detail:
+    `Your request: "${request}"\n\nCopilot's reading (${model}; a suggestion): ${plan.explanation || '(no explanation)'}\n\n` +
+    `What it does, from Git:\n${facts}\n\nContinue opens the action's own confirmation; nothing runs before you confirm there.` }, 'Continue');
+  if (go !== 'Continue') {
+    return;
+  }
+  switch (plan.action) {
+    case 'reset':
+    case 'drop':
+      await handleRewriteHistoryCommit(ctx, { repositoryPath: payload.repositoryPath, commit: plan.commit!, action: plan.action, mode: plan.mode });
+      return;
+    case 'revert':
+      await handleApplyHistoryCommit(ctx, { repositoryPath: payload.repositoryPath, commit: plan.commit!, operation: 'revert' });
+      return;
+    case 'discard':
+      await handleDiscardChanges(ctx, { repositoryPath: payload.repositoryPath, paths: plan.paths });
+      return;
+    case 'abort':
+      if (context.pending === 'rebase') {
+        await handleResolveHistoryRebase(ctx, { repositoryPath: payload.repositoryPath, command: 'abort' });
+      } else if (context.pending === 'cherry-pick' || context.pending === 'revert' || context.pending === 'merge') {
+        const sure = await vscode.window.showWarningMessage(`Abort the ${context.pending} in ${payload.repositoryPath}?`, { modal: true }, 'Abort');
+        if (sure !== 'Abort') { return; }
+        const aborted = await ctx.gitOps.abortHistoryAction(payload.repositoryPath, context.pending);
+        showResult(aborted.success, aborted.message);
+        await ctx.reloadDashboardHistory([payload.repositoryPath]);
+        await ctx.refresh();
+      } else {
+        showResult(false, `A paused ${context.pending} cannot be aborted from here; use git ${context.pending} --abort.`);
+      }
+      return;
+  }
+}
+
+/** Suggest resolution for each file still in conflict, one at a time, until the user stops. */
+async function suggestForConflictedFiles(ctx: MessageHandlerContext, repositoryPath: string): Promise<void> {
+  const git = new GitCommandService(ctx.workspaceRoot);
+  const conflicted = (await git.execGitRaw(['diff', '--name-only', '-z', '--diff-filter=U'], git.resolveRepositoryPath(repositoryPath), 10000)
+    .catch(() => '')).split('\0').filter(Boolean);
+  for (const filePath of [...new Set(conflicted)]) {
+    if (!await handleSuggestConflictResolution(ctx, { repositoryPath, path: filePath })) { return; }
+  }
+}
+
 export async function handleApplyHistoryCommit(ctx: MessageHandlerContext, payload: {
   repositoryPath: string; commit: string; operation: HistoryAction
 }): Promise<void> {
@@ -793,22 +1044,29 @@ export async function handleApplyHistoryCommit(ctx: MessageHandlerContext, paylo
     mainline = picked.index;
   }
   const label = payload.operation === 'cherry-pick' ? 'Cherry pick' : payload.operation === 'revert' ? 'Revert' : 'Merge';
-  const approved = await vscode.window.showWarningMessage(
+  const predicted = await predictConflicts(ctx, payload.repositoryPath, payload.operation, sha, mainline);
+  const approved = await confirmHistoryAction(ctx, payload.repositoryPath,
     `${label} ${sha.slice(0, 12)} ${payload.operation === 'merge' ? 'into' : 'on'} ${branch} in ${payload.repositoryPath}?`,
-    { modal: true, detail: `The working tree must be clean. Conflicts can be resolved in Source Control.` }, label
-  );
-  if (approved !== label) {
+    `${predicted.text}\nThe working tree must be clean. Conflicts can be resolved in Source Control.`, label, predicted.prediction);
+  if (!approved) {
     return;
   }
   const git = new GitCommandService(ctx.workspaceRoot);
   const headBefore = await git.resolveRevision(payload.repositoryPath, 'HEAD');
+  // The prediction (and any explanation) was for the HEAD of then; a commit made meanwhile changes it.
+  if (predicted.prediction && predicted.prediction.head !== headBefore) {
+    showResult(false, `${branch} moved while the question was open, so the predicted conflicts no longer apply. Nothing was run; start the ${payload.operation} again.`);
+    return;
+  }
   const result = await ctx.gitOps.applyHistoryCommit(payload.repositoryPath, sha, payload.operation, mainline, branch);
   const pending = (result.data as { pending?: HistoryAction } | undefined)?.pending;
   if (pending) {
-    const choice = await vscode.window.showWarningMessage(result.message, 'Abort operation');
+    const choice = await vscode.window.showWarningMessage(result.message, ...(ctx.conflictExplainer ? [SUGGEST_RESOLUTION] : []), 'Abort operation');
     if (choice === 'Abort operation') {
       const aborted = await ctx.gitOps.abortHistoryAction(payload.repositoryPath, pending);
       showResult(aborted.success, aborted.message);
+    } else if (choice === SUGGEST_RESOLUTION) {
+      await suggestForConflictedFiles(ctx, payload.repositoryPath);
     }
   } else {
     showResult(result.success, result.message);
@@ -821,7 +1079,7 @@ export async function handleApplyHistoryCommit(ctx: MessageHandlerContext, paylo
 }
 
 export async function handleRewriteHistoryCommit(ctx: MessageHandlerContext, payload: {
-  repositoryPath: string; commit: string; action: HistoryRewriteAction
+  repositoryPath: string; commit: string; action: HistoryRewriteAction; mode?: ResetMode
 }): Promise<void> {
   if (!payload || typeof payload.repositoryPath !== 'string' || typeof payload.commit !== 'string' ||
       !['rebase', 'reset', 'drop'].includes(payload.action)) {
@@ -829,8 +1087,10 @@ export async function handleRewriteHistoryCommit(ctx: MessageHandlerContext, pay
   }
   try {
     const preview = await ctx.gitOps.previewHistoryRewrite(payload.repositoryPath, payload.commit, payload.action);
-    let mode: ResetMode | undefined;
-    if (payload.action === 'reset') {
+    // A mode already chosen (a plain-language undo the user approved) skips the picker; a hard reset
+    // still asks for the branch name below.
+    let mode: ResetMode | undefined = payload.action === 'reset' && ['soft', 'mixed', 'hard'].includes(payload.mode || '') ? payload.mode : undefined;
+    if (payload.action === 'reset' && !mode) {
       const selection = await vscode.window.showQuickPick([
         { label: 'Soft', description: 'Move HEAD; keep index and working files', value: 'soft' as const },
         { label: 'Mixed', description: 'Move HEAD and reset index; keep working files', value: 'mixed' as const },
@@ -849,10 +1109,11 @@ export async function handleRewriteHistoryCommit(ctx: MessageHandlerContext, pay
       `${payload.action === 'drop' ? 'Commits replayed after dropping the selected commit' : 'Commits affected'} (${preview.affectedCount}):` +
       `\n${shown || '(none)'}${more}\nWorking tree must be clean. ` +
       `${payload.action === 'drop' || mode === 'hard' ? 'A local backup branch will be created.' : 'Commits may receive new hashes.'}`;
-    const approved = await vscode.window.showWarningMessage(
-      `${label} on ${preview.branch}?`, { modal: true, detail }, label
-    );
-    if (approved !== label) {
+    // Reset never conflicts: nothing to predict.
+    const predicted = payload.action === 'reset' ? undefined : await predictConflicts(ctx, payload.repositoryPath, payload.action, preview.target);
+    const approved = await confirmHistoryAction(ctx, payload.repositoryPath, `${label} on ${preview.branch}?`,
+      predicted ? `${detail}\n${predicted.text}` : detail, label, predicted?.prediction);
+    if (!approved) {
       return;
     }
     if (mode === 'hard') {
@@ -869,8 +1130,11 @@ export async function handleRewriteHistoryCommit(ctx: MessageHandlerContext, pay
     const pending = (result.data as { pending?: string } | undefined)?.pending;
     let resolved = false;
     if (pending === 'rebase') {
-      const choice = await vscode.window.showWarningMessage(result.message, 'Continue rebase', 'Abort rebase');
-      if (choice) {
+      const choice = await vscode.window.showWarningMessage(result.message, ...(ctx.conflictExplainer ? [SUGGEST_RESOLUTION] : []),
+        'Continue rebase', 'Abort rebase');
+      if (choice === SUGGEST_RESOLUTION) {
+        await suggestForConflictedFiles(ctx, payload.repositoryPath);
+      } else if (choice) {
         const recovery = await ctx.gitOps.resolveHistoryRebase(payload.repositoryPath, choice === 'Continue rebase' ? 'continue' : 'abort');
         showResult(recovery.success, recovery.message);
         resolved = recovery.success;
@@ -1165,6 +1429,8 @@ export const messageHandlers: Record<string, (ctx: MessageHandlerContext, payloa
   'resolveHistoryRebase': (ctx, payload) => handleResolveHistoryRebase(ctx, payload as { repositoryPath: string; command: 'continue' | 'abort' }),
   'getPendingOperation': (ctx, payload) => handleGetPendingOperation(ctx, payload),
   'discardChanges': (ctx, payload) => handleDiscardChanges(ctx, payload as { repositoryPath: string; paths?: string[]; all?: boolean }),
+  'naturalUndo': (ctx, payload) => handleNaturalUndo(ctx, payload as { repositoryPath: string }),
+  'suggestConflictResolution': async (ctx, payload) => { await handleSuggestConflictResolution(ctx, payload as { repositoryPath: string; path: string }); },
   'stashAction': (ctx, payload) => handleStashAction(ctx, payload as { repositoryPath: string; stash: string; operation: StashOperation }),
   'getCommits': (ctx, payload) => handleGetCommits(ctx, payload as { submodule: string }),
   'getRecordedCommit': (ctx, payload) => handleGetRecordedCommit(ctx, payload as { submodule: string }),

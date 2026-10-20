@@ -35,7 +35,8 @@ export class GitCommandService {
     args: string[],
     cwd?: string,
     timeoutMs: number = 30000,
-    allowDiffExitCode = false,
+    /** true accepts exit code 1 (e.g. `git diff --exit-code`); a function decides per exit code, and sees it. */
+    allowDiffExitCode: boolean | ((code: number) => boolean) = false,
     env?: NodeJS.ProcessEnv
   ): Promise<string> {
     const workDir = cwd || this.workspaceRoot;
@@ -51,7 +52,9 @@ export class GitCommandService {
         windowsHide: true
       }, (error, stdout, stderr) => {
         GitCommandService.observer?.({ args, cwd: workDir, ms: Date.now() - started, ok: !error });
-        if (!error || (allowDiffExitCode && error.code === 1 && !error.killed && !stderr.trim())) {
+        const code = error && typeof error.code === 'number' ? error.code : undefined;
+        const accepted = code !== undefined && (typeof allowDiffExitCode === 'function' ? allowDiffExitCode(code) : allowDiffExitCode && code === 1);
+        if (!error || (accepted && !error.killed && !stderr.trim())) {
           resolve(stdout);
           return;
         }

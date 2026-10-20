@@ -521,6 +521,29 @@ async function main() {
     assert.deepEqual(await discardItems(), ['Discard All Changes…']);
     await page.keyboard.press('Escape');
     await discardMenu.waitFor({ state: 'hidden' });
+    // A file in conflict (as after a stopped cherry-pick) also offers Suggest Resolution, which goes to the host.
+    await page.evaluate(() => window.dispatchEvent(new MessageEvent('message', { data: { type: 'workingTreeChangesLoaded', payload: {
+      purpose: 'dashboard', repositoryPath: '.', changes: [{ path: 'src/app.txt', indexStatus: 'U', workTreeStatus: 'U', staged: false,
+        unstaged: true, untracked: false, conflicted: true }] } } })));
+    await page.locator('#dashboardChangedFiles .changed-file-item[data-path="src/app.txt"]').waitFor();
+    await page.click('#dashboardChangedFiles .changed-file-item[data-path="src/app.txt"]', { button: 'right' });
+    await discardMenu.waitFor();
+    assert.deepEqual(await discardItems(), ['Suggest Resolution…', 'Review Changes in This File', 'Discard Changes…', 'Discard All Changes…']);
+    await snap(page, '01e-suggest-resolution-menu');
+    const errorsBefore = fakeVscode.window.showErrorMessage;
+    const hostErrors = [];
+    fakeVscode.window.showErrorMessage = message => { hostErrors.push(message); };
+    await discardMenu.locator('[data-action="contextSuggestResolution"]').click();
+    for (let i = 0; i < 100 && !hostErrors.length; i++) await page.waitForTimeout(20);
+    fakeVscode.window.showErrorMessage = errorsBefore;
+    // This harness has no Copilot: the real handler says so (in VS Code it would read the conflict).
+    assert.deepEqual(hostErrors, ['Suggesting a resolution needs Copilot in VS Code.']);
+    // Undo… asks the host, which asks what to undo (here it stops: no Copilot in this harness).
+    fakeVscode.window.showErrorMessage = message => { hostErrors.push(message); };
+    await page.click('#naturalUndoButton');
+    for (let i = 0; i < 100 && hostErrors.length < 2; i++) await page.waitForTimeout(20);
+    fakeVscode.window.showErrorMessage = errorsBefore;
+    assert.equal(hostErrors[1], 'Undo in plain language needs Copilot in VS Code.');
     // Clean again: the row goes, and the newest commit is shown.
     git(parent, 'reset', '-q', '--', 'src/app.txt');
     git(parent, 'checkout', '--', 'src/app.txt');

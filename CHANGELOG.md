@@ -11,10 +11,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Right-click a changed file for **Review Changes in This File**: a review of just that file, for uncommitted changes, a commit or a comparison. Uncommitted files keep **Discard Changes…** and **Discard All Changes…** in the same menu.
 - The detail pane of a commit or a loaded comparison (including **Compare branches**) has a **Review changes** button beside **Summarize changes**.
+- Before **Cherry Pick**, **Revert**, **Merge**, **Rebase** and **Drop** run, their confirmation says which files will conflict, as Git predicts by simulating the action in memory (nothing changes until you confirm). A rebase names the first commit that will stop. Needs Git 2.40 or newer; otherwise the dialog says nothing was predicted.
+- **Explain conflicts** in that confirmation, when conflicts are predicted: Copilot reads the conflicting lines and says, per file, what each side changed (named after the branch or commit, never "ours"/"theirs"), whether both changes can be kept and how, and whether to go ahead. It is shown as a suggestion beside Git's facts, then you choose. Nothing runs until you confirm.
+- **Suggest Resolution** for a file in conflict: right-click it in **Uncommitted changes**, or choose it in the message when a cherry-pick, revert, merge or rebase stops. Copilot resolves each conflict, keeping both sides' changes where it can; you see the result as a diff, with a check that each side's change is still in it, before anything is written. **Apply** writes the file only: it is not staged and the operation does not continue until you do it.
+- **↶ Undo…** in the dashboard toolbar: say what to undo ("undo my last 2 commits but keep the changes", "undo the rebase I just did"). Copilot picks one of the dashboard's actions (reset, revert, drop, discard or abort) with a commit or files from your repository; you see what it does, from Git (which commits leave the branch, which come back, which are already pushed), and then that action's own confirmation. Copilot never runs a Git command, and anything it names that is not in your repository is refused.
 
 ### Changed
 
 - The **Clean code** checkbox is gone: the **Clean code** review skill is the switch. While it is on (the default), every review also adds maintainability notes, which never block; turn the skill off in the Repository Review tab's skills to stop them. Before, the checkbox was off by default.
+- On a narrow dashboard (under 700 px), **Include remotes** reads **remotes**, so the toolbar keeps room for **↶ Undo…**.
 
 ### Fixed
 

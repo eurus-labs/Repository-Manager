@@ -2992,3 +2992,8 @@ body.sidebar-view { overflow: hidden; background: var(--vscode-sideBar-backgroun
 
 /* A stash in the detail header: the stash glyph on a quiet disc, apart from authors' initials. */
 .commit-avatar.stash-avatar { color: var(--text-secondary); background: var(--bg-tertiary); }
+
+/* Narrowest dashboards: "Include remotes" shortens to "remotes", so every toolbar control (Undo included) stays on screen. */
+@media (max-width: 700px) {
+  .remote-toggle-word { display: none; }
+}

@@ -9,9 +9,13 @@ const root = mkdtempSync(path.join(tmpdir(), 'repository-manager-handler-'));
 const run = (...args) => execFileSync('git', args, { cwd: root, encoding: 'utf8' }).trim();
 let warnings = 0;
 const fakeVscode = { window: {
-  async showWarningMessage(message) {
+  async showWarningMessage(message, options) {
     warnings++;
-    if (warnings === 1) return 'Cherry pick';
+    if (warnings === 1) {
+      // Git's simulation names the conflict before anything changes.
+      assert.match(options.detail, /^Predicted by Git: conflicts at [0-9a-f]{12} source edit in shared\.txt\. You resolve them in Source Control/);
+      return 'Cherry pick';
+    }
     assert.match(message, /Resolve conflicts/);
     writeFileSync(path.join(root, 'shared.txt'), 'resolved\n');
     run('add', 'shared.txt');
