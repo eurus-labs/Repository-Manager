@@ -5,6 +5,11 @@ const { execFileSync } = require('node:child_process');
 const { mkdtempSync, rmSync, writeFileSync } = require('node:fs');
 const { tmpdir } = require('node:os');
 const path = require('node:path');
+// Prediction must work for a user with no Git identity set (as on a CI runner): the service runs Git
+// with this process's environment, so it gets none here.
+for (const key of ['GIT_AUTHOR_NAME', 'GIT_AUTHOR_EMAIL', 'GIT_COMMITTER_NAME', 'GIT_COMMITTER_EMAIL']) delete process.env[key];
+process.env.GIT_CONFIG_GLOBAL = '/dev/null';
+process.env.GIT_CONFIG_NOSYSTEM = '1';
 const { GitCommandService } = require('../../out/services/gitCommandService.js');
 const { ConflictPredictionService } = require('../../out/services/conflictPredictionService.js');
 

@@ -45,6 +45,16 @@ export interface ConflictPrediction {
 
 const MAX_STEPS = 200;
 
+/**
+ * A fixed identity for the simulated commits, as review snapshots use: they never leave this
+ * repository, and prediction must not depend on user.name and user.email being set.
+ */
+const SIMULATION_ENV: NodeJS.ProcessEnv = { ...process.env };
+for (const role of ['AUTHOR', 'COMMITTER']) {
+  SIMULATION_ENV[`GIT_${role}_NAME`] = 'Repository Manager';
+  SIMULATION_ENV[`GIT_${role}_EMAIL`] = 'conflict-prediction@localhost';
+}
+
 export class ConflictPredictionService {
   constructor(private git: GitCommandService) {}
 
@@ -87,7 +97,7 @@ export class ConflictPredictionService {
         if (merged.paths.length) {
           return result([await this.conflict(cwd, step, merged, base)], index, commits.length, index < commits.length - 1);
         }
-        base = await this.git.execGit(['commit-tree', merged.tree, '-p', base, '-m', 'conflict prediction'], cwd, 10000);
+        base = (await this.git.execGitRaw(['commit-tree', merged.tree, '-p', base, '-m', 'conflict prediction'], cwd, 10000, false, SIMULATION_ENV)).trim();
       }
       return result([], commits.length, commits.length);
     } catch (error) {

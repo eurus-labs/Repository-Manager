@@ -55,6 +55,9 @@ async function main() {
   try {
     gitIn(base, 'init', '-q', '--bare', remote);
     gitIn(base, 'init', '-q', '-b', 'main', root);
+    // A revert is the user's own commit, made with their identity (CI runners have none set globally).
+    git('config', 'user.name', 'Undo Test');
+    git('config', 'user.email', 'undo@example.com');
     const c1 = commit('a.txt', '1\n', 'one');
     const c2 = commit('a.txt', '2\n', 'two');
     git('remote', 'add', 'origin', remote);
