@@ -445,8 +445,8 @@ async function main() {
     assert.equal(await page.textContent('#dashboardCommitSummary > code'), '*');
     // The actions sit in the header, top-right after the hash; the bar below stays hidden until a summary has a status.
     assert.equal(await page.isVisible('#commitHeaderActions'), true, 'the header actions are hidden for uncommitted changes');
-    // Commit is the toolbar's (one Commit button on screen); the header keeps Review changes and Summarize.
-    assert.deepEqual(await page.locator('#commitHeaderActions button:visible').allTextContents(), ['Review changes', 'Summarize changes']);
+    // Commit is the toolbar's (one Commit button on screen); the header keeps Review changes, Stash and Summarize.
+    assert.deepEqual(await page.locator('#commitHeaderActions button:visible').allTextContents(), ['Review changes', 'Stash…', 'Summarize changes']);
     assert.equal(await page.locator('[data-action="openCommitChangesModal"]:visible').count(), 1);
     assert.equal(await page.isVisible('#changeSummary'), false, 'an empty summary bar takes a row');
     assert.equal(await page.getAttribute('#reviewSelectionChangesButton', 'aria-disabled'), 'true');
@@ -499,7 +499,7 @@ async function main() {
     const discardItems = () => discardMenu.locator('button:visible').allTextContents();
     await page.click('#dashboardChangedFiles .changed-file-item[data-path="live-new.txt"]', { button: 'right' });
     await discardMenu.waitFor();
-    assert.deepEqual(await discardItems(), ['Review Changes in This File', 'Discard Changes…', 'Discard All Changes…']);
+    assert.deepEqual(await discardItems(), ['Review Changes in This File', 'Discard Changes…', 'Stash Changes…', 'Discard All Changes…']);
     await snap(page, '01d-discard-menu');
     // Discard Changes runs the real handler once it is confirmed: the new file is deleted, the rest stays.
     const askedBefore = fakeVscode.window.showWarningMessage;
@@ -518,7 +518,7 @@ async function main() {
     // Right-click the Uncommitted changes row: Discard All Changes only. Escape closes it.
     await page.click('#uncommittedRow', { button: 'right' });
     await discardMenu.waitFor();
-    assert.deepEqual(await discardItems(), ['Discard All Changes…']);
+    assert.deepEqual(await discardItems(), ['Stash Changes…', 'Discard All Changes…']);
     await page.keyboard.press('Escape');
     await discardMenu.waitFor({ state: 'hidden' });
     // A file in conflict (as after a stopped cherry-pick) also offers Suggest Resolution, which goes to the host.
@@ -528,7 +528,7 @@ async function main() {
     await page.locator('#dashboardChangedFiles .changed-file-item[data-path="src/app.txt"]').waitFor();
     await page.click('#dashboardChangedFiles .changed-file-item[data-path="src/app.txt"]', { button: 'right' });
     await discardMenu.waitFor();
-    assert.deepEqual(await discardItems(), ['Suggest Resolution…', 'Review Changes in This File', 'Discard Changes…', 'Discard All Changes…']);
+    assert.deepEqual(await discardItems(), ['Suggest Resolution…', 'Review Changes in This File', 'Discard Changes…', 'Stash Changes…', 'Discard All Changes…']);
     await snap(page, '01e-suggest-resolution-menu');
     const errorsBefore = fakeVscode.window.showErrorMessage;
     const hostErrors = [];
@@ -544,6 +544,34 @@ async function main() {
     for (let i = 0; i < 100 && hostErrors.length < 2; i++) await page.waitForTimeout(20);
     fakeVscode.window.showErrorMessage = errorsBefore;
     assert.equal(hostErrors[1], 'Undo in plain language needs Copilot in VS Code.');
+    // Delete Branch from the graph: each local branch at the commit, never the one checked out. A
+    // backup branch (as Drop or a hard Reset make) shares main's commit here.
+    const backup = 'history-backup/drop-1760000000000-abcdef12';
+    git(parent, 'branch', backup, 'main');
+    await page.evaluate(() => window.dispatchEvent(new MessageEvent('message', { data: { type: 'reloadDashboardHistory', payload: { repositoryPaths: ['.'] } } })));
+    const backupRow = page.locator('.history-row', { has: page.locator(`.history-ref[data-branch="${backup}"]`) });
+    await backupRow.waitFor();
+    await backupRow.click({ button: 'right' });
+    const historyMenu = page.locator('#historyContextMenu');
+    await historyMenu.waitFor();
+    const offered = await historyMenu.locator('[data-action="contextDeleteBranch"]').evaluateAll(items => items.map(item => item.dataset.branch));
+    assert.ok(offered.includes(backup) && offered.includes('main'), `Delete Branch offered ${JSON.stringify(offered)}`);
+    assert.equal(await historyMenu.locator(`[data-action="contextDeleteBranch"][data-branch="${backup}"]`).textContent(), `Delete Branch '${backup}'…`);
+    await snap(page, '01f-delete-branch-menu');
+    const deleteAsked = [];
+    const warnBefore = fakeVscode.window.showWarningMessage;
+    fakeVscode.window.showWarningMessage = async (message, options, ...items) => { deleteAsked.push(message); return options && options.modal ? items[0] : undefined; };
+    await historyMenu.locator(`[data-action="contextDeleteBranch"][data-branch="${backup}"]`).click();
+    await page.locator(`.history-ref[data-branch="${backup}"]`).waitFor({ state: 'detached' });
+    fakeVscode.window.showWarningMessage = warnBefore;
+    assert.deepEqual(deleteAsked, [`Delete branch '${backup}' in .?`]);
+    assert.equal(git(parent, 'branch', '--list', backup).trim(), '', 'the backup branch is still there');
+    assert.equal(git(parent, 'rev-parse', '--verify', 'main').length > 0, true);
+    // The checked-out branch's commit offers no Delete Branch.
+    await page.locator('.history-row', { has: page.locator('.history-ref.ref-head') }).click({ button: 'right' });
+    await historyMenu.waitFor();
+    assert.equal(await historyMenu.locator('[data-action="contextDeleteBranch"]').count(), 0, 'the checked-out branch can be deleted');
+    await page.keyboard.press('Escape');
     // Clean again: the row goes, and the newest commit is shown.
     git(parent, 'reset', '-q', '--', 'src/app.txt');
     git(parent, 'checkout', '--', 'src/app.txt');

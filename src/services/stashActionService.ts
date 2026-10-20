@@ -1,5 +1,5 @@
 /**
- * Apply, Pop and Drop for a stash the dashboard shows.
+ * Stash the uncommitted changes (Push), and Apply, Pop and Drop for a stash the dashboard shows.
  *
  * The webview names a stash by its commit hash, which never changes; its stash@{n} moves each time
  * another stash is pushed or dropped. Apply takes the hash itself. Pop and Drop only take a stash@{n},
@@ -15,6 +15,14 @@
 import { CommandResult } from '../types';
 import { GitCommandService } from './gitCommandService';
 import { findStash, StashEntry } from './stashTarget';
+import { HistoryActionService } from './historyActionService';
+
+export interface StashPushOptions {
+  /** Shown in the Stashes list; Git writes "WIP on <branch>" without one. */
+  message?: string;
+  /** Also stash new files (`--include-untracked`); ignored files are never stashed. */
+  includeUntracked?: boolean;
+}
 
 export type StashOperation = 'apply' | 'pop' | 'drop';
 export const STASH_OPERATIONS: readonly StashOperation[] = ['apply', 'pop', 'drop'];
@@ -56,6 +64,46 @@ export class StashActionService {
       return await next;
     } finally {
       if (this.queues.get(cwd) === next) { this.queues.delete(cwd); }
+    }
+  }
+
+  /**
+   * Stashes the uncommitted changes, staged and unstaged, and new files when asked: the working tree
+   * then matches HEAD. Queued with the other stash actions of the repository.
+   */
+  async push(repositoryPath: string, options: StashPushOptions = {}): Promise<CommandResult> {
+    const cwd = this.git.resolveRepositoryPath(repositoryPath);
+    const previous = this.queues.get(cwd) || Promise.resolve();
+    const next = previous.catch(() => undefined).then(() => this.pushNow(cwd, repositoryPath, options));
+    this.queues.set(cwd, next);
+    try {
+      return await next;
+    } finally {
+      if (this.queues.get(cwd) === next) { this.queues.delete(cwd); }
+    }
+  }
+
+  private async pushNow(cwd: string, repositoryPath: string, options: StashPushOptions): Promise<CommandResult> {
+    const unchanged: StashActionData = { changedWorkingTree: false, removedStash: false };
+    const message = (options.message || '').replace(/\s+/g, ' ').trim().slice(0, 200);
+    try {
+      // A paused merge, rebase, pick or revert keeps state Git would mix up with the stash.
+      const pending = await new HistoryActionService(this.git).pendingOperation(repositoryPath);
+      if (pending) { throw new Error(`A ${pending} is in progress. Finish or abort it before stashing.`); }
+      if ((await this.unmergedPaths(cwd)).length) { throw new Error('Resolve the conflicted files in Source Control before stashing.'); }
+      const status = await this.git.execGitRaw(['status', '--porcelain=v1', '-z', options.includeUntracked ? '--untracked-files=all' : '--untracked-files=no'], cwd, 30000);
+      if (!status) {
+        throw new Error(options.includeUntracked ? 'Nothing to stash: there are no changes.' : 'Nothing to stash: there are no changes to tracked files (new files were not included).');
+      }
+      const before = await this.git.execGit(['rev-parse', '-q', '--verify', 'refs/stash'], cwd, 5000).catch(() => '');
+      await this.git.execGit(['stash', 'push', ...(options.includeUntracked ? ['--include-untracked'] : []), ...(message ? ['-m', message] : [])], cwd, 120000);
+      const after = await this.git.execGit(['rev-parse', '-q', '--verify', 'refs/stash'], cwd, 5000).catch(() => '');
+      if (!after || after === before) { throw new Error('Git made no stash.'); }
+      const name = message ? `stash@{0} (${message})` : 'stash@{0}';
+      return { success: true, data: { changedWorkingTree: true, removedStash: false } as StashActionData,
+        message: `Stashed the changes${options.includeUntracked ? ', new files included,' : ''} as ${name}. Apply or Pop it from the Stashes list.` };
+    } catch (error) {
+      return { success: false, data: unchanged, message: `Stash failed: ${error instanceof Error ? error.message : String(error)}` };
     }
   }
 

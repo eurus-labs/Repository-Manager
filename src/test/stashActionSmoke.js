@@ -9,6 +9,8 @@ const Module = require('node:module');
 // hash the webview sent, whatever its stash@{n} is by then, and only Drop asks first.
 const shown = [];
 let answer;
+let inputs = [];
+let picks = [];
 const fakeVscode = {
   window: {
     async showWarningMessage(message, ...rest) {
@@ -17,6 +19,8 @@ const fakeVscode = {
       return modal ? answer : undefined;
     },
     showInformationMessage(message) { shown.push({ kind: 'info', message }); },
+    async showInputBox(options) { shown.push({ kind: 'input', message: options.title }); return inputs.shift(); },
+    async showQuickPick(items, options) { shown.push({ kind: 'pick', message: options.title, items: items.map(item => item.label) }); return items[picks.shift()]; },
     showErrorMessage(message) { shown.push({ kind: 'error', message }); }
   },
   commands: { executeCommand() {} }
@@ -26,7 +30,8 @@ Module._load = function (request, parent, isMain) {
   if (request === 'vscode') return fakeVscode;
   return originalLoad.call(this, request, parent, isMain);
 };
-const { handleStashAction } = require('../../out/handlers/webviewMessageHandler.js');
+const { handleStashAction, handleStashPush } = require('../../out/handlers/webviewMessageHandler.js');
+const { CommitService } = require('../../out/services/commitService.js');
 const { GitCommandService } = require('../../out/services/gitCommandService.js');
 const { StashActionService } = require('../../out/services/stashActionService.js');
 Module._load = originalLoad;
@@ -55,7 +60,9 @@ function context(repo) {
     panel: { webview: { postMessage: async message => { calls.posted.push(message); return true; } } },
     gitOps: {
       describeStash: (...args) => service.describe(...args),
-      runStashAction: (...args) => service.run(...args)
+      runStashAction: (...args) => service.run(...args),
+      pushStash: (...args) => service.push(...args),
+      getWorkingTreeChanges: (...args) => new CommitService(new GitCommandService(repo.root)).getWorkingTreeChanges(...args)
     },
     async reloadDashboardHistory(paths) { assert.deepEqual(paths, ['.']); calls.reloaded++; },
     async refresh() { calls.refreshed++; }
@@ -230,6 +237,52 @@ async function main() {
       await handleStashAction(ctx, { repositoryPath: '.', stash: 42, operation: 'drop' });
       assert.deepEqual(shown, []);
       assert.equal(repo.stashes().length, 1);
+    }
+    // Stash Changes: a message, then whether to take new files; the working tree is clean after.
+    {
+      const repo = repository(); repos.push(repo);
+      const { ctx, calls, service } = context(repo);
+      repo.write('tracked.txt', 'edit\n');
+      repo.run('add', 'tracked.txt');
+      repo.write('other.txt', 'unstaged edit\n');
+      repo.write('new.txt', 'new file\n');
+      // Escape at the message asks nothing more and stashes nothing.
+      shown.length = 0; inputs = [undefined];
+      await handleStashPush(ctx, { repositoryPath: '.' });
+      assert.deepEqual([repo.stashes().length, shown.map(item => item.kind)], [0, ['input']]);
+      // Tracked changes only: the new file stays.
+      shown.length = 0; inputs = ['half-done form']; picks = [1];
+      await handleStashPush(ctx, { repositoryPath: '.' });
+      assert.deepEqual(shown.find(item => item.kind === 'pick').items, ['Include new files (1 file)', 'Tracked changes only (2 files)']);
+      assert.match(repo.stashes()[0], /On main: half-done form$/);
+      assert.equal(repo.read('tracked.txt'), 'base\n');
+      assert.equal(repo.read('other.txt'), 'other\n');
+      assert.equal(repo.read('new.txt'), 'new file\n');
+      assert.equal(repo.run('status', '--porcelain'), '?? new.txt');
+      assert.match(shown.at(-1).message, /^Stashed the changes as stash@\{0\} \(half-done form\)\./);
+      assert.deepEqual(calls.posted.at(-1), { type: 'stashActionCompleted', payload: { repositoryPath: '.', operation: 'push', changedWorkingTree: true, removedStash: false } });
+      assert.equal(calls.reloaded, 1, 'the history and Stashes list were not reloaded');
+      // Only new files left: Include them is the only choice; no message is fine.
+      shown.length = 0; inputs = ['']; picks = [0];
+      await handleStashPush(ctx, { repositoryPath: '.' });
+      assert.deepEqual(shown.find(item => item.kind === 'pick').items, ['Include new files (1 file)']);
+      assert.equal(repo.stashes().length, 2);
+      assert.equal(repo.run('status', '--porcelain'), '', 'the new file was not stashed');
+      assert.match(repo.run('stash', 'show', '--include-untracked', '--name-only', 'stash@{0}'), /new\.txt/);
+      // Nothing left: said, and no question.
+      shown.length = 0;
+      await handleStashPush(ctx, { repositoryPath: '.' });
+      assert.deepEqual(shown, [{ kind: 'error', message: 'Nothing to stash: there are no changes.' }]);
+      // The service refuses tracked-only with only new files, and while files are in conflict.
+      repo.write('another.txt', 'x\n');
+      assert.match((await service.push('.', {})).message, /^Stash failed: Nothing to stash: there are no changes to tracked files/);
+      repo.run('stash', 'push', '-u', '-m', 'clean slate');
+      repo.write('tracked.txt', 'mine\n'); repo.run('commit', '-qam', 'mine');
+      repo.run('checkout', '-q', '-b', 'side', 'HEAD~1'); repo.write('tracked.txt', 'theirs\n'); repo.run('commit', '-qam', 'theirs');
+      assert.throws(() => repo.run('merge', 'main'));
+      const refused = await service.push('.', { includeUntracked: true });
+      assert.match(refused.message, /^Stash failed: A merge is in progress\. Finish or abort it before stashing\.$/);
+      repo.run('merge', '--abort');
     }
     console.log('Stash action smoke passed');
   } finally {

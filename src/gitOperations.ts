@@ -18,7 +18,7 @@ import {
   ReferenceService
 } from './services';
 import { HistoryAction, HistoryActionService } from './services/historyActionService';
-import { StashActionService, StashOperation } from './services/stashActionService';
+import { StashActionService, StashOperation, StashPushOptions } from './services/stashActionService';
 import { DiscardPlan, DiscardService } from './services/discardService';
 import { StashEntry } from './services/stashTarget';
 import { HistoryRewriteAction, HistoryRewritePreview, HistoryRewriteService, ResetMode } from './services/historyRewriteService';
@@ -361,6 +361,11 @@ export class GitOperations {
 
   async runStashAction(repositoryPath: string, hash: string, operation: StashOperation): Promise<CommandResult> {
     return this.stashActionService.run(repositoryPath, hash, operation);
+  }
+
+  /** Stashes the uncommitted changes (new files too when asked). */
+  async pushStash(repositoryPath: string, options: StashPushOptions): Promise<CommandResult> {
+    return this.stashActionService.push(repositoryPath, options);
   }
 
   /** What discarding these uncommitted changes (all of them when `paths` is undefined) would do. */

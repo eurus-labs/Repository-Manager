@@ -1157,6 +1157,58 @@ export async function handleRewriteHistoryCommit(ctx: MessageHandlerContext, pay
  * leave the stash's changes in the working tree (Pop keeps the stash when they conflict), while
  * Drop throws them away. After Apply or Pop the dashboard opens the uncommitted changes.
  */
+/**
+ * Stash Changes from the dashboard: an optional message, then, when there are new files, whether
+ * to include them (ignored files never are). The changes leave the working tree and the new stash
+ * is listed under Stashes; nothing else is asked, since nothing is lost.
+ */
+export async function handleStashPush(ctx: MessageHandlerContext, payload: { repositoryPath: string }): Promise<void> {
+  if (!payload || typeof payload.repositoryPath !== 'string') {
+    return;
+  }
+  let changes;
+  try {
+    changes = await ctx.gitOps.getWorkingTreeChanges(payload.repositoryPath);
+  } catch (error) {
+    showResult(false, error instanceof Error ? error.message : String(error));
+    return;
+  }
+  const untracked = changes.filter(change => change.untracked).length;
+  const tracked = changes.length - untracked;
+  if (!changes.length) {
+    showResult(false, 'Nothing to stash: there are no changes.');
+    return;
+  }
+  const message = await vscode.window.showInputBox({
+    title: `Stash changes in ${payload.repositoryPath}`,
+    prompt: 'A message for the stash (optional). The changes leave the working tree and are listed under Stashes.',
+    placeHolder: 'e.g. half-done login form'
+  });
+  if (message === undefined) {
+    return;
+  }
+  let includeUntracked = false;
+  if (untracked) {
+    const files = (n: number) => `${n} file${n === 1 ? '' : 's'}`;
+    const pick = await vscode.window.showQuickPick([
+      { label: `Include new files (${files(untracked)})`, description: 'Every change, as if nothing was done since the last commit', value: true },
+      ...(tracked ? [{ label: `Tracked changes only (${files(tracked)})`, description: 'New files stay in the working tree', value: false }] : [])
+    ], { title: 'Stash new files too?', placeHolder: 'Ignored files are never stashed' });
+    if (!pick) {
+      return;
+    }
+    includeUntracked = pick.value;
+  }
+  const result = await ctx.gitOps.pushStash(payload.repositoryPath, { message, includeUntracked });
+  showResult(result.success, result.message);
+  if (result.success) {
+    await sendToWebview(ctx, { type: 'stashActionCompleted', payload: { repositoryPath: payload.repositoryPath,
+      operation: 'push', changedWorkingTree: true, removedStash: false } });
+    await ctx.reloadDashboardHistory([payload.repositoryPath]);
+  }
+  await ctx.refresh();
+}
+
 export async function handleStashAction(ctx: MessageHandlerContext, payload: {
   repositoryPath: string; stash: string; operation: StashOperation
 }): Promise<void> {
@@ -1431,6 +1483,7 @@ export const messageHandlers: Record<string, (ctx: MessageHandlerContext, payloa
   'discardChanges': (ctx, payload) => handleDiscardChanges(ctx, payload as { repositoryPath: string; paths?: string[]; all?: boolean }),
   'naturalUndo': (ctx, payload) => handleNaturalUndo(ctx, payload as { repositoryPath: string }),
   'suggestConflictResolution': async (ctx, payload) => { await handleSuggestConflictResolution(ctx, payload as { repositoryPath: string; path: string }); },
+  'stashPush': (ctx, payload) => handleStashPush(ctx, payload as { repositoryPath: string }),
   'stashAction': (ctx, payload) => handleStashAction(ctx, payload as { repositoryPath: string; stash: string; operation: StashOperation }),
   'getCommits': (ctx, payload) => handleGetCommits(ctx, payload as { submodule: string }),
   'getRecordedCommit': (ctx, payload) => handleGetRecordedCommit(ctx, payload as { submodule: string }),

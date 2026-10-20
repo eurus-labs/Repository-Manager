@@ -107,6 +107,7 @@
     menu.querySelector('[data-action="contextReviewFile"]').hidden = !file;
     menu.querySelector('[data-action="contextDiscardFile"]').hidden = !file || !local;
     menu.querySelector('[data-action="contextDiscardAll"]').hidden = !local;
+    menu.querySelector('[data-action="contextStash"]').hidden = !local;
     menu.hidden = false;
     const width = window.innerWidth || document.documentElement.clientWidth;
     const height = window.innerHeight || document.documentElement.clientHeight;
@@ -292,6 +293,16 @@
     if (!commit) return false;
     historyContextTarget = { repositoryPath: activeDashboardRepository, hash: commit.hash };
     const menu = document.getElementById('historyContextMenu');
+    // Delete Branch for each local branch at this commit, except the one checked out (Git refuses it).
+    const branchItems = document.getElementById('historyBranchItems');
+    if (branchItems) {
+      const local = (commit.refs || []).filter(ref => ref.kind === 'local-branch' && !ref.isCurrent);
+      branchItems.innerHTML = local.length ? '<div class="history-context-separator" role="separator"></div>' + local.map(ref => {
+        const known = (repositoryRefs.branches || []).find(branch => branch.name === ref.name);
+        return `<button type="button" role="menuitem" data-action="contextDeleteBranch" data-branch="${escapeHtml(ref.name)}" data-has-remote="${known && known.hasRemote ? 'true' : 'false'}" title="Delete the local branch ${escapeHtml(ref.name)}; the commit stays while another branch has it">Delete Branch '${escapeHtml(ref.name)}'…</button>`;
+      }).join('') : '';
+      branchItems.hidden = !local.length;
+    }
     historyContextMenuPoint = { x, y };
     applyHistoryMenuOperation();
     menu.hidden = false;
@@ -651,6 +662,20 @@
       hideHistoryContextMenu();
       if (!target || !target.path) return;
       postMessage('suggestConflictResolution', { repositoryPath: target.repositoryPath, path: target.path });
+    },
+    contextDeleteBranch: (el) => {
+      hideHistoryContextMenu();
+      if (!el.dataset.branch || !activeDashboardRepository) return;
+      // The extension asks first (local only, or origin's too when it has one).
+      postMessage('deleteBranch', { submodule: activeDashboardRepository, branch: el.dataset.branch, hasRemote: el.dataset.hasRemote === 'true' });
+    },
+    stashLocal: () => {
+      if (activeDashboardRepository) postMessage('stashPush', { repositoryPath: activeDashboardRepository });
+    },
+    contextStash: () => {
+      const target = changesContextTarget;
+      hideHistoryContextMenu();
+      if (target) postMessage('stashPush', { repositoryPath: target.repositoryPath });
     },
     contextDiscardFile: () => {
       const target = changesContextTarget;

@@ -5,6 +5,13 @@ All notable changes to Repository Manager will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.9.0] - Unreleased
+
+### Added
+
+- **Stash Changes**: **Stash…** beside **Review changes** for uncommitted changes, or **Stash Changes…** when you right-click them. Give it an optional message; when there are new files, choose whether to stash them too (ignored files never are). The stash is listed under **Stashes**, where **Apply**, **Pop** and **Drop** already were.
+- **Delete Branch** in the graph: right-click a commit for **Delete Branch '…'…** on each local branch there, except the one checked out. This includes the `history-backup/…` branches that **Drop** and a hard **Reset** make. Before, a branch could only be deleted from the Side Bar's branch list, with a button shown on hover.
+
 ## [2.8.0] - 2026-10-20
 
 ### Added
