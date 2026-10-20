@@ -572,6 +572,23 @@ async function main() {
     await historyMenu.waitFor();
     assert.equal(await historyMenu.locator('[data-action="contextDeleteBranch"]').count(), 0, 'the checked-out branch can be deleted');
     await page.keyboard.press('Escape');
+    // A branch made in a terminal: the live update says refs changed, and the Side Bar's branch list
+    // and the graph show it without a reload (HEAD did not move). One reload, not one per signal.
+    const fromTerminal = 'from-terminal';
+    git(parent, 'branch', fromTerminal, 'main');
+    await page.evaluate(() => { const toHost = window.__postToHost; window.__sent = []; window.__postToHost = m => { window.__sent.push(m); return toHost(m); }; });
+    await page.evaluate(() => window.dispatchEvent(new MessageEvent('message', { data: { type: 'updateSubmodules', payload: { submodules: window.__initialRepositories } } })));
+    await page.waitForTimeout(400);
+    assert.equal(await page.evaluate(() => window.__sent.filter(m => m.type === 'getRepositoryRefs').length), 0, 'a plain update reloaded the branches');
+    await page.evaluate(() => window.dispatchEvent(new MessageEvent('message', { data: { type: 'updateSubmodules', payload: { submodules: window.__initialRepositories, refsChanged: true } } })));
+    await side.locator(`.sidebar-ref-item[data-branch="${fromTerminal}"]`).waitFor();
+    await page.locator(`.history-ref[data-branch="${fromTerminal}"]`).waitFor();
+    assert.equal(await page.evaluate(() => window.__sent.filter(m => m.type === 'getRepositoryRefs').length), 1);
+    // Deleted in the terminal: it goes from both.
+    git(parent, 'branch', '-D', fromTerminal);
+    await page.evaluate(() => window.dispatchEvent(new MessageEvent('message', { data: { type: 'updateSubmodules', payload: { submodules: window.__initialRepositories, refsChanged: true } } })));
+    await side.locator(`.sidebar-ref-item[data-branch="${fromTerminal}"]`).waitFor({ state: 'detached' });
+    await page.locator(`.history-ref[data-branch="${fromTerminal}"]`).waitFor({ state: 'detached' });
     // Clean again: the row goes, and the newest commit is shown.
     git(parent, 'reset', '-q', '--', 'src/app.txt');
     git(parent, 'checkout', '--', 'src/app.txt');

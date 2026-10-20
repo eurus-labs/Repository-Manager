@@ -22,6 +22,8 @@ let panelVisible = true;
 let viewStateListener = () => {};
 const settings = { autoFetch: true, autoFetchInterval: 5 };
 const noopEvent = () => ({ dispose() {} });
+// The live-changes watcher's listeners, to send file events as VS Code would.
+const fileEvents = {};
 const fakeVscode = {
   ViewColumn: { One: 1 },
   Uri: { joinPath: (uri, ...parts) => ({ fsPath: path.join(uri.fsPath, ...parts), toString() { return this.fsPath; } }) },
@@ -46,7 +48,8 @@ const fakeVscode = {
     getConfiguration: () => ({ get: (key, fallback) => (key in settings ? settings[key] : fallback) }),
     onDidChangeConfiguration: noopEvent,
     registerTextDocumentContentProvider: noopEvent,
-    createFileSystemWatcher: () => ({ onDidChange: noopEvent, onDidCreate: noopEvent, onDidDelete: noopEvent, dispose() {} })
+    createFileSystemWatcher: () => ({ onDidChange: listener => { fileEvents.change = listener; return { dispose() {} }; },
+      onDidCreate: listener => { fileEvents.create = listener; return { dispose() {} }; }, onDidDelete: noopEvent, dispose() {} })
   },
   lm: { selectChatModels: async () => [] },
   LanguageModelChatMessage: { User: text => text },
@@ -120,6 +123,20 @@ async function main() {
       && message.payload.submodules.some(repository => repository.isParentRepo && repository.behind === 1)));
     assert.equal(git(local, 'rev-parse', 'origin/main'), git(upstream, 'rev-parse', 'HEAD'));
     assert.ok(git(local, 'branch', '-r').includes('origin/old-feature'), 'background fetch pruned a remote branch');
+
+    // A branch made in a terminal: the watcher sees its ref, and the next update says refs changed, so
+    // the dashboard reloads its branch list; a file save's update does not.
+    const sentBefore = posted.length;
+    git(local, 'branch', 'from-terminal');
+    fileEvents.create({ fsPath: path.join(local, '.git', 'refs', 'heads', 'from-terminal') });
+    await waitFor(() => posted.slice(sentBefore).some(message => message.type === 'updateSubmodules'));
+    assert.equal(posted.slice(sentBefore).find(message => message.type === 'updateSubmodules').payload.refsChanged, true);
+    const savedBefore = posted.length;
+    writeFileSync(path.join(local, 'f.txt'), 'edited\n');
+    fileEvents.change({ fsPath: path.join(local, 'f.txt') });
+    await waitFor(() => posted.slice(savedBefore).some(message => message.type === 'updateSubmodules'));
+    assert.equal(posted.slice(savedBefore).find(message => message.type === 'updateSubmodules').payload.refsChanged, undefined,
+      'a file save said refs changed');
 
     RepositoryManagerPanel.currentPanel.dispose();
     console.log('Auto fetch panel smoke passed');

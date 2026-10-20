@@ -12,6 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Stash Changes**: **Stash…** beside **Review changes** for uncommitted changes, or **Stash Changes…** when you right-click them. Give it an optional message; when there are new files, choose whether to stash them too (ignored files never are). The stash is listed under **Stashes**, where **Apply**, **Pop** and **Drop** already were.
 - **Delete Branch** in the graph: right-click a commit for **Delete Branch '…'…** on each local branch there, except the one checked out. This includes the `history-backup/…` branches that **Drop** and a hard **Reset** make. Before, a branch could only be deleted from the Side Bar's branch list, with a button shown on hover.
 
+### Fixed
+
+- A branch, tag or stash made or deleted outside the dashboard (in a terminal, or another tool) now shows in the branch list and the graph as soon as Git writes it. Before, it only showed after HEAD moved or the dashboard was reopened.
+
 ## [2.8.0] - 2026-10-20
 
 ### Added

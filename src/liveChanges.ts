@@ -10,8 +10,12 @@
  */
 
 export interface LiveChangesDeps {
-  /** Refreshes the repository list (status and change counts of every repository). */
-  refresh(): Promise<void>;
+  /**
+   * Refreshes the repository list (status and change counts of every repository). `refsChanged`:
+   * a branch, tag or stash changed (made, moved or deleted, e.g. in a terminal), which HEAD alone
+   * does not show, so the branch list and graph need reading again.
+   */
+  refresh(change?: { refsChanged: boolean }): Promise<void>;
   /** Whether a refresh may run now: the dashboard is visible and no user action is running. */
   canRefresh(): boolean;
   setTimer(callback: () => void, ms: number): unknown;
@@ -49,6 +53,17 @@ export function affectsStatus(filePath: string): boolean {
   return /(^|\/)(index|HEAD|packed-refs)$/.test(inner) || /(^|\/)refs\//.test(inner) || /(^|\/)info\/exclude$/.test(inner);
 }
 
+/** Whether a changed path is a branch, tag or stash ref (loose under refs/, or packed-refs). */
+export function affectsRefs(filePath: string): boolean {
+  const normalized = filePath.replace(/\\/g, '/');
+  const at = normalized.indexOf('/.git/');
+  if (at < 0) { return false; }
+  const inner = normalized.slice(at + '/.git/'.length);
+  // A reflog (logs/refs/...) records a move; the ref itself is what changed.
+  if (inner.endsWith('.lock') || /(^|\/)(logs|objects|hooks)\//.test(inner)) { return false; }
+  return /(^|\/)packed-refs$/.test(inner) || /(^|\/)refs\//.test(inner);
+}
+
 /** An index file (the parent's, a submodule's or a worktree's): what `git status` itself rewrites. */
 function isIndexFile(filePath: string): boolean {
   return /\/\.git\/(.+\/)?index$/.test(filePath.replace(/\\/g, '/'));
@@ -71,6 +86,8 @@ export class LiveChanges {
   private files = new Set<string>();
   /** A change that refreshes whatever the files are: inside .git, or too many files to check. */
   private mustRefresh = false;
+  /** A ref changed since the last refresh. */
+  private refsChanged = false;
 
   constructor(private readonly deps: LiveChangesDeps, private readonly delayMs = LIVE_CHANGES_DELAY_MS) {}
 
@@ -79,6 +96,7 @@ export class LiveChanges {
     if (this.disposed || !affectsStatus(filePath)) { return; }
     if (isIndexFile(filePath) && this.clock() < this.quietIndexUntil) { return; }
     this.pending = true;
+    if (affectsRefs(filePath)) { this.refsChanged = true; }
     if (!this.deps.ignored || isInsideGit(filePath) || this.files.size >= MAX_CHECKED_FILES) {
       this.mustRefresh = true;
     } else {
@@ -119,12 +137,14 @@ export class LiveChanges {
     this.running = true;
     const files = [...this.files];
     const mustRefresh = this.mustRefresh || files.length === 0;
+    const refsChanged = this.refsChanged;
     this.files = new Set();
     this.mustRefresh = false;
+    this.refsChanged = false;
     try {
       if (mustRefresh || !(await this.allIgnored(files))) {
         try {
-          await this.deps.refresh();
+          await this.deps.refresh({ refsChanged });
         } catch {
           // The next file event, or the next action, refreshes again.
         } finally {

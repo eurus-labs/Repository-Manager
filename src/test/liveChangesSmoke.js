@@ -3,7 +3,7 @@ const { execFileSync } = require('node:child_process');
 const { mkdirSync, mkdtempSync, rmSync, writeFileSync } = require('node:fs');
 const { tmpdir } = require('node:os');
 const path = require('node:path');
-const { LiveChanges, affectsStatus, MAX_CHECKED_FILES } = require('../../out/liveChanges.js');
+const { LiveChanges, affectsRefs, affectsStatus, MAX_CHECKED_FILES } = require('../../out/liveChanges.js');
 const { ignoredPaths } = require('../../out/services/ignoredPaths.js');
 
 async function checkIgnoredPaths() {
@@ -183,6 +183,31 @@ async function main() {
   live.dispose();
   await advance(5000);
   assert.equal(refreshes, 11);
+
+  // A ref made, moved or deleted outside the dashboard (a branch from a terminal) is said to the refresh,
+  // which HEAD alone does not show; a file save is not, and the next batch starts clean.
+  for (const file of ['/w/.git/refs/heads/feature', '/w/.git/refs/heads/history-backup/drop-1', '/w/.git/packed-refs', '/w/.git/refs/stash',
+    '/w/.git/refs/tags/v1', 'C:\\w\\.git\\refs\\heads\\x', '/w/.git/modules/lib/refs/heads/x']) {
+    assert.equal(affectsRefs(file), true, file);
+  }
+  for (const file of ['/w/.git/refs/heads/x.lock', '/w/.git/logs/refs/heads/x', '/w/.git/HEAD', '/w/.git/index', '/w/src/refs/x.ts']) {
+    assert.equal(affectsRefs(file), false, file);
+  }
+  const changes = [];
+  const refs = new LiveChanges({
+    refresh: change => { changes.push(change); return Promise.resolve(); },
+    canRefresh: () => true,
+    setTimer: (callback, ms) => { const id = next++; timers.set(id, { callback, at: now + ms }); return id; },
+    clearTimer: id => timers.delete(id),
+    now: () => now
+  }, 800);
+  refs.notify('/w/a.ts');
+  refs.notify('/w/.git/refs/heads/from-terminal');
+  await advance(800);
+  refs.notify('/w/b.ts');
+  await advance(800);
+  assert.deepEqual(changes, [{ refsChanged: true }, { refsChanged: false }]);
+  refs.dispose();
   console.log('Live changes smoke passed');
 }
 

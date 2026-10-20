@@ -2680,11 +2680,13 @@
           publishReviewContext();
           // So does the Uncommitted changes row (a refresh, a live update, or an action's result).
           requestWorkingTreeSummary();
-          // A commit, checkout or reset made outside the dashboard moved HEAD: its history is reloaded too.
+          // A commit, checkout or reset made outside the dashboard moved HEAD, or a branch, tag or stash
+          // was made or deleted there (refsChanged): the history and branch list are reloaded, once.
           {
             const active = getRepository(activeDashboardRepository);
             const head = active ? `${active.currentBranch || ''}@${active.currentCommit || ''}` : '';
-            if (head && activeHeadSignature.repositoryPath === activeDashboardRepository && activeHeadSignature.head && activeHeadSignature.head !== head) {
+            const headMoved = head && activeHeadSignature.repositoryPath === activeDashboardRepository && activeHeadSignature.head && activeHeadSignature.head !== head;
+            if (headMoved || message.payload.refsChanged === true) {
               reloadActiveDashboardData();
             }
             activeHeadSignature = { repositoryPath: activeDashboardRepository, head };

@@ -96,6 +96,8 @@ export class RepositoryManagerPanel {
   /** Git actions (not read-only requests) running now: a live refresh waits for them. */
   private _actionsInFlight = 0;
   private readonly _liveChanges: LiveChanges;
+  /** A ref changed outside the dashboard since the last repository update was sent. */
+  private _refsChanged = false;
   private _fileWatcher?: vscode.FileSystemWatcher;
 
   /** `preserveFocus` keeps the keyboard where it is, as when the Side Bar opens the dashboard. */
@@ -241,7 +243,8 @@ export class RepositoryManagerPanel {
     // Local changes stay current while you edit: file events refresh the repository list once they
     // settle (repositoryManager.liveChanges). A hidden dashboard catches up when it is shown.
     this._liveChanges = new LiveChanges({
-      refresh: () => this.refresh(),
+      // A ref changed outside the dashboard (a branch made in a terminal): the next update says so.
+      refresh: change => { if (change?.refsChanged) { this._refsChanged = true; } return this.refresh(); },
       canRefresh: () => this._panel.visible && this._actionsInFlight === 0,
       setTimer: (callback, ms) => setTimeout(callback, ms),
       clearTimer: handle => clearTimeout(handle as NodeJS.Timeout),
@@ -425,13 +428,16 @@ export class RepositoryManagerPanel {
     this._timings?.mark('repositories listed');
     void this._workspaceState?.update(REPOSITORY_LIST_KEY, { root: this._workspaceRoot, repositories: allRepos });
 
+    // A full page reads everything again; an update says whether refs changed (see LiveChanges).
+    const refsChanged = this._refsChanged;
+    this._refsChanged = false;
     if (fullRefresh && !early) {
       this._showHtml(allRepos);
     } else {
       // Send data update instead of regenerating HTML
       this._panel.webview.postMessage({
         type: 'updateSubmodules',
-        payload: { submodules: allRepos }
+        payload: { submodules: allRepos, ...(refsChanged ? { refsChanged: true } : {}) }
       });
     }
   }
