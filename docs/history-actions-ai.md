@@ -1,6 +1,6 @@
 # AI support for history actions
 
-Status: approved design; phases 1–3 implemented, phase 4 proposed.
+Status: approved design; phases 1–4 implemented.
 
 The commit menu already runs cherry-pick, revert, merge, rebase, reset (soft, mixed, hard) and drop
 (`HistoryActionService`, `HistoryRewriteService`), each behind a confirmation dialog. This adds
@@ -105,11 +105,37 @@ from a terminal or a stash.
    in its own line endings, only if it has not changed since it was read, and nothing else: the file
    stays unmerged and the operation stays paused, so the user checks it, stages it and continues.
 
-## Phase 4: plain-language undo (proposed)
+## Phase 4: undo in plain language (implemented)
 
-A request such as "undo my last 2 commits but keep the changes" is answered by the model with one
-existing action and its arguments only (here: reset, soft, to `HEAD~2`), never with a Git command.
-That action then goes through the same preview, prediction and confirmation as a click in the menu.
+**↶ Undo…** in the dashboard's toolbar asks what to undo, in the user's words ("undo my last 2
+commits but keep the changes", "undo the rebase I just did"; `services/naturalUndo.ts`,
+`handleNaturalUndo`).
+
+1. Code collects what the model may choose from (`collectUndoContext`): the branch and its upstream,
+   the last 20 first-parent commits (hash, subject, merge or not, **pushed** or not: reachable from a
+   remote branch), the last 15 reflog entries (where HEAD has been, so a finished rebase, reset,
+   merge or amend can be undone), the uncommitted files with their state (names only), and a paused
+   operation.
+2. Consent as in phase 2; the question says no file contents are sent.
+3. The model answers with ONE action the dashboard already has: `reset` (a commit from the commits
+   or the reflog, and soft, mixed or hard), `revert` or `drop` (a commit from the commits), `discard`
+   (files from the uncommitted ones), `abort` (the paused operation), or `none` with what to ask. It
+   is told to keep changes unless the request says to throw them away, and to prefer revert for a
+   pushed commit. It never writes a Git command.
+4. **Code checks every field** (`parseUndoPlan`): an unknown action, a hash that is not one it was
+   shown (at least 7 characters, one match), a reset without a mode or to the current commit, a drop
+   of a pushed commit, a revert or drop of a merge, files with no changes, or an abort with nothing
+   paused, are refused with the reason, and nothing runs.
+5. The plan is shown with the request, the model's reading (labelled a suggestion) and **what it does
+   from Git** (`describeUndoPlan`): for a reset, the commits that leave the branch and those that come
+   back (by subject, so undoing a rebase reads as "the rebased commits leave, the originals come
+   back"), what happens to their changes, and how many are already pushed.
+6. **Continue** opens that action's own dialog, as from its menu: preview, predicted conflicts,
+   backup branch, and for a hard reset the branch name typed. A reset gets the mode from the plan
+   (`handleRewriteHistoryCommit` takes `mode`), so only its picker is skipped.
+
+Undoing a soft reset with another reset is refused by the reset itself while the undone changes are
+staged (resets need a clean working tree here); the message says why.
 
 ## Open questions
 

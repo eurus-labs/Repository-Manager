@@ -319,8 +319,9 @@ function renderDashboard(repositories: RepositoryInfo[], workspaceFolders: Works
         ${renderDashboardSidebar()}
         <main class="dashboard-main">
           <div class="history-controls">
-            <label class="remote-toggle"><input id="dashboardIncludeRemotes" type="checkbox" checked> Include remotes</label>
+            <label class="remote-toggle" title="Include remote branches in the graph"><input id="dashboardIncludeRemotes" type="checkbox" checked> <span class="remote-toggle-word">Include </span>remotes</label>
             <button class="compare-branches-button" type="button" data-action="openBranchCompareModal">⇄ Compare branches</button>
+            <button class="compare-branches-button" type="button" data-action="naturalUndo" id="naturalUndoButton" title="Say what to undo (e.g. &quot;undo my last 2 commits but keep the changes&quot;). Copilot picks one of the dashboard's actions; you see it, and that action's own confirmation, before anything runs">↶ Undo…</button>
             <div class="toolbar-model" title="The Copilot model for reviews, summaries, commit messages and fixes; the list loads when you open it. Pin models to list them first"><span id="summaryModelLabel">Model</span><button type="button" id="summaryModelButton" data-action="toggleSummaryModelMenu" aria-haspopup="menu" aria-expanded="false" aria-controls="summaryModelMenu" aria-labelledby="summaryModelLabel summaryModelName"><span id="summaryModelName">Default</span><span class="toolbar-model-caret" aria-hidden="true">▾</span></button></div>
             <button type="button" class="toolbar-settings" data-action="toggleCopilotSettingsMenu" id="copilotSettingsButton" aria-haspopup="menu" aria-expanded="false" aria-controls="copilotSettingsMenu" aria-label="Copilot settings" title="Copilot settings: whether to ask before code is sent, and all Repository Manager settings">⚙</button>
             <div class="review-entry review-current-group" role="group" aria-label="Review with Copilot">

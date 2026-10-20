@@ -14,6 +14,7 @@ import { HistoryAction } from '../services/historyActionService';
 import { HistoryRewriteAction, ResetMode } from '../services/historyRewriteService';
 import { ConflictPrediction, ConflictPredictionService, PredictedOperation } from '../services/conflictPredictionService';
 import { ConflictExplainerHost, confirmSending, describeSides, explainPredictedConflicts, formatConflictExplanation } from '../services/conflictExplanation';
+import { buildUndoPrompt, collectUndoContext, describeUndoPlan, parseUndoPlan, UndoPlan } from '../services/naturalUndo';
 import { buildResolutionPrompt, checkResolution, describeSuggestion, parseResolutions, readConflictedFile, spliceResolutions } from '../services/conflictResolution';
 import { STASH_OPERATIONS, StashActionData, StashOperation } from '../services/stashActionService';
 
@@ -912,6 +913,104 @@ export async function handleSuggestConflictResolution(ctx: MessageHandlerContext
   return true;
 }
 
+const UNDO_ACTION_NAMES: Record<UndoPlan['action'], string> = {
+  reset: 'Reset the branch', revert: 'Revert a commit', drop: 'Drop a commit', discard: 'Discard uncommitted changes',
+  abort: 'Abort the paused operation', none: 'Nothing'
+};
+
+/**
+ * Undo in plain language (services/naturalUndo.ts): the user says what to undo, Copilot picks one
+ * existing action with a commit or files it was shown, code checks it and says from Git what it does,
+ * and on Continue the action runs through its own dialog, as from its menu. Nothing runs before that.
+ */
+export async function handleNaturalUndo(ctx: MessageHandlerContext, payload: { repositoryPath: string; request?: string }): Promise<void> {
+  if (!payload || typeof payload.repositoryPath !== 'string') {
+    return;
+  }
+  const copilot = ctx.conflictExplainer;
+  if (!copilot) {
+    showResult(false, 'Undo in plain language needs Copilot in VS Code.');
+    return;
+  }
+  const request = (payload.request ?? await vscode.window.showInputBox({
+    title: `Undo in ${payload.repositoryPath}`, ignoreFocusOut: true,
+    prompt: 'Say what to undo. Copilot picks one of the dashboard\'s actions; you see it, and its own confirmation, before anything runs.',
+    placeHolder: 'e.g. undo my last 2 commits but keep the changes · undo the rebase I just did'
+  }) ?? '').trim();
+  if (!request) {
+    return;
+  }
+  const git = new GitCommandService(ctx.workspaceRoot);
+  const root = git.resolveRepositoryPath(payload.repositoryPath);
+  let context;
+  try {
+    context = await collectUndoContext(git, payload.repositoryPath);
+  } catch (error) {
+    showResult(false, error instanceof Error ? error.message : String(error));
+    return;
+  }
+  if (!await confirmSending(copilot, root, 'Ask Copilot', 'Ask Copilot how to undo this?',
+    'Your request, the last 20 commits\' hashes and subjects, recent reflog entries and the names of changed files are sent to the ' +
+      'selected Copilot model. No file contents are sent, and nothing runs until you confirm.')) {
+    return;
+  }
+  let answer;
+  try {
+    answer = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: 'Asking Copilot how to undo it…', cancellable: true },
+      async (_progress, token) => {
+        const reply = await copilot.complete(buildUndoPrompt(context, request, copilot.language()), token, 4000);
+        return token.isCancellationRequested ? undefined : { plan: parseUndoPlan(reply.text, context), model: reply.model };
+      });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message !== 'Cancelled') { showResult(false, `Could not plan the undo: ${message}`); }
+    return;
+  }
+  if (!answer) {
+    return;
+  }
+  const { plan, model } = answer;
+  if (plan.action === 'none') {
+    const again = await vscode.window.showWarningMessage('Copilot found no undo action for that.',
+      { modal: true, detail: `${plan.question}\n\nYour request: "${request}"` }, 'Ask again');
+    if (again === 'Ask again') { await handleNaturalUndo(ctx, { repositoryPath: payload.repositoryPath }); }
+    return;
+  }
+  const facts = await describeUndoPlan(git, payload.repositoryPath, plan, context);
+  const go = await vscode.window.showWarningMessage(`${UNDO_ACTION_NAMES[plan.action]}?`, { modal: true, detail:
+    `Your request: "${request}"\n\nCopilot's reading (${model}; a suggestion): ${plan.explanation || '(no explanation)'}\n\n` +
+    `What it does, from Git:\n${facts}\n\nContinue opens the action's own confirmation; nothing runs before you confirm there.` }, 'Continue');
+  if (go !== 'Continue') {
+    return;
+  }
+  switch (plan.action) {
+    case 'reset':
+    case 'drop':
+      await handleRewriteHistoryCommit(ctx, { repositoryPath: payload.repositoryPath, commit: plan.commit!, action: plan.action, mode: plan.mode });
+      return;
+    case 'revert':
+      await handleApplyHistoryCommit(ctx, { repositoryPath: payload.repositoryPath, commit: plan.commit!, operation: 'revert' });
+      return;
+    case 'discard':
+      await handleDiscardChanges(ctx, { repositoryPath: payload.repositoryPath, paths: plan.paths });
+      return;
+    case 'abort':
+      if (context.pending === 'rebase') {
+        await handleResolveHistoryRebase(ctx, { repositoryPath: payload.repositoryPath, command: 'abort' });
+      } else if (context.pending === 'cherry-pick' || context.pending === 'revert' || context.pending === 'merge') {
+        const sure = await vscode.window.showWarningMessage(`Abort the ${context.pending} in ${payload.repositoryPath}?`, { modal: true }, 'Abort');
+        if (sure !== 'Abort') { return; }
+        const aborted = await ctx.gitOps.abortHistoryAction(payload.repositoryPath, context.pending);
+        showResult(aborted.success, aborted.message);
+        await ctx.reloadDashboardHistory([payload.repositoryPath]);
+        await ctx.refresh();
+      } else {
+        showResult(false, `A paused ${context.pending} cannot be aborted from here; use git ${context.pending} --abort.`);
+      }
+      return;
+  }
+}
+
 /** Suggest resolution for each file still in conflict, one at a time, until the user stops. */
 async function suggestForConflictedFiles(ctx: MessageHandlerContext, repositoryPath: string): Promise<void> {
   const git = new GitCommandService(ctx.workspaceRoot);
@@ -973,7 +1072,7 @@ export async function handleApplyHistoryCommit(ctx: MessageHandlerContext, paylo
 }
 
 export async function handleRewriteHistoryCommit(ctx: MessageHandlerContext, payload: {
-  repositoryPath: string; commit: string; action: HistoryRewriteAction
+  repositoryPath: string; commit: string; action: HistoryRewriteAction; mode?: ResetMode
 }): Promise<void> {
   if (!payload || typeof payload.repositoryPath !== 'string' || typeof payload.commit !== 'string' ||
       !['rebase', 'reset', 'drop'].includes(payload.action)) {
@@ -981,8 +1080,10 @@ export async function handleRewriteHistoryCommit(ctx: MessageHandlerContext, pay
   }
   try {
     const preview = await ctx.gitOps.previewHistoryRewrite(payload.repositoryPath, payload.commit, payload.action);
-    let mode: ResetMode | undefined;
-    if (payload.action === 'reset') {
+    // A mode already chosen (a plain-language undo the user approved) skips the picker; a hard reset
+    // still asks for the branch name below.
+    let mode: ResetMode | undefined = payload.action === 'reset' && ['soft', 'mixed', 'hard'].includes(payload.mode || '') ? payload.mode : undefined;
+    if (payload.action === 'reset' && !mode) {
       const selection = await vscode.window.showQuickPick([
         { label: 'Soft', description: 'Move HEAD; keep index and working files', value: 'soft' as const },
         { label: 'Mixed', description: 'Move HEAD and reset index; keep working files', value: 'mixed' as const },
@@ -1321,6 +1422,7 @@ export const messageHandlers: Record<string, (ctx: MessageHandlerContext, payloa
   'resolveHistoryRebase': (ctx, payload) => handleResolveHistoryRebase(ctx, payload as { repositoryPath: string; command: 'continue' | 'abort' }),
   'getPendingOperation': (ctx, payload) => handleGetPendingOperation(ctx, payload),
   'discardChanges': (ctx, payload) => handleDiscardChanges(ctx, payload as { repositoryPath: string; paths?: string[]; all?: boolean }),
+  'naturalUndo': (ctx, payload) => handleNaturalUndo(ctx, payload as { repositoryPath: string }),
   'suggestConflictResolution': async (ctx, payload) => { await handleSuggestConflictResolution(ctx, payload as { repositoryPath: string; path: string }); },
   'stashAction': (ctx, payload) => handleStashAction(ctx, payload as { repositoryPath: string; stash: string; operation: StashOperation }),
   'getCommits': (ctx, payload) => handleGetCommits(ctx, payload as { submodule: string }),

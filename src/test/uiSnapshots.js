@@ -538,6 +538,12 @@ async function main() {
     fakeVscode.window.showErrorMessage = errorsBefore;
     // This harness has no Copilot: the real handler says so (in VS Code it would read the conflict).
     assert.deepEqual(hostErrors, ['Suggesting a resolution needs Copilot in VS Code.']);
+    // Undo… asks the host, which asks what to undo (here it stops: no Copilot in this harness).
+    fakeVscode.window.showErrorMessage = message => { hostErrors.push(message); };
+    await page.click('#naturalUndoButton');
+    for (let i = 0; i < 100 && hostErrors.length < 2; i++) await page.waitForTimeout(20);
+    fakeVscode.window.showErrorMessage = errorsBefore;
+    assert.equal(hostErrors[1], 'Undo in plain language needs Copilot in VS Code.');
     // Clean again: the row goes, and the newest commit is shown.
     git(parent, 'reset', '-q', '--', 'src/app.txt');
     git(parent, 'checkout', '--', 'src/app.txt');

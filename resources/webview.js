@@ -642,6 +642,10 @@
       if (target.local) startReview({ kind: 'local', scope: 'changes', paths: [target.path] });
       else actions.reviewSelection(undefined, undefined, [target.path]);
     },
+    // Undo in plain language: the extension asks what to undo, then shows what it would run.
+    naturalUndo: () => {
+      if (activeDashboardRepository) postMessage('naturalUndo', { repositoryPath: activeDashboardRepository });
+    },
     contextSuggestResolution: () => {
       const target = changesContextTarget;
       hideHistoryContextMenu();
