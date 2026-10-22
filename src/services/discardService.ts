@@ -2,7 +2,7 @@
  * Discard Changes for the dashboard's uncommitted changes: one file, or all of them.
  *
  * Discarding puts each file back as it is at HEAD, staged and unstaged changes alike
- * (`git restore --source=HEAD --staged --worktree`), and deletes new files that are not ignored
+ * (`git restore --source=<baseline> --staged --worktree`), and deletes new files that are not ignored
  * (directly, not with `git clean`). It cannot be undone from Git's own history, so before anything is
  * changed the working tree is saved as a commit (the same snapshot a review of local changes reads)
  * and kept by a ref under DISCARD_REF_PREFIX; `git restore --source=<sha> --worktree -- <path>`
@@ -18,7 +18,7 @@
  */
 
 import * as path from 'path';
-import { chmodSync, readdirSync, rmdirSync, unlinkSync } from 'fs';
+import { chmodSync, lstatSync, readdirSync, rmdirSync, unlinkSync } from 'fs';
 import { CommandResult, WorkingTreeChange } from '../types';
 import { GitCommandService } from './gitCommandService';
 import { CommitService } from './commitService';
@@ -117,9 +117,16 @@ export class DiscardService {
 
       // A copy first, of the files about to change: if it cannot be made, nothing is discarded. A
       // staged deletion is in neither the index nor the working tree, so there is nothing to copy.
-      const copied = [...restoredChanges.filter(change => change.indexStatus !== 'D' || change.unstaged).map(change => change.path), ...plan.deleted];
+      const originals = restoredChanges.flatMap(change => change.originalPath
+        && lstatSync(path.join(root, change.originalPath), { throwIfNoEntry: false }) ? [change.originalPath] : []);
+      const copied = Array.from(new Set([
+        ...restoredChanges.filter(change => change.indexStatus !== 'D' || change.unstaged).map(change => change.path),
+        ...originals, ...plan.deleted
+      ]));
       const snapshot = await snapshotLocalChanges(this.git, root, copied);
       backup = snapshot?.snapshotSha;
+      // Undo uses the copy's parent as its baseline; restore from that same commit even if HEAD moves.
+      const baseline = snapshot?.headSha ?? head.value;
       // The copy is a commit already; the ref only keeps it from a garbage collection weeks later, so
       // it is written (and old copies dropped) while the files are put back, not before.
       const kept = backup
@@ -128,7 +135,7 @@ export class DiscardService {
         : Promise.resolve(true);
 
       for (let index = 0; index < restorePaths.length; index += CHUNK) {
-        await this.git.execGit(['--literal-pathspecs', 'restore', '--source=HEAD', '--staged', '--worktree', '--',
+        await this.git.execGit(['--literal-pathspecs', 'restore', `--source=${baseline}`, '--staged', '--worktree', '--',
           ...restorePaths.slice(index, index + CHUNK)], root, 120000);
       }
       // New files are deleted here rather than by `git clean`: they are copied already, and that is
@@ -157,19 +164,22 @@ export class DiscardService {
       if (!FULL_SHA.test(backup)) { throw new Error('That copy is not a commit.'); }
       const wanted = Array.from(new Set(paths.map(item => this.git.resolveFilePath(item))));
       if (!wanted.length) { throw new Error('No files to bring back.'); }
-      await this.git.execGit(['cat-file', '-e', `${backup}^{commit}`], root, 10000)
-        .catch(() => { throw new Error('The copy kept before discarding is gone.'); });
-      // After the discard each path matched HEAD (or was gone): one with a change now was edited since.
+      const baseline = await this.git.execGit(['rev-parse', '--verify', `${backup}^1^{commit}`], root, 10000)
+        .catch(() => { throw new Error('The copy kept before discarding or its original baseline is gone.'); });
+      // Compare both the index and working tree with the original post-discard state, not today's
+      // HEAD: a later commit or checkout must not make new contents safe to overwrite. Also keep
+      // recreated untracked files, even ignored ones that Git's diff does not report.
       const since = new Set<string>();
       for (let index = 0; index < wanted.length; index += CHUNK) {
-        const status = await this.git.execGitRaw(['--literal-pathspecs', 'status', '--porcelain=v1', '-z', '--untracked-files=all', '--',
-          ...wanted.slice(index, index + CHUNK)], root, 30000);
-        const records = status.split('\0');
-        for (let at = 0; at < records.length; at++) {
-          const record = records[at];
-          if (record.length < 4) { continue; }
-          since.add(record.slice(3));
-          if (record[0] === 'R' || record[0] === 'C') { since.add(records[++at]); }
+        const chunk = wanted.slice(index, index + CHUNK);
+        const diff = ['--literal-pathspecs', 'diff', '--name-only', '-z', '--no-renames', '--no-ext-diff', '--no-textconv'];
+        const changed = await Promise.all([
+          this.git.execGitRaw([...diff, baseline, '--', ...chunk], root, 30000),
+          this.git.execGitRaw([...diff, '--cached', baseline, '--', ...chunk], root, 30000),
+          this.git.execGitRaw(['--literal-pathspecs', 'ls-files', '--others', '-z', '--', ...chunk], root, 30000)
+        ]);
+        for (const records of changed) {
+          for (const file of records.split('\0').filter(Boolean)) { since.add(file); }
         }
       }
       const restored = wanted.filter(item => !since.has(item));

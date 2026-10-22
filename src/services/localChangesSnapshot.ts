@@ -23,7 +23,7 @@ export interface LocalChangesSnapshot {
 
 export const SNAPSHOT_MESSAGE = 'Local changes (Repository Manager review snapshot)';
 
-/** At most this many paths are added one by one; more, and the whole working tree is added at once. */
+/** Limit each explicit path list without widening a discard's snapshot to unrelated files. */
 const MAX_LISTED_PATHS = 200;
 
 /**
@@ -54,13 +54,16 @@ export async function snapshotLocalChanges(git: GitCommandService, root: string,
     const env: NodeJS.ProcessEnv = { ...process.env };
     env['GIT_INDEX_FILE'] = temporaryIndex;
     if (!existsSync(indexPath)) { await git.execGitRaw(['read-tree', 'HEAD'], root, 30000, false, env); }
-    const listed = paths && paths.length && paths.length <= MAX_LISTED_PATHS ? paths : undefined;
-    // A listed path Git cannot match (gone from both the index and the working tree) fails the whole
-    // add: then everything is added, which is what the snapshot holds without paths anyway.
-    const added = listed
-      ? await git.execGitRaw(['--literal-pathspecs', 'add', '-A', '--', ...listed], root, 60000, false, env).then(() => true, () => false)
-      : false;
-    if (!added) { await git.execGitRaw(['add', '-A'], root, 60000, false, env); }
+    if (paths?.length) {
+      // A discard may overwrite a recreated rename source even when it is now ignored. Copy every
+      // explicitly requested path, and fail before discarding if any cannot be copied.
+      for (let index = 0; index < paths.length; index += MAX_LISTED_PATHS) {
+        await git.execGitRaw(['--literal-pathspecs', 'add', '-A', '-f', '--',
+          ...paths.slice(index, index + MAX_LISTED_PATHS)], root, 60000, false, env);
+      }
+    } else {
+      await git.execGitRaw(['add', '-A'], root, 60000, false, env);
+    }
     const tree = (await git.execGitRaw(['write-tree'], root, 30000, false, env)).trim();
     if (tree === headTree) { return undefined; }
     // A fixed identity and date: the snapshot never leaves this repository, and needs no user identity.

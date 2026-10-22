@@ -84,6 +84,76 @@ function context(root) {
 
 async function main() {
   try {
+    // A rename restores both names, so its copy must include a recreated original path too.
+    for (const recreated of [true, false, 'ignored']) {
+      const renamedRoot = repository(`rename-undo-${recreated}`);
+      const { service: renamedService } = context(renamedRoot);
+      git(renamedRoot, 'mv', 'a.txt', 'renamed.txt');
+      if (recreated) write(renamedRoot, 'a.txt', 'recreated original\n');
+      if (recreated === 'ignored') write(renamedRoot, '.gitignore', 'ignored.log\na.txt\n');
+      const discarded = await renamedService.discard('.', ['renamed.txt']);
+      assert.equal(discarded.success, true, discarded.message);
+      assert.equal(read(renamedRoot, 'a.txt'), 'a\n');
+      assert.equal(existsSync(path.join(renamedRoot, 'renamed.txt')), false);
+      if (recreated) assert.equal(git(renamedRoot, 'show', `${discarded.data.backup}:a.txt`), 'recreated original');
+      const restored = await renamedService.restore('.', discarded.data.backup, discarded.data.changed);
+      assert.equal(restored.success, true, restored.message);
+      assert.equal(read(renamedRoot, 'renamed.txt'), 'a\n');
+      if (recreated) assert.equal(read(renamedRoot, 'a.txt'), 'recreated original\n');
+      else assert.equal(existsSync(path.join(renamedRoot, 'a.txt')), false);
+    }
+
+    // Undo compares with the discard's original HEAD, even after commits or a branch switch.
+    // It still restores other selected files that have stayed at the original baseline.
+    for (const after of ['commit', 'branch', 'unrelated-commit']) {
+      const advancedRoot = repository(`undo-after-${after}`);
+      const { service: advancedService } = context(advancedRoot);
+      if (after === 'branch') {
+        git(advancedRoot, 'checkout', '-qb', 'other');
+        write(advancedRoot, 'a.txt', 'new branch contents\n');
+        git(advancedRoot, 'commit', '-qam', 'change on other branch');
+        git(advancedRoot, 'checkout', '-q', 'main');
+      }
+      write(advancedRoot, 'a.txt', 'discarded a\n');
+      write(advancedRoot, 'b.txt', 'discarded b\n');
+      const discarded = await advancedService.discard('.', ['a.txt', 'b.txt']);
+      assert.equal(discarded.success, true, discarded.message);
+      if (after === 'branch') git(advancedRoot, 'checkout', '-q', 'other');
+      else {
+        write(advancedRoot, after === 'commit' ? 'a.txt' : 'gone.txt', 'new committed contents\n');
+        git(advancedRoot, 'commit', '-qam', 'edit after discard');
+      }
+      const restored = await advancedService.restore('.', discarded.data.backup, discarded.data.changed);
+      assert.equal(restored.success, true, restored.message);
+      assert.deepEqual(restored.data.kept, after === 'unrelated-commit' ? [] : ['a.txt']);
+      assert.equal(read(advancedRoot, 'a.txt'), after === 'unrelated-commit' ? 'discarded a\n'
+        : after === 'branch' ? 'new branch contents\n' : 'new committed contents\n');
+      assert.equal(read(advancedRoot, 'b.txt'), 'discarded b\n');
+      assert.equal(git(advancedRoot, 'diff', '--cached', '--name-only'), '', 'Undo changed the index');
+    }
+
+    // Preserve index-only edits and new files recreated after discard, including ignored paths.
+    for (const after of ['staged', 'untracked', 'ignored']) {
+      const editedRoot = repository(`undo-after-${after}`);
+      const { service: editedService } = context(editedRoot);
+      const file = after === 'staged' ? 'a.txt' : 'new.txt';
+      write(editedRoot, file, 'discarded contents\n');
+      const discarded = await editedService.discard('.', [file]);
+      assert.equal(discarded.success, true, discarded.message);
+      write(editedRoot, file, 'new contents\n');
+      if (after === 'staged') {
+        git(editedRoot, 'add', file);
+        write(editedRoot, file, 'a\n'); // the worktree alone matches the baseline
+      }
+      if (after === 'ignored') write(editedRoot, '.gitignore', 'ignored.log\nnew.txt\n');
+      const before = read(editedRoot, file);
+      const restored = await editedService.restore('.', discarded.data.backup, discarded.data.changed);
+      assert.equal(restored.success, false, restored.message);
+      assert.deepEqual(restored.data.kept, [file]);
+      assert.equal(read(editedRoot, file), before);
+      if (after === 'staged') assert.equal(git(editedRoot, 'show', ':a.txt'), 'new contents');
+    }
+
     // Every kind of change in one repository.
     const root = repository('main');
     const lib = path.join(base, 'lib-origin');

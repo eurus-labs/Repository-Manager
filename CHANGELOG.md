@@ -23,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Discard keeps a recreated original file when undoing a rename, including ignored files. Undo preserves newer contents after a commit or branch switch, as well as later staged edits and recreated files.
 - The branch folder holding the checked-out branch can be folded like any other; folded, it shows HEAD.
 - The Side Bar keeps up while the dashboard is behind another editor tab: its copy is sent without waiting for the dashboard to be drawn, and live changes keep running while the Side Bar is visible.
 
