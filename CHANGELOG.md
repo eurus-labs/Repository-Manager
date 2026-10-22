@@ -5,6 +5,26 @@ All notable changes to Repository Manager will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.9.0] - Unreleased
+
+### Added
+
+- **Changes** in the Repository Manager Side Bar, right under Branches: the active repository's uncommitted files. Click one to open it in VS Code's diff editor, in its own tab (HEAD ↔ the file, which you can edit there), so a long list or a large diff no longer needs the dashboard's panels resized. In the dashboard, double-click a changed file, use **Open ↗** above the diff, or **Open Changes** in its menu, for commits too.
+- Discard several files at once: tick them (or Ctrl/Cmd+click, Shift+click for a range) in the Side Bar's Changes or the dashboard's files list, then **Discard…**. Each Side Bar file also has its own ↶.
+- The message after a discard has **Undo**, which brings the files back from the copy kept first (as unstaged changes); a file you changed since is left as it is.
+- A filter in the Commit dialog: **All**, **Tracked** or **Untracked** files. A commit takes the ticked files the filter shows, and the count says when ticked files are hidden.
+
+### Changed
+
+- Discarding feels immediate: the files leave the lists as soon as you confirm, and the discard itself waits on about a third as many Git steps in a row (about 0.5 s instead of 1.4 s until the new status, measured with 40 ms added to each Git process). The history is no longer reloaded after a discard.
+- The discard question is shorter and lists the files; the message after it is one sentence instead of a `git restore` command.
+- The Branches and Changes titles in the Side Bar fold their lists.
+
+### Fixed
+
+- The branch folder holding the checked-out branch can be folded like any other; folded, it shows HEAD.
+- The Side Bar keeps up while the dashboard is behind another editor tab: its copy is sent without waiting for the dashboard to be drawn, and live changes keep running while the Side Bar is visible.
+
 ## [2.8.0] - 2026-10-20
 
 ### Added

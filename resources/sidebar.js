@@ -38,7 +38,8 @@
     const target = event.target.closest('[data-mirror-key]');
     if (!target || target.disabled || target.getAttribute('aria-disabled') === 'true') return;
     event.preventDefault();
-    vscode.postMessage({ type: 'sidebarAction', payload: { key: target.dataset.mirrorKey, event: kind } });
+    vscode.postMessage({ type: 'sidebarAction', payload: { key: target.dataset.mirrorKey, event: kind,
+      ctrlKey: event.ctrlKey, metaKey: event.metaKey, shiftKey: event.shiftKey } });
   }
   document.body.addEventListener('click', event => forward(event, 'click'));
   document.body.addEventListener('dblclick', event => forward(event, 'dblclick'));

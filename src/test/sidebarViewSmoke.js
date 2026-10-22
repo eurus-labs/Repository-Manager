@@ -35,11 +35,13 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
 async function main() {
   let open = false;
   let opened = 0;
+  let shownCount = 0; // the dashboard hears when the Side Bar is shown (live changes run for it too)
   const toDashboard = [];
   const sidebar = new RepositoryManagerLauncher({ path: '/ext', scheme: 'file' }, {
     isOpen: () => open,
     open: async () => { opened++; open = true; },
-    post: message => { toDashboard.push(message); return Promise.resolve(true); }
+    post: message => { toDashboard.push(message); return Promise.resolve(true); },
+    sidebarShown: () => { shownCount++; }
   });
   assert.equal(RepositoryManagerLauncher.current, sidebar);
 
@@ -87,6 +89,8 @@ async function main() {
   closed.show();
   await tick();
   assert.equal(opened, 4);
+  assert.equal(shownCount, 1);
+  assert.equal(sidebar.visible, true);
 
   // The view's title bar always has a button that brings the dashboard forward, open or not.
   const manifest = require('../../package.json');

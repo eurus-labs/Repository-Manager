@@ -372,6 +372,11 @@ export class GitOperations {
     return this.discardService.discard(repositoryPath, paths);
   }
 
+  /** Undo a discard: `paths` back from the copy it kept, unless they changed since. */
+  async restoreDiscarded(repositoryPath: string, backup: string, paths: string[]): Promise<CommandResult> {
+    return this.discardService.restore(repositoryPath, backup, paths);
+  }
+
   /** The Git operation paused in the repository (rebase, merge, cherry-pick, ...), if any. */
   async getPendingOperation(repositoryPath: string): Promise<string | undefined> {
     return this.historyActionService.pendingOperation(repositoryPath);

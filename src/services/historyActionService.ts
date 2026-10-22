@@ -70,26 +70,22 @@ export class HistoryActionService {
 
   async pendingOperation(repositoryPath: string): Promise<PendingOperation | undefined> {
     const cwd = this.git.resolveRepositoryPath(repositoryPath);
-    const gitPath = async (name: string) => {
-      const value = await this.git.execGit(['rev-parse', '--git-path', name], cwd, 5000);
-      return path.resolve(cwd, value);
-    };
-    const rebaseApplyPath = await gitPath('rebase-apply');
+    // One Git process asks for both paths, and the three refs are read together: each process costs
+    // its start-up time (most of it on Windows), and a discard waits for this check.
+    const refs = [['CHERRY_PICK_HEAD', 'cherry-pick'], ['REVERT_HEAD', 'revert'], ['MERGE_HEAD', 'merge']] as const;
+    const [paths, ...found] = await Promise.all([
+      this.git.execGit(['rev-parse', '--git-path', 'rebase-apply', '--git-path', 'rebase-merge'], cwd, 5000),
+      ...refs.map(([ref]) => this.git.execGit(['rev-parse', '-q', '--verify', ref], cwd, 5000).catch(() => ''))
+    ]);
+    const [rebaseApplyPath, rebaseMergePath] = paths.split('\n').map(value => path.resolve(cwd, value.trim()));
     if (existsSync(rebaseApplyPath)) {
       return existsSync(path.join(rebaseApplyPath, 'applying')) ? 'am' : 'rebase';
     }
-    if (existsSync(await gitPath('rebase-merge'))) {
+    if (rebaseMergePath && existsSync(rebaseMergePath)) {
       return 'rebase';
     }
-    for (const [ref, operation] of [
-      ['CHERRY_PICK_HEAD', 'cherry-pick'], ['REVERT_HEAD', 'revert'], ['MERGE_HEAD', 'merge']
-    ] as const) {
-      const found = await this.git.execGit(['rev-parse', '-q', '--verify', ref], cwd, 5000).catch(() => '');
-      if (found) {
-        return operation;
-      }
-    }
-    return undefined;
+    const index = found.findIndex(Boolean);
+    return index >= 0 ? refs[index][1] : undefined;
   }
 
   async abort(repositoryPath: string, operation: HistoryAction): Promise<CommandResult> {

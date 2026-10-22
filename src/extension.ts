@@ -12,6 +12,7 @@ import { registerCreateBranchCommand } from './commands/createBranchCommand';
 import { registerReviewCommands } from './commands/reviewCommands';
 import { RepositoryManagerLauncher } from './repositoryManagerLauncher';
 import { RepositoryManagerPanel } from './repositoryManagerPanel';
+import { CHANGE_DOCUMENT_SCHEME, ChangeDocumentProvider } from './changeDocuments';
 
 let repositoryTreeProvider: RepositoryTreeProvider;
 let gitOps: GitOperations;
@@ -49,13 +50,18 @@ export function activate(context: vscode.ExtensionContext) {
   registerBasicCommands(context, commandContext);
   registerCreateBranchCommand(context, gitOps, repositoryTreeProvider);
   registerReviewCommands(context, workspaceRoot);
+  // The committed side of a changed file opened in the diff editor; registered here, not by the
+  // dashboard, so tabs VS Code restores after a reload still show it.
+  context.subscriptions.push(vscode.workspace.registerTextDocumentContentProvider(CHANGE_DOCUMENT_SCHEME,
+    new ChangeDocumentProvider(() => (vscode.workspace.workspaceFolders || []).map(folder => folder.uri.fsPath))));
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(
       RepositoryManagerLauncher.viewType,
       new RepositoryManagerLauncher(context.extensionUri, {
         isOpen: () => Boolean(RepositoryManagerPanel.currentPanel),
         open: async () => RepositoryManagerPanel.createOrShow(context.extensionUri, workspaceRoot, context.workspaceState, true),
-        post: message => RepositoryManagerPanel.currentPanel?.post(message)
+        post: message => RepositoryManagerPanel.currentPanel?.post(message),
+        sidebarShown: () => RepositoryManagerPanel.currentPanel?.sidebarShown()
       })
     )
   );

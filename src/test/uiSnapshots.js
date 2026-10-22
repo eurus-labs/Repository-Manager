@@ -17,12 +17,14 @@ const Module = require('module');
 
 const root = path.resolve(__dirname, '../..');
 // The extension's real message handlers run against a minimal fake `vscode` module.
+// Commands run (the diff editor opening a changed file) are recorded in `executed`.
+const executed = [];
 const fakeVscode = {
   window: { showInformationMessage() {}, showWarningMessage() {}, showErrorMessage() {} },
   workspace: { getConfiguration: () => ({ get: (_key, fallback) => fallback }) },
-  commands: { executeCommand: async () => undefined },
+  commands: { executeCommand: async (...args) => { executed.push(args); return undefined; } },
   env: { clipboard: { writeText: async () => undefined } },
-  Uri: { file: fsPath => ({ fsPath }) }
+  Uri: { file: fsPath => ({ scheme: 'file', fsPath }), from: parts => ({ ...parts }) }
 };
 const originalLoad = Module._load;
 Module._load = function (request, parent, isMain) {
@@ -469,11 +471,21 @@ async function main() {
     await page.waitForFunction(() => /update app in two places/.test(document.getElementById('dashboardCommitSummary').textContent));
     assert.equal(await page.isHidden('#workingDiffModes'), true);
     assert.equal(await page.locator('#uncommittedRow.active').count(), 0);
-    // A commit's files have nothing to discard: their menu only reviews that file.
+    // A commit's files have nothing to discard: their menu opens or reviews that file.
     await page.locator('#dashboardChangedFiles .changed-file-item').first().click({ button: 'right' });
     await page.locator('#changesContextMenu').waitFor();
-    assert.deepEqual(await page.locator('#changesContextMenu button:visible').allTextContents(), ['Review Changes in This File'],
+    assert.deepEqual(await page.locator('#changesContextMenu button:visible').allTextContents(), ['Open Changes', 'Review Changes in This File'],
       'a commit\'s file offered Discard');
+    assert.equal(await page.locator('#dashboardChangedFiles .change-check').count(), 0, 'a commit\'s files have checkboxes');
+    // Open Changes: the commit's file in VS Code's diff editor, parent ↔ commit, both read-only.
+    executed.length = 0;
+    await page.click('#changesContextMenu [data-action="contextOpenInEditor"]');
+    for (let i = 0; i < 100 && !executed.length; i++) await page.waitForTimeout(20);
+    const [commitDiff] = executed;
+    assert.equal(commitDiff[0], 'vscode.diff');
+    assert.match(commitDiff[3], /^app\.txt \([0-9a-f]{7} ↔ [0-9a-f]{7}\)$/);
+    const sides = [commitDiff[1], commitDiff[2]].map(uri => [uri.scheme, JSON.parse(uri.query).path, JSON.parse(uri.query).ref.length]);
+    assert.deepEqual(sides, [['repository-manager-git', 'src/app.txt', 40], ['repository-manager-git', 'src/app.txt', 40]]);
     await page.keyboard.press('Escape');
     await page.locator('#changesContextMenu').waitFor({ state: 'hidden' });
     // Live: a new file and a staged edit show up when the repository list refreshes (a file event's refresh).
@@ -497,9 +509,44 @@ async function main() {
     // Right-click a changed file: Review (that file), Discard Changes (that file) and Discard All Changes.
     const discardMenu = page.locator('#changesContextMenu');
     const discardItems = () => discardMenu.locator('button:visible').allTextContents();
+    // The Side Bar lists the same files under Branches; a click opens one in an editor tab: a
+    // changed file as HEAD ↔ the file on disk, a new file as it is.
+    const sideChanges = () => side.locator('#dashboardChanges .sidebar-change-item').evaluateAll(items => items.map(item => item.dataset.path));
+    await side.waitForFunction(() => document.querySelectorAll('#dashboardChanges .sidebar-change-item').length === 3);
+    assert.deepEqual(await sideChanges(), await page.locator('#dashboardChangedFiles .changed-file-item').evaluateAll(items => items.map(item => item.dataset.path)));
+    assert.equal(await side.textContent('#changesRefCount'), '3');
+    executed.length = 0;
+    await side.click('#dashboardChanges .sidebar-change-item[data-path="src/app.txt"]');
+    await side.click('#dashboardChanges .sidebar-change-item[data-path="live-new.txt"]');
+    for (let i = 0; i < 100 && executed.length < 2; i++) await page.waitForTimeout(20);
+    const opened = executed.map(([command, left, right, title]) => command === 'vscode.diff'
+      ? [command, JSON.parse(left.query).path, right.fsPath.endsWith(path.join('src', 'app.txt')), title] : [command, left.fsPath.endsWith('live-new.txt')]);
+    assert.deepEqual(opened.sort(), [['vscode.diff', 'src/app.txt', true, 'app.txt (HEAD ↔ Working Tree)'], ['vscode.open', true]]);
+    await snap(side, '01f-sidebar-changes');
+    // Several files at once: a checkbox, or Ctrl+click in the Side Bar (the keys reach the dashboard),
+    // or a checkbox in the dashboard's list. Both lists show one selection.
+    await side.click('#dashboardChanges .sidebar-change-item[data-path="lib-b"]', { modifiers: ['Control'] });
+    await page.click('#dashboardChangedFiles .change-check[data-path="live-new.txt"]');
+    const checked = target => target.locator('[data-action="toggleWorkingSelection"][aria-checked="true"]').evaluateAll(boxes => boxes.map(box => box.dataset.path));
+    await side.waitForFunction(() => !document.getElementById('sidebarSelectionBar').hidden);
+    assert.deepEqual(await checked(side), ['lib-b', 'live-new.txt']);
+    assert.match(await side.textContent('#sidebarSelectionBar'), /^2 selected\s*Discard…/);
+    assert.equal(await page.textContent('#changedFilesActions'), 'Discard 2…');
+    assert.equal(await page.getAttribute('#changedFilesSelectAll .change-check', 'aria-checked'), 'mixed');
+    await snap(page, '01g-selected-changes');
+    await snap(side, '01h-sidebar-selected-changes');
+    // Right-clicking a selected file acts on the selection.
     await page.click('#dashboardChangedFiles .changed-file-item[data-path="live-new.txt"]', { button: 'right' });
     await discardMenu.waitFor();
-    assert.deepEqual(await discardItems(), ['Review Changes in This File', 'Discard Changes…', 'Discard All Changes…']);
+    assert.equal(await discardMenu.locator('[data-action="contextDiscardFile"]').textContent(), 'Discard Changes to 2 Files…');
+    await page.keyboard.press('Escape');
+    // The ×, and the selection is gone from both lists.
+    await side.click('#sidebarSelectionBar [data-action="clearWorkingSelection"]');
+    await side.waitForFunction(() => document.getElementById('sidebarSelectionBar').hidden);
+    assert.deepEqual(await checked(page), []);
+    await page.click('#dashboardChangedFiles .changed-file-item[data-path="live-new.txt"]', { button: 'right' });
+    await discardMenu.waitFor();
+    assert.deepEqual(await discardItems(), ['Open Changes', 'Review Changes in This File', 'Discard Changes…', 'Discard All Changes…']);
     await snap(page, '01d-discard-menu');
     // Discard Changes runs the real handler once it is confirmed: the new file is deleted, the rest stays.
     const askedBefore = fakeVscode.window.showWarningMessage;
@@ -510,11 +557,65 @@ async function main() {
     };
     await discardMenu.locator('[data-action="contextDiscardFile"]').click();
     await page.waitForFunction(() => /^Uncommitted changes\s*1 staged · 1 modified\s*Now/.test(document.getElementById('uncommittedRow').textContent.trim()));
+    // The row changes as soon as the question is answered; Git finishes after.
+    while (!isHostIdle()) await page.waitForTimeout(20);
     fakeVscode.window.showWarningMessage = askedBefore;
     assert.deepEqual(discardQuestions, ['Discard changes to live-new.txt?']);
     assert.equal(fs.existsSync(path.join(parent, 'live-new.txt')), false);
     assert.match(fs.readFileSync(path.join(parent, 'src/app.txt'), 'utf8'), /staged edit/, 'Discard Changes touched another file');
     assert.equal(await discardMenu.isHidden(), true);
+    // Several new files discarded from the Side Bar's selection. Once the question is answered the
+    // files leave the lists at once, before Git is done; Undo in the message after brings them back.
+    for (const name of ['multi-a.txt', 'multi-b.txt']) fs.writeFileSync(path.join(parent, name), `${name}\n`);
+    await page.evaluate(() => window.dispatchEvent(new MessageEvent('message', { data: { type: 'updateSubmodules', payload: { submodules: window.__initialRepositories } } })));
+    await side.locator('#dashboardChanges .change-check[data-path="multi-b.txt"]').waitFor();
+    await side.click('#dashboardChanges .change-check[data-path="multi-a.txt"]');
+    await side.click('#dashboardChanges .change-check[data-path="multi-b.txt"]', { modifiers: ['Shift'] });
+    await side.waitForFunction(() => /^2 selected/.test(document.getElementById('sidebarSelectionBar').textContent));
+    await page.evaluate(() => {
+      // When the page hears that the discard started, and when its lists no longer show the files.
+      const timing = window.__discardTiming = {};
+      // The event's own time stamp: the page's listener may run before this one.
+      window.addEventListener('message', event => { if (event.data && event.data.type === 'discardStarted') timing.started = event.timeStamp; }, true);
+      new MutationObserver(() => {
+        if (!timing.gone && !document.querySelector('#dashboardChanges [data-path="multi-a.txt"], #dashboardChangedFiles [data-path="multi-a.txt"]')) timing.gone = performance.now();
+      }).observe(document.body, { subtree: true, childList: true });
+    });
+    let confirmedAt = 0;
+    const informed = [];
+    const informBefore = fakeVscode.window.showInformationMessage;
+    fakeVscode.window.showWarningMessage = async (message, options, ...items) => {
+      discardQuestions.push([message, options && options.detail]);
+      confirmedAt = Date.now();
+      return items[0];
+    };
+    let undo;
+    fakeVscode.window.showInformationMessage = (message, ...items) => {
+      informed.push([message, ...items]);
+      return items.includes('Undo') ? new Promise(resolve => { undo = resolve; }) : undefined;
+    };
+    discardQuestions.length = 0;
+    await side.click('#sidebarSelectionBar [data-action="discardWorkingSelection"]');
+    await page.waitForFunction(() => !document.querySelector('#dashboardChanges [data-path="multi-a.txt"], #dashboardChanges [data-path="multi-b.txt"]'));
+    const shownWithin = Date.now() - confirmedAt;
+    const { started, gone } = await page.evaluate(() => window.__discardTiming);
+    console.log(`Discard of 2 files: lists updated ${Math.round(gone - started)} ms after the page heard of it, ${shownWithin} ms after it was confirmed`);
+    assert.ok(shownWithin < 300, `the lists took ${shownWithin} ms to drop the discarded files`);
+    for (let i = 0; i < 150 && !undo; i++) await page.waitForTimeout(20);
+    assert.deepEqual(discardQuestions.map(([message]) => message), ['Discard changes to 2 files?']);
+    assert.match(discardQuestions[0][1], /^multi-a\.txt\nmulti-b\.txt\n\n2 new files are deleted\.\nA copy is kept first: Undo in the message that follows brings them back\.$/);
+    assert.deepEqual(informed, [['Discarded changes to 2 files (2 new files deleted).', 'Undo']]);
+    assert.equal(fs.existsSync(path.join(parent, 'multi-a.txt')), false);
+    await side.waitForFunction(() => document.getElementById('sidebarSelectionBar').hidden);
+    undo('Undo');
+    await side.locator('#dashboardChanges .sidebar-change-item[data-path="multi-b.txt"]').waitFor();
+    assert.equal(fs.readFileSync(path.join(parent, 'multi-a.txt'), 'utf8'), 'multi-a.txt\n', 'Undo did not bring the file back');
+    assert.deepEqual(informed.at(-1), ['Brought back 2 files.']);
+    fakeVscode.window.showInformationMessage = informBefore;
+    fakeVscode.window.showWarningMessage = askedBefore;
+    for (const name of ['multi-a.txt', 'multi-b.txt']) fs.rmSync(path.join(parent, name));
+    await page.evaluate(() => window.dispatchEvent(new MessageEvent('message', { data: { type: 'updateSubmodules', payload: { submodules: window.__initialRepositories } } })));
+    await side.locator('#dashboardChanges .sidebar-change-item[data-path="multi-a.txt"]').waitFor({ state: 'detached' });
     // Right-click the Uncommitted changes row: Discard All Changes only. Escape closes it.
     await page.click('#uncommittedRow', { button: 'right' });
     await discardMenu.waitFor();
@@ -528,7 +629,7 @@ async function main() {
     await page.locator('#dashboardChangedFiles .changed-file-item[data-path="src/app.txt"]').waitFor();
     await page.click('#dashboardChangedFiles .changed-file-item[data-path="src/app.txt"]', { button: 'right' });
     await discardMenu.waitFor();
-    assert.deepEqual(await discardItems(), ['Suggest Resolution…', 'Review Changes in This File', 'Discard Changes…', 'Discard All Changes…']);
+    assert.deepEqual(await discardItems(), ['Suggest Resolution…', 'Open Changes', 'Review Changes in This File', 'Discard Changes…', 'Discard All Changes…']);
     await snap(page, '01e-suggest-resolution-menu');
     const errorsBefore = fakeVscode.window.showErrorMessage;
     const hostErrors = [];
@@ -607,12 +708,29 @@ async function main() {
     assert.equal(await side.getAttribute('[data-folder="claude"]', 'aria-expanded'), 'false');
     // Keyboard focus stays on the item across the refresh.
     assert.equal(await side.evaluate(() => document.activeElement && document.activeElement.dataset.folder), 'claude');
-    // The folder holding the checked-out branch cannot be collapsed out of sight.
+    // The folder holding the checked-out branch folds too, and then says HEAD is inside.
     await side.click('[data-action="toggleBranchFolder"][data-folder="feature"]');
-    await side.waitForTimeout(200);
-    assert.equal(await side.getAttribute('[data-folder="feature"]', 'aria-expanded'), 'true');
+    await side.locator('#dashboardBranches .sidebar-ref-item.current').waitFor({ state: 'detached' });
+    assert.equal(await side.getAttribute('[data-folder="feature"]', 'aria-expanded'), 'false');
+    assert.equal(await side.textContent('[data-folder="feature"] .branch-folder-head'), 'HEAD');
+    await snap(side, '01i-sidebar-folded-head-folder');
+    await side.click('[data-action="toggleBranchFolder"][data-folder="feature"]');
+    await side.locator('#dashboardBranches .sidebar-ref-item.current').waitFor();
+    assert.equal(await side.locator('[data-folder="feature"] .branch-folder-head').count(), 0);
     await side.click('[data-action="toggleBranchFolder"][data-folder="claude"]');
     await side.locator(claudeLeaf).waitFor();
+    // Branches and Changes fold to their titles; with Branches folded, Changes takes the room.
+    await side.click('[data-action="toggleSidebarSection"][data-section="branches"]');
+    await side.locator('#dashboardBranches').waitFor({ state: 'hidden' });
+    assert.equal(await side.getAttribute('[data-section="branches"]', 'aria-expanded'), 'false');
+    assert.equal(await side.isVisible('#dashboardChanges'), true);
+    await snap(side, '01j-sidebar-branches-folded');
+    await side.click('[data-action="toggleSidebarSection"][data-section="changes"]');
+    await side.locator('#dashboardChanges').waitFor({ state: 'hidden' });
+    await side.click('[data-action="toggleSidebarSection"][data-section="branches"]');
+    await side.click('[data-action="toggleSidebarSection"][data-section="changes"]');
+    await side.locator('#dashboardChanges').waitFor();
+    assert.equal(await side.isVisible('#dashboardBranches'), true);
 
     // Diff shows file line numbers and hides git's file headers.
     await page.locator('.history-row', { hasText: 'update app in two places' }).click();
@@ -689,6 +807,7 @@ async function main() {
     fs.writeFileSync(path.join(parent, 'partly.txt'), 'staged\n');
     git(parent, 'add', 'partly.txt');
     fs.writeFileSync(path.join(parent, 'partly.txt'), 'staged\nlater\n');
+    fs.writeFileSync(path.join(parent, 'filter-new.txt'), 'new file\n');
     await page.evaluate(() => {
       const toHost = window.__postToHost;
       window.__restorePost = () => { window.__postToHost = toHost; };
@@ -716,6 +835,29 @@ async function main() {
     const request = await page.evaluate(() => window.__commitRequests[0]);
     assert.deepEqual([request.partial, request.push, request.message], ['staged', true, 'feat: partly']);
     assert.ok(request.files.includes('partly.txt'));
+    // The filter: Untracked shows the new files only, and a commit takes the ticked files it shows;
+    // the count says how many ticked files it hides.
+    await page.evaluate(() => window.postMessage({ type: 'commitFilesResult', payload: { repositoryPath: '.', success: false, message: '' } }, '*'));
+    await page.waitForFunction(() => !document.getElementById('commitSelectedFilesButton').disabled);
+    assert.deepEqual(await page.locator('#commitFilter button').allTextContents(), ['All 3', 'Tracked 2', 'Untracked 1']);
+    const shownRows = () => page.locator('#commitChangesList .commit-change-row:visible .commit-change-checkbox').evaluateAll(boxes => boxes.map(box => box.dataset.path));
+    await page.click('#commitFilter [data-filter="untracked"]');
+    assert.deepEqual(await shownRows(), ['filter-new.txt']);
+    assert.equal(await page.textContent('#commitSelectionCount'), '1 selected · 2 hidden, not committed');
+    assert.equal(await page.textContent('#commitPreviewPath'), 'filter-new.txt', 'the preview kept a file the filter hides');
+    await snap(page, '07d-commit-filter-untracked');
+    await page.click('#commitSelectedFilesButton');
+    assert.deepEqual(await page.evaluate(() => window.__commitRequests[1].files), ['filter-new.txt']);
+    await page.evaluate(() => window.postMessage({ type: 'commitFilesResult', payload: { repositoryPath: '.', success: false, message: '' } }, '*'));
+    await page.click('#commitFilter [data-filter="tracked"]');
+    assert.deepEqual(await shownRows(), ['lib-b', 'partly.txt']);
+    // Select all ticks the files shown only.
+    await page.uncheck('#commitSelectAll');
+    await page.click('#commitFilter [data-filter="all"]');
+    assert.deepEqual(await page.locator('.commit-change-checkbox:checked').evaluateAll(boxes => boxes.map(box => box.dataset.path)), ['filter-new.txt']);
+    assert.equal(await page.isChecked('#commitSelectAll'), false);
+    await page.check('#commitSelectAll');
+    assert.equal(await page.textContent('#commitSelectionCount'), '3 selected');
     // Unticking the partly staged file removes the question.
     await page.uncheck('.commit-change-checkbox[data-path="partly.txt"]');
     assert.equal(await page.isHidden('#commitPartialChoice'), true);
@@ -787,6 +929,7 @@ async function main() {
     await page.locator('#commitChangesModal.active').waitFor({ state: 'detached' });
     git(parent, 'rm', '-q', '-f', '--cached', 'partly.txt');
     fs.rmSync(path.join(parent, 'partly.txt'));
+    fs.rmSync(path.join(parent, 'filter-new.txt'));
     // Each repository button shows its local changes by kind, spelled out on hover.
     const changeBadge = page.locator('#dashboardRepositories .repo-change').first();
     assert.match(await changeBadge.textContent(), /^[SMUC]\d+$/);

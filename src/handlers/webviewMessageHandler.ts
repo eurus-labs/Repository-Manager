@@ -17,6 +17,8 @@ import { ConflictExplainerHost, confirmSending, describeSides, explainPredictedC
 import { buildUndoPrompt, collectUndoContext, describeUndoPlan, parseUndoPlan, UndoPlan } from '../services/naturalUndo';
 import { buildResolutionPrompt, checkResolution, describeSuggestion, parseResolutions, readConflictedFile, spliceResolutions } from '../services/conflictResolution';
 import { STASH_OPERATIONS, StashActionData, StashOperation } from '../services/stashActionService';
+import { DiscardResultData } from '../services/discardService';
+import { openCommitChange, openWorkingChange } from '../changeDocuments';
 
 export interface MessageHandlerContext {
   panel: vscode.WebviewPanel;
@@ -1200,9 +1202,51 @@ export async function handleStashAction(ctx: MessageHandlerContext, payload: {
 }
 
 /**
- * Discard Changes, from the uncommitted changes' context menus: one file (`paths`) or every change
- * (`all`). Always asked first, from the host, naming what goes and that new files are deleted; the
- * service keeps a copy before it changes anything, and its message says how to bring files back.
+ * A changed file in VS Code's diff editor, in a tab: an uncommitted file (`working`) as HEAD ↔ the
+ * file on disk, or a commit's file as `base` (none for a root commit) ↔ `target`.
+ */
+export async function handleOpenChangeInEditor(ctx: MessageHandlerContext, payload: unknown): Promise<void> {
+  const request = requireRecord(payload);
+  const repositoryPath = requireString(request, 'repositoryPath');
+  const git = new GitCommandService(ctx.workspaceRoot);
+  try {
+    const root = ctx.gitOps.resolveRepositoryPath(repositoryPath);
+    const filePath = git.resolveFilePath(requireString(request, 'path'));
+    if (request.working === true) {
+      const [changes, head] = await Promise.all([
+        ctx.gitOps.getWorkingTreeChanges(repositoryPath),
+        // No first commit yet: HEAD is empty, and every file shows as added.
+        git.resolveRevision(repositoryPath, 'HEAD').catch(() => '')
+      ]);
+      const change = changes.find(item => item.path === filePath);
+      if (!change) {
+        showResult(false, `${filePath} has no uncommitted changes now.`);
+        return;
+      }
+      await openWorkingChange({ root, head, change });
+      return;
+    }
+    const target = await git.resolveRevision(repositoryPath, requireString(request, 'target'));
+    const base = typeof request.base === 'string' && request.base ? await git.resolveRevision(repositoryPath, request.base) : '';
+    const oldPath = typeof request.oldPath === 'string' && request.oldPath ? git.resolveFilePath(request.oldPath) : undefined;
+    await openCommitChange({ root, base, target, path: filePath, oldPath });
+  } catch (error) {
+    showResult(false, `Cannot open the diff: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+/** How many file names the discard question lists before "and N more". */
+const DISCARD_NAMES_SHOWN = 8;
+
+/**
+ * Discard Changes, from the uncommitted changes' menus, the Side Bar's Changes and the files list:
+ * some files (`paths`, one or a selection) or every change (`all`). Always asked first, from the
+ * host, naming what goes; the service keeps a copy before it changes anything, and the message
+ * after offers Undo, which puts the files back from that copy.
+ *
+ * The dashboard hears `discardStarted` as soon as the question is answered, so it can drop the files
+ * from its lists at once, then the new status and `discardFinished` once Git is done. The history
+ * does not change, so it is not reloaded.
  */
 export async function handleDiscardChanges(ctx: MessageHandlerContext, payload: {
   repositoryPath: string; paths?: string[]; all?: boolean
@@ -1210,10 +1254,11 @@ export async function handleDiscardChanges(ctx: MessageHandlerContext, payload: 
   if (!payload || typeof payload.repositoryPath !== 'string') { return; }
   const paths = Array.isArray(payload.paths) ? payload.paths.filter((item): item is string => typeof item === 'string' && item.length > 0) : undefined;
   if (payload.all !== true && !(paths && paths.length)) { return; }
+  const repositoryPath = payload.repositoryPath;
   const target = payload.all === true ? undefined : paths;
   let plan;
   try {
-    plan = await ctx.gitOps.planDiscard(payload.repositoryPath, target);
+    plan = await ctx.gitOps.planDiscard(repositoryPath, target);
   } catch (error) {
     showResult(false, error instanceof Error ? error.message : String(error));
     return;
@@ -1225,32 +1270,57 @@ export async function handleDiscardChanges(ctx: MessageHandlerContext, payload: 
     return;
   }
   const single = target && count === 1 ? plan.restored[0] || plan.deleted[0] : undefined;
-  const label = single ? 'Discard' : 'Discard all';
-  const question = single
-    ? `Discard changes to ${single}?`
-    : `Discard all ${count} changed file${count === 1 ? '' : 's'} in ${payload.repositoryPath}?`;
+  const label = target ? 'Discard' : 'Discard All';
   const files = (n: number) => `${n} file${n === 1 ? '' : 's'}`;
-  const newFiles = (n: number) => `${n} new file${n === 1 ? ' is' : 's are'}`;
-  const shownDeleted = plan.deleted.slice(0, 5).join(', ') + (plan.deleted.length > 5 ? ', …' : '');
+  const repositoryName = path.basename(ctx.gitOps.resolveRepositoryPath(repositoryPath));
+  const question = single ? `Discard changes to ${path.basename(single)}?`
+    : target ? `Discard changes to ${files(count)}?` : `Discard all ${files(count)} changed in ${repositoryName}?`;
   const lines: string[] = [];
-  if (plan.restored.length) {
-    lines.push(single ? 'Staged and unstaged changes go back to HEAD.'
-      : `${files(plan.restored.length)} ${plan.restored.length === 1 ? 'goes' : 'go'} back to HEAD.`);
-  }
-  if (plan.deleted.length) {
-    lines.push(single ? 'This new file is deleted.' : `${newFiles(plan.deleted.length)} deleted: ${shownDeleted}.`);
+  if (single) {
+    lines.push(single, plan.deleted.length ? 'This new file will be deleted.' : 'Its staged and unstaged changes will be lost.');
+  } else {
+    const names = [...plan.restored, ...plan.deleted];
+    lines.push(...names.slice(0, DISCARD_NAMES_SHOWN), ...(names.length > DISCARD_NAMES_SHOWN ? [`and ${names.length - DISCARD_NAMES_SHOWN} more`] : []), '');
+    if (plan.restored.length) { lines.push(`${files(plan.restored.length)} go${plan.restored.length === 1 ? 'es' : ''} back to HEAD.`); }
+    if (plan.deleted.length) { lines.push(`${plan.deleted.length} new file${plan.deleted.length === 1 ? ' is' : 's are'} deleted.`); }
   }
   if (plan.skipped.length) {
     lines.push(`Left alone: ${plan.skipped.map(item => `${item.path} (${item.reason})`).join('; ')}.`);
   }
-  lines.push('A copy is kept first, and the message after says how to bring the files back.');
+  lines.push('A copy is kept first: Undo in the message that follows brings them back.');
   const approved = await vscode.window.showWarningMessage(question, { modal: true, detail: lines.join('\n') }, label);
   if (approved !== label) { return; }
   // Exactly the files the question named: one that appeared while it was open is not deleted unseen.
-  const result = await ctx.gitOps.discardChanges(payload.repositoryPath, [...plan.restored, ...plan.deleted]);
-  showResult(result.success, result.message);
-  await ctx.reloadDashboardHistory([payload.repositoryPath]);
+  const discarded = [...plan.restored, ...plan.deleted];
+  await sendToWebview(ctx, { type: 'discardStarted', payload: { repositoryPath, paths: discarded } });
+  const result = await ctx.gitOps.discardChanges(repositoryPath, discarded);
+  // The new status first: the lists show it without waiting for every repository to be listed again.
+  await handleGetWorkingTreeChanges(ctx, { repositoryPath, purpose: 'dashboard' });
+  await sendToWebview(ctx, { type: 'discardFinished', payload: { repositoryPath, paths: discarded, success: result.success } });
+  const data = result.data as DiscardResultData | undefined;
+  if (result.success && data && data.backup && data.changed.length) {
+    const backup = data.backup;
+    // Not awaited: the message can wait in the notification center while the dashboard goes on.
+    void Promise.resolve(vscode.window.showInformationMessage(result.message, 'Undo')).then(choice => {
+      if (choice === 'Undo') { void undoDiscard(ctx, repositoryPath, backup, data.changed); }
+    });
+  } else {
+    showResult(result.success, result.message);
+  }
   await ctx.refresh();
+}
+
+/** Undo from the message after a discard: the files come back from the copy it kept. */
+async function undoDiscard(ctx: MessageHandlerContext, repositoryPath: string, backup: string, paths: string[]): Promise<void> {
+  try {
+    const result = await ctx.gitOps.restoreDiscarded(repositoryPath, backup, paths);
+    await handleGetWorkingTreeChanges(ctx, { repositoryPath, purpose: 'dashboard' });
+    showResult(result.success, result.message);
+    await ctx.refresh();
+  } catch (error) {
+    // The dashboard may have closed since the discard; the files are back either way.
+    console.error('[RepositoryManager] Undo discard:', error);
+  }
 }
 
 /**
@@ -1429,6 +1499,7 @@ export const messageHandlers: Record<string, (ctx: MessageHandlerContext, payloa
   'resolveHistoryRebase': (ctx, payload) => handleResolveHistoryRebase(ctx, payload as { repositoryPath: string; command: 'continue' | 'abort' }),
   'getPendingOperation': (ctx, payload) => handleGetPendingOperation(ctx, payload),
   'discardChanges': (ctx, payload) => handleDiscardChanges(ctx, payload as { repositoryPath: string; paths?: string[]; all?: boolean }),
+  'openChangeInEditor': (ctx, payload) => handleOpenChangeInEditor(ctx, payload),
   'naturalUndo': (ctx, payload) => handleNaturalUndo(ctx, payload as { repositoryPath: string }),
   'suggestConflictResolution': async (ctx, payload) => { await handleSuggestConflictResolution(ctx, payload as { repositoryPath: string; path: string }); },
   'stashAction': (ctx, payload) => handleStashAction(ctx, payload as { repositoryPath: string; stash: string; operation: StashOperation }),
