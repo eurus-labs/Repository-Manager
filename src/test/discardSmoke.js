@@ -1,6 +1,6 @@
 const assert = require('node:assert/strict');
 const { execFileSync } = require('node:child_process');
-const { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } = require('node:fs');
+const { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } = require('node:fs');
 const { tmpdir } = require('node:os');
 const path = require('node:path');
 const Module = require('node:module');
@@ -241,6 +241,15 @@ async function main() {
     assert.equal(unborn.success, false);
     assert.match(unborn.message, /no commit yet/);
     assert.equal(read(empty, 'first.txt'), 'first\n');
+
+    // A new symbolic link is deleted itself; the file it points to, outside the repository, stays.
+    const outside = path.join(base, 'outside.txt');
+    writeFileSync(outside, 'keep\n');
+    symlinkSync(outside, path.join(root, 'link.txt'));
+    const linked = await service.discard('.', ['link.txt']);
+    assert.equal(linked.success, true, linked.message);
+    assert.equal(existsSync(path.join(root, 'link.txt')), false);
+    assert.equal(readFileSync(outside, 'utf8'), 'keep\n', 'the link\'s target was deleted');
 
     // Anything else from the webview is ignored.
     shown.length = 0;

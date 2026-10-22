@@ -607,6 +607,9 @@ async function main() {
     assert.deepEqual(informed, [['Discarded changes to 2 files (2 new files deleted).', 'Undo']]);
     assert.equal(fs.existsSync(path.join(parent, 'multi-a.txt')), false);
     await side.waitForFunction(() => document.getElementById('sidebarSelectionBar').hidden);
+    // The refresh after the discard asks for a status of its own; its reply must not land after Undo's.
+    while (!isHostIdle()) await page.waitForTimeout(20);
+    await page.waitForTimeout(100);
     undo('Undo');
     await side.locator('#dashboardChanges .sidebar-change-item[data-path="multi-b.txt"]').waitFor();
     assert.equal(fs.readFileSync(path.join(parent, 'multi-a.txt'), 'utf8'), 'multi-a.txt\n', 'Undo did not bring the file back');

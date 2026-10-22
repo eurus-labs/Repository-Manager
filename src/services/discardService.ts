@@ -3,7 +3,7 @@
  *
  * Discarding puts each file back as it is at HEAD, staged and unstaged changes alike
  * (`git restore --source=HEAD --staged --worktree`), and deletes new files that are not ignored
- * (`git clean -f`, never -x). It cannot be undone from Git's own history, so before anything is
+ * (directly, not with `git clean`). It cannot be undone from Git's own history, so before anything is
  * changed the working tree is saved as a commit (the same snapshot a review of local changes reads)
  * and kept by a ref under DISCARD_REF_PREFIX; `git restore --source=<sha> --worktree -- <path>`
  * brings the files back. The newest MAX_BACKUPS are kept per repository.
@@ -11,14 +11,14 @@
  * Left alone, and said so:
  * - linked repositories (a changed submodule commit): restoring the index would not move the
  *   checkout, so the change would stay; use Align or the repository itself;
- * - new nested Git repositories, which `git clean` would delete with their own history.
+ * - new nested Git repositories, which deleting would take with their own history.
  *
  * Nothing runs while a merge, rebase, cherry-pick or revert is paused: discarding then would
  * resolve or drop part of it behind the user's back.
  */
 
 import * as path from 'path';
-import { readdirSync, rmdirSync } from 'fs';
+import { chmodSync, readdirSync, rmdirSync, unlinkSync } from 'fs';
 import { CommandResult, WorkingTreeChange } from '../types';
 import { GitCommandService } from './gitCommandService';
 import { CommitService } from './commitService';
@@ -131,9 +131,9 @@ export class DiscardService {
         await this.git.execGit(['--literal-pathspecs', 'restore', '--source=HEAD', '--staged', '--worktree', '--',
           ...restorePaths.slice(index, index + CHUNK)], root, 120000);
       }
-      for (let index = 0; index < plan.deleted.length; index += CHUNK) {
-        await this.git.execGit(['--literal-pathspecs', 'clean', '-f', '--', ...plan.deleted.slice(index, index + CHUNK)], root, 120000);
-      }
+      // New files are deleted here rather than by `git clean`: they are copied already, and that is
+      // one Git process less to wait for.
+      deleteNewFiles(root, plan.deleted);
       removeEmptyParents(root, plan.deleted);
       // Not kept by a ref, the copy still serves Undo now; Git only removes it in a later cleanup.
       const unkept = await kept ? '' : ` The copy ${backup} could not be kept for later; Git removes it in a future cleanup.`;
@@ -231,7 +231,31 @@ function describe(plan: DiscardPlan, paths?: string[]): string {
   return `Discarded changes to ${what}${deleted}.${skipped}`;
 }
 
-/** After `git clean`, the folders that only held the deleted files, up to the repository root. */
+/**
+ * Deletes new (untracked) files of `root`. Each must stay inside the repository; a symbolic link is
+ * removed itself, never what it points to, and a folder (a nested repository) is never removed.
+ */
+function deleteNewFiles(root: string, files: string[]): void {
+  for (const file of files) {
+    const full = path.resolve(root, file);
+    const relative = path.relative(root, full);
+    if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) {
+      throw new Error(`${file} is outside the repository`);
+    }
+    try {
+      unlinkSync(full);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === 'ENOENT') { continue; }
+      // A read-only file on Windows: Git deletes it anyway, so this does too.
+      if (code !== 'EPERM' && code !== 'EACCES') { throw error; }
+      chmodSync(full, 0o666);
+      unlinkSync(full);
+    }
+  }
+}
+
+/** After deleting new files, the folders that only held them, up to the repository root. */
 function removeEmptyParents(root: string, files: string[]): void {
   const folders = new Set<string>();
   for (const file of files) {
