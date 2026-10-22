@@ -10,6 +10,7 @@ import { PRManager } from './prManager';
 import { registerBasicCommands, CommandContext } from './commands/submoduleCommands';
 import { registerCreateBranchCommand } from './commands/createBranchCommand';
 import { registerReviewCommands } from './commands/reviewCommands';
+import { registerDiscardCommands } from './commands/discardCommands';
 import { RepositoryManagerLauncher } from './repositoryManagerLauncher';
 import { RepositoryManagerPanel } from './repositoryManagerPanel';
 import { CHANGE_DOCUMENT_SCHEME, ChangeDocumentProvider } from './changeDocuments';
@@ -50,6 +51,7 @@ export function activate(context: vscode.ExtensionContext) {
   registerBasicCommands(context, commandContext);
   registerCreateBranchCommand(context, gitOps, repositoryTreeProvider);
   registerReviewCommands(context, workspaceRoot);
+  registerDiscardCommands(context, gitOps);
   // The committed side of a changed file opened in the diff editor; registered here, not by the
   // dashboard, so tabs VS Code restores after a reload still show it.
   context.subscriptions.push(vscode.workspace.registerTextDocumentContentProvider(CHANGE_DOCUMENT_SCHEME,

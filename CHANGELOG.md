@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Changes** in the Repository Manager Side Bar, right under Branches: the active repository's uncommitted files. Click one to open it in VS Code's diff editor, in its own tab (HEAD ↔ the file, which you can edit there), so a long list or a large diff no longer needs the dashboard's panels resized. In the dashboard, double-click a changed file, use **Open ↗** above the diff, or **Open Changes** in its menu, for commits too.
 - Discard several files at once: tick them (or Ctrl/Cmd+click, Shift+click for a range) in the Side Bar's Changes or the dashboard's files list, then **Discard…**. Each Side Bar file also has its own ↶.
 - The message after a discard has **Undo**, which brings the files back from the copy kept first (as unstaged changes); a file you changed since is left as it is.
+- **Repository Manager: Remove Discard Copies** in the Command Palette lets go of the copies Discard keeps for Undo (the newest 20 per repository), in the parent and its linked repositories. It asks first, with each repository's count; Undo of those discards stops working.
 - A filter in the Commit dialog: **All**, **Tracked** or **Untracked** files. A commit takes the ticked files the filter shows, and the count says when ticked files are hidden.
 
 ### Changed

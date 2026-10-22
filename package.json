@@ -42,6 +42,11 @@
         "category": "Repository Manager"
       },
       {
+        "command": "repositoryManager.removeDiscardCopies",
+        "title": "Remove Discard Copies",
+        "category": "Repository Manager"
+      },
+      {
         "command": "repositoryManager.refresh",
         "title": "Refresh Repositories",
         "category": "Repository Manager",

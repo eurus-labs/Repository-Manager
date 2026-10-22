@@ -210,6 +210,24 @@ export class DiscardService {
     return found;
   }
 
+  /** The copies kept by earlier discards (their refs), newest first. */
+  async listCopies(repositoryPath: string): Promise<string[]> {
+    const root = this.git.resolveRepositoryPath(repositoryPath);
+    return (await this.git.execGit(['for-each-ref', '--sort=-refname', '--format=%(refname)', DISCARD_REF_PREFIX], root, 10000))
+      .split('\n').filter(Boolean);
+  }
+
+  /** Lets go of these copies (refs under DISCARD_REF_PREFIX only); Git removes them in a later cleanup. Returns how many went. */
+  async removeCopies(repositoryPath: string, refs: string[]): Promise<number> {
+    const root = this.git.resolveRepositoryPath(repositoryPath);
+    let removed = 0;
+    for (const ref of refs.filter(item => item.startsWith(DISCARD_REF_PREFIX) && !item.includes('..'))) {
+      await this.git.execGit(['update-ref', '-d', ref], root, 10000);
+      removed++;
+    }
+    return removed;
+  }
+
   /** Only the newest MAX_BACKUPS copies are kept. */
   private async pruneBackups(root: string): Promise<void> {
     const refs = (await this.git.execGit(['for-each-ref', '--sort=-refname', '--format=%(refname)', DISCARD_REF_PREFIX], root, 10000))

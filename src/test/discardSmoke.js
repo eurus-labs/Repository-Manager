@@ -37,6 +37,7 @@ const { GitCommandService } = require('../../out/services/gitCommandService.js')
 const { DiscardService, DISCARD_REF_PREFIX } = require('../../out/services/discardService.js');
 const { HistoryService } = require('../../out/services/historyService.js');
 const { CommitService } = require('../../out/services/commitService.js');
+const { removeDiscardCopies } = require('../../out/commands/discardCommands.js');
 Module._load = originalLoad;
 
 const base = mkdtempSync(path.join(tmpdir(), 'repository-manager-discard-'));
@@ -250,6 +251,31 @@ async function main() {
     assert.equal(linked.success, true, linked.message);
     assert.equal(existsSync(path.join(root, 'link.txt')), false);
     assert.equal(readFileSync(outside, 'utf8'), 'keep\n', 'the link\'s target was deleted');
+
+    // Remove Discard Copies: asks first, naming each repository's count, then lets them all go.
+    const copiesBefore = git(root, 'for-each-ref', '--format=%(refname)', DISCARD_REF_PREFIX).split('\n').filter(Boolean).length;
+    assert.ok(copiesBefore > 1);
+    const copyGit = { getParentRepoInfo: async () => ({ name: 'main', path: '.', status: 'modified' }),
+      // An uninitialized linked repository is not read; one that fails to list is skipped.
+      getSubmodules: async () => [{ name: 'lib', path: 'lib', status: 'uninitialized' }, { name: 'broken', path: 'broken', status: 'clean' }],
+      listDiscardCopies: async repositoryPath => { if (repositoryPath === 'broken') throw new Error('no repo'); return service.listCopies(repositoryPath); },
+      removeDiscardCopies: (...args) => service.removeCopies(...args) };
+    const asked = [];
+    const told = [];
+    const copiesUi = answer => ({ confirm: async (message, detail, action) => { asked.push([message, detail, action]); return answer; },
+      notify: (message, isError) => told.push([message, Boolean(isError)]) });
+    await removeDiscardCopies(copyGit, copiesUi(false));
+    assert.deepEqual(asked[0].slice(0, 1), [`Remove ${copiesBefore} copies kept by Discard?`]);
+    assert.match(asked[0][1], new RegExp(`^main: ${copiesBefore} copies\\n\\nUndo of those discards will no longer work\\.`));
+    assert.equal(git(root, 'for-each-ref', '--format=%(refname)', DISCARD_REF_PREFIX).split('\n').filter(Boolean).length, copiesBefore, 'declining removed copies');
+    await removeDiscardCopies(copyGit, copiesUi(true));
+    assert.deepEqual(told, [[`Removed ${copiesBefore} copies in main.`, false]]);
+    assert.equal(git(root, 'for-each-ref', '--format=%(refname)', DISCARD_REF_PREFIX), '');
+    // Only discard copies: a review snapshot's ref, or a branch, is never touched.
+    assert.equal(await service.removeCopies('.', ['refs/heads/main', 'refs/repository-manager/snapshots/x']), 0);
+    assert.equal(git(root, 'rev-parse', '--verify', '-q', 'refs/heads/main').length, 40);
+    await removeDiscardCopies(copyGit, copiesUi(true));
+    assert.deepEqual(told.at(-1), ['No discard copies to remove.', false]);
 
     // Anything else from the webview is ignored.
     shown.length = 0;

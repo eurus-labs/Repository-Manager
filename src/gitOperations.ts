@@ -372,6 +372,15 @@ export class GitOperations {
     return this.discardService.discard(repositoryPath, paths);
   }
 
+  /** The copies earlier discards kept (refs under refs/repository-manager/discarded/). */
+  async listDiscardCopies(repositoryPath: string): Promise<string[]> {
+    return this.discardService.listCopies(repositoryPath);
+  }
+
+  async removeDiscardCopies(repositoryPath: string, refs: string[]): Promise<number> {
+    return this.discardService.removeCopies(repositoryPath, refs);
+  }
+
   /** Undo a discard: `paths` back from the copy it kept, unless they changed since. */
   async restoreDiscarded(repositoryPath: string, backup: string, paths: string[]): Promise<CommandResult> {
     return this.discardService.restore(repositoryPath, backup, paths);
