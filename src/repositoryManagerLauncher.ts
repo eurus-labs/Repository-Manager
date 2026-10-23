@@ -7,6 +7,8 @@ export interface SidebarDashboard {
   /** Opens the dashboard, or reveals it without taking focus from the Side Bar. */
   open(): Promise<void>;
   post(message: { type: string; payload?: unknown }): Thenable<boolean> | undefined;
+  /** The Side Bar became visible (its Changes list keeps local changes current too). */
+  sidebarShown?(): void;
 }
 
 /**
@@ -35,9 +37,19 @@ export class RepositoryManagerLauncher implements vscode.WebviewViewProvider {
     });
     view.webview.onDidReceiveMessage(message => { void this.receive(message); });
     // Showing the Side Bar opens the dashboard next to it, as the icon always did.
-    view.onDidChangeVisibility(() => { if (view.visible) { void this.ensureDashboard(); } });
+    view.onDidChangeVisibility(() => {
+      if (view.visible) {
+        void this.ensureDashboard();
+        this.dashboard.sidebarShown?.();
+      }
+    });
     view.onDidDispose(() => { if (this.view === view) { this.view = undefined; } });
     if (view.visible) { void this.ensureDashboard(); }
+  }
+
+  /** Whether the Side Bar view is on screen. */
+  get visible(): boolean {
+    return Boolean(this.view && this.view.visible);
   }
 
   /** A new copy of the list from the dashboard. */

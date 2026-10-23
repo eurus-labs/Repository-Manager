@@ -59,6 +59,17 @@
   let workingPreviewRequestId = 1000000;
   let workingDiffMode = null;
   let uncommittedRowRendered = false;
+  // Uncommitted files picked for Discard: the Side Bar's Changes and the files list share them.
+  // Shift extends from the anchor, the last file toggled on its own.
+  const workingSelection = new Set();
+  let workingSelectionAnchor = null;
+  // Files a confirmed discard is removing (discardStarted): left out of every list until Git is done.
+  let discarding = { repositoryPath: null, paths: new Set() };
+  // Side Bar sections folded away (Branches, Changes), kept with the page's state.
+  const collapsedSidebarSections = new Set(Array.isArray(previousState.collapsedSidebarSections)
+    ? previousState.collapsedSidebarSections.filter(name => typeof name === 'string') : []);
+  // The Commit dialog's file filter: all, tracked or untracked.
+  let commitFileFilter = ['all', 'tracked', 'untracked'].includes(previousState.commitFileFilter) ? previousState.commitFileFilter : 'all';
   // The active repository's branch and commit at the last repository list, to notice HEAD moving.
   let activeHeadSignature = { repositoryPath: null, head: '' };
   let historyDrawnReported = false;
@@ -90,22 +101,29 @@
     if (changesMenu) changesMenu.hidden = true;
   }
 
-  // Right-click a changed file to review just that file; for uncommitted changes, also Discard
-  // (that file, or all). The Uncommitted changes row offers Discard All. The host asks before a
-  // discard and keeps a copy first.
+  // Right-click a changed file to open it in the diff editor or review just that file; for
+  // uncommitted changes, also Discard (that file, the selected files when it is one of them, or
+  // all). The Uncommitted changes row offers Discard All. The host asks before a discard and keeps a
+  // copy first.
   let changesContextTarget = null;
   function showChangesContextMenu(element, x, y) {
     const file = element.closest('.changed-file-item');
     const local = selectedDashboardCommit === WORKING_TREE || !file;
     if (local ? !dashboardWorkingChanges().length : !changeSummarySelection || changeSummarySelection.local) return false;
     hideHistoryContextMenu();
-    changesContextTarget = { repositoryPath: activeDashboardRepository, path: file ? file.dataset.path : null, local };
+    const filePath = file ? file.dataset.path : null;
+    // Right-clicking a selected file acts on the whole selection, as in VS Code's lists.
+    const paths = filePath && local && workingSelection.has(filePath) && workingSelection.size > 1 ? selectedWorkingPaths() : filePath ? [filePath] : [];
+    changesContextTarget = { repositoryPath: activeDashboardRepository, path: filePath, paths, local };
     const menu = document.getElementById('changesContextMenu');
     // A file still in conflict (after a merge, rebase, pick, revert or stash) can get a suggested resolution.
     menu.querySelector('[data-action="contextSuggestResolution"]').hidden =
       !(file && local && dashboardWorkingChanges().some(change => change.path === file.dataset.path && change.conflicted));
+    menu.querySelector('[data-action="contextOpenInEditor"]').hidden = !file || !canOpenInEditor();
     menu.querySelector('[data-action="contextReviewFile"]').hidden = !file;
-    menu.querySelector('[data-action="contextDiscardFile"]').hidden = !file || !local;
+    const discardFile = menu.querySelector('[data-action="contextDiscardFile"]');
+    discardFile.hidden = !file || !local;
+    discardFile.textContent = paths.length > 1 ? `Discard Changes to ${paths.length} Files…` : 'Discard Changes…';
     menu.querySelector('[data-action="contextDiscardAll"]').hidden = !local;
     menu.hidden = false;
     const width = window.innerWidth || document.documentElement.clientWidth;
@@ -446,7 +464,9 @@
       dashboardHistoryState,
       historyPanelHeight,
       filesPanelWidth,
-      historyColumnWidths
+      historyColumnWidths,
+      collapsedSidebarSections: Array.from(collapsedSidebarSections),
+      commitFileFilter
     });
   }
 
@@ -655,8 +675,58 @@
     contextDiscardFile: () => {
       const target = changesContextTarget;
       hideHistoryContextMenu();
-      if (!target || !target.path) return;
-      postMessage('discardChanges', { repositoryPath: target.repositoryPath, paths: [target.path] });
+      if (!target || !target.paths || !target.paths.length) return;
+      postMessage('discardChanges', { repositoryPath: target.repositoryPath, paths: target.paths });
+    },
+    contextOpenInEditor: () => {
+      const target = changesContextTarget;
+      hideHistoryContextMenu();
+      if (target && target.path && target.repositoryPath === activeDashboardRepository) openInEditor(target.path);
+    },
+    // The diff panel's Open ↗: the file shown, in VS Code's diff editor.
+    openDiffInEditor: () => { if (selectedDashboardFile) openInEditor(selectedDashboardFile); },
+
+    // A Side Bar Changes row: opens the diff in an editor tab; Ctrl/Cmd or Shift picks it instead.
+    openWorkingChange: (el, event) => {
+      const filePath = el.dataset.path;
+      if (!filePath) return;
+      if (event && (event.ctrlKey || event.metaKey || event.shiftKey)) { toggleWorkingSelection(filePath, event); return; }
+      postMessage('openChangeInEditor', { repositoryPath: activeDashboardRepository, path: filePath, working: true });
+    },
+    toggleWorkingSelection: (el, event) => { if (el.dataset.path) toggleWorkingSelection(el.dataset.path, event); },
+    toggleAllWorkingSelection: () => {
+      const changes = dashboardWorkingChanges();
+      const all = changes.length > 0 && changes.every(change => workingSelection.has(change.path));
+      workingSelection.clear();
+      if (!all) changes.forEach(change => workingSelection.add(change.path));
+      workingSelectionAnchor = null;
+      syncWorkingSelection();
+    },
+    clearWorkingSelection: () => {
+      workingSelection.clear();
+      workingSelectionAnchor = null;
+      syncWorkingSelection();
+    },
+    discardWorkingSelection: () => {
+      const paths = selectedWorkingPaths();
+      if (paths.length) postMessage('discardChanges', { repositoryPath: activeDashboardRepository, paths });
+    },
+    // A row's own ↶: that file only, whatever else is selected.
+    discardWorkingChange: (el) => {
+      if (el.dataset.path) postMessage('discardChanges', { repositoryPath: activeDashboardRepository, paths: [el.dataset.path] });
+    },
+    toggleSidebarSection: (el) => {
+      const section = el.dataset.section;
+      if (!section) return;
+      if (collapsedSidebarSections.has(section)) collapsedSidebarSections.delete(section); else collapsedSidebarSections.add(section);
+      applySidebarSections();
+      saveState();
+    },
+    setCommitFilter: (el) => {
+      if (!['all', 'tracked', 'untracked'].includes(el.dataset.filter)) return;
+      commitFileFilter = el.dataset.filter;
+      saveState();
+      applyCommitFilter();
     },
     contextDiscardAll: () => {
       const target = changesContextTarget;
@@ -698,9 +768,14 @@
       loadParentCommitDetail(commitHash);
     },
 
-    selectChangedFile: (el) => {
+    selectChangedFile: (el, event) => {
       const filePath = el.dataset.path;
       if (!filePath || !selectedDashboardCommit) return;
+      // Uncommitted files: Ctrl/Cmd-click or Shift-click picks them for Discard, as the checkboxes do.
+      if (selectedDashboardCommit === WORKING_TREE && event && (event.ctrlKey || event.metaKey || event.shiftKey)) {
+        toggleWorkingSelection(filePath, event);
+        return;
+      }
       selectedDashboardFile = filePath;
       document.querySelectorAll('.changed-file-item').forEach(item => {
         item.classList.toggle('active', item.dataset.path === filePath);
@@ -708,6 +783,8 @@
       const fileName = document.getElementById('diffFileName');
       const diff = document.getElementById('dashboardDiff');
       if (fileName) fileName.textContent = filePath;
+      const openButton = document.getElementById('openDiffInEditorButton');
+      if (openButton) openButton.hidden = !canOpenInEditor();
       const workingModes = document.getElementById('workingDiffModes');
       if (selectedDashboardCommit === WORKING_TREE) {
         // A live update re-renders the list: keep the diff on screen until the new one arrives.
@@ -841,6 +918,7 @@
       if (changesList) changesList.innerHTML = '<div class="dashboard-loading">Loading changed files…</div>';
       workingTreeChanges = [];
       previewedWorkingTreeFile = null;
+      applyCommitFilter(); // the filter kept from last time, its counts until the files load
       workingTreePreviewRequestId++;
       const previewPath = document.getElementById('commitPreviewPath');
       const previewModes = document.getElementById('commitPreviewModes');
@@ -873,7 +951,7 @@
         return;
       }
       const repositoryPath = document.getElementById('commitChangesRepositoryPath').value;
-      const files = Array.from(document.querySelectorAll('.commit-change-checkbox:checked')).map(checkbox => checkbox.dataset.path).filter(Boolean);
+      const files = commitCheckedFiles();
       if (!files.length) {
         setCommitMessageStatus('Select the files to commit first: the message describes them.');
         return;
@@ -902,9 +980,7 @@
     commitSelectedChanges: () => {
       const repositoryPath = document.getElementById('commitChangesRepositoryPath').value;
       const message = document.getElementById('commitMessage').value.trim();
-      const files = Array.from(document.querySelectorAll('.commit-change-checkbox:checked'))
-        .map(checkbox => checkbox.dataset.path)
-        .filter(Boolean);
+      const files = commitCheckedFiles();
       const result = document.getElementById('commitChangesResult');
       const commitButton = document.getElementById('commitSelectedFilesButton');
 
@@ -1118,11 +1194,63 @@
     if (message !== undefined) setCommitMessageStatus(message);
   }
 
+  // What a commit (and Write with Copilot) takes: the ticked files the filter shows. A ticked file
+  // the filter hides is not committed, and the count says so.
+  function commitCheckedFiles() {
+    return Array.from(document.querySelectorAll('.commit-change-checkbox:checked'))
+      .filter(checkbox => !checkbox.closest('.commit-change-row').hidden)
+      .map(checkbox => checkbox.dataset.path)
+      .filter(Boolean);
+  }
+
   function updateCommitSelectionCount() {
-    const selected = document.querySelectorAll('.commit-change-checkbox:checked').length;
+    const selected = commitCheckedFiles().length;
+    const hidden = document.querySelectorAll('.commit-change-row[hidden] .commit-change-checkbox:checked').length;
     const count = document.getElementById('commitSelectionCount');
-    if (count) count.textContent = selected + ' selected';
+    if (count) {
+      count.textContent = `${selected} selected` + (hidden ? ` · ${hidden} hidden, not committed` : '');
+      count.title = hidden ? 'Ticked files the filter hides are left out of the commit; show All to include them' : '';
+    }
     updatePartialChoice();
+  }
+
+  function commitFileShown(untracked) {
+    return commitFileFilter === 'all' || (commitFileFilter === 'untracked') === untracked;
+  }
+
+  // All, Tracked or Untracked: rows the filter leaves out are hidden, and Select all ticks the rest.
+  function applyCommitFilter() {
+    const counts = { all: workingTreeChanges.length, untracked: workingTreeChanges.filter(change => change.untracked).length };
+    counts.tracked = counts.all - counts.untracked;
+    document.querySelectorAll('#commitFilter [data-filter]').forEach(button => {
+      button.setAttribute('aria-pressed', String(button.dataset.filter === commitFileFilter));
+      const count = button.querySelector('span');
+      if (count) count.textContent = String(counts[button.dataset.filter]);
+    });
+    let shown = 0;
+    document.querySelectorAll('#commitChangesList .commit-change-row').forEach(row => {
+      row.hidden = !commitFileShown(row.dataset.untracked === 'true');
+      if (!row.hidden) shown++;
+    });
+    const empty = document.getElementById('commitFilterEmpty');
+    if (empty) {
+      empty.hidden = shown > 0 || !workingTreeChanges.length;
+      empty.textContent = commitFileFilter === 'untracked' ? 'No untracked files.' : 'No tracked files.';
+    }
+    syncCommitSelectAll();
+    updateCommitSelectionCount();
+    // The preview follows the filter: a hidden file gives way to the first one shown.
+    const previewed = previewedWorkingTreeFile && workingTreeChanges.find(change => change.path === previewedWorkingTreeFile);
+    if (previewed && !commitFileShown(Boolean(previewed.untracked))) {
+      const first = workingTreeChanges.find(change => commitFileShown(Boolean(change.untracked)));
+      if (first) selectWorkingTreePreview(first.path);
+    }
+  }
+
+  function syncCommitSelectAll() {
+    const selectAll = document.getElementById('commitSelectAll');
+    const selectable = Array.from(document.querySelectorAll('#commitChangesList .commit-change-row:not([hidden]) .commit-change-checkbox:not(:disabled)'));
+    if (selectAll) selectAll.checked = selectable.length > 0 && selectable.every(checkbox => checkbox.checked);
   }
 
   // Renders a unified patch with old/new file line numbers. Git's file headers
@@ -1222,7 +1350,7 @@
     if (!list) return;
     if (changes.length === 0) {
       list.innerHTML = '<div class="dashboard-empty">Working tree is clean.</div>';
-      updateCommitSelectionCount();
+      applyCommitFilter();
       return;
     }
 
@@ -1239,7 +1367,7 @@
       const rename = change.originalPath
         ? '<small>' + escapeHtml(change.originalPath) + ' →</small>'
         : '';
-      return '<div class="commit-change-row' + (change.conflicted ? ' conflicted' : '') + '">' +
+      return '<div class="commit-change-row' + (change.conflicted ? ' conflicted' : '') + '" data-untracked="' + Boolean(change.untracked) + '">' +
         '<input type="checkbox" class="commit-change-checkbox" data-path="' + escapeHtml(change.path) + '"' +
           ' aria-label="Include ' + escapeHtml(change.path) + ' in commit"' +
           (change.conflicted ? ' disabled' : ' checked') + '>' +
@@ -1249,14 +1377,15 @@
           '<span class="commit-change-state">' + state + '</span>' +
         '</button>' +
       '</div>';
-    }).join('');
-    updateCommitSelectionCount();
-    selectWorkingTreePreview(changes[0].path);
+    }).join('') + '<div class="dashboard-empty" id="commitFilterEmpty" hidden></div>';
+    const first = changes.find(change => commitFileShown(Boolean(change.untracked))) || changes[0];
+    selectWorkingTreePreview(first.path);
+    applyCommitFilter();
   }
 
   // Selected files staged, then changed again: the commit takes either the staged part or the whole file.
   function selectedPartlyStaged() {
-    const selected = new Set(Array.from(document.querySelectorAll('.commit-change-checkbox:checked')).map(checkbox => checkbox.dataset.path));
+    const selected = new Set(commitCheckedFiles());
     return workingTreeChanges.filter(change => selected.has(change.path) && change.staged && change.unstaged && !change.untracked && !change.conflicted);
   }
 
@@ -1626,6 +1755,8 @@
     if (repositoryPath !== activeDashboardRepository) {
       commitChosen = false;
       workingTree = { repositoryPath: null, changes: [] };
+      workingSelection.clear();
+      workingSelectionAnchor = null;
     }
     activeDashboardRepository = repositoryPath;
     resetChangeSummary();
@@ -1662,6 +1793,7 @@
     const history = document.getElementById('dashboardHistory');
     showHistoryLoading(history);
     clearCommitDetail();
+    renderSidebarChanges(); // "Loading changes…" until this repository's status arrives
     saveState();
     requestDashboardHistory(0, false);
     postMessage('getRepositoryRefs', { repositoryPath });
@@ -1751,9 +1883,10 @@
 
   function renderBranchTree(node, depth, renderBranch) {
     const folders = Array.from(node.folders.entries()).sort(([a], [b]) => a.localeCompare(b)).map(([name, child]) => {
-      // The folder holding the checked-out branch is never collapsed out of sight.
-      const expanded = !collapsedBranchFolders.has(`${activeDashboardRepository}\u0000${child.path}`) || hasCurrentBranch(child);
-      return `<div class="sidebar-branch-folder-row branch-depth-${Math.min(depth, 6)}"><button type="button" class="sidebar-branch-folder" data-action="toggleBranchFolder" data-folder="${escapeHtml(child.path)}" aria-expanded="${expanded}" title="${escapeHtml(child.path)}/"><span class="sidebar-branch-chevron" aria-hidden="true">${expanded ? '▾' : '▸'}</span><span>${escapeHtml(name)}</span><small>${countBranches(child)}</small></button></div>` +
+      // Any folder folds, the checked-out branch's too; folded, that one says HEAD is inside.
+      const expanded = !collapsedBranchFolders.has(`${activeDashboardRepository}\u0000${child.path}`);
+      const head = !expanded && hasCurrentBranch(child) ? '<small class="branch-folder-head" title="The checked-out branch is in this folder">HEAD</small>' : '';
+      return `<div class="sidebar-branch-folder-row branch-depth-${Math.min(depth, 6)}"><button type="button" class="sidebar-branch-folder" data-action="toggleBranchFolder" data-folder="${escapeHtml(child.path)}" aria-expanded="${expanded}" title="${escapeHtml(child.path)}/"><span class="sidebar-branch-chevron" aria-hidden="true">${expanded ? '▾' : '▸'}</span><span>${escapeHtml(name)}</span>${head}<small>${countBranches(child)}</small></button></div>` +
         (expanded ? `<div role="group" aria-label="${escapeHtml(child.path)}">${renderBranchTree(child, depth + 1, renderBranch)}</div>` : '');
     }).join('');
     const leaves = node.branches.slice().sort((a, b) => a.name.localeCompare(b.name)).map(branch => renderBranch(branch, depth)).join('');
@@ -1973,8 +2106,144 @@
     if (workingSummaryAgain) requestWorkingTreeSummary();
   }
 
+  // The active repository's uncommitted changes, without the files a confirmed discard is removing.
   function dashboardWorkingChanges() {
-    return workingTree.repositoryPath === activeDashboardRepository ? workingTree.changes : [];
+    if (workingTree.repositoryPath !== activeDashboardRepository) return [];
+    if (discarding.repositoryPath !== activeDashboardRepository || !discarding.paths.size) return workingTree.changes;
+    return workingTree.changes.filter(change => !discarding.paths.has(change.path));
+  }
+
+  // The selected files in list order (the order Discard names them).
+  function selectedWorkingPaths() {
+    return dashboardWorkingChanges().map(change => change.path).filter(filePath => workingSelection.has(filePath));
+  }
+
+  // A click toggles one file; Shift adds the files from the anchor to it.
+  function toggleWorkingSelection(filePath, event) {
+    const order = dashboardWorkingChanges().map(change => change.path);
+    const to = order.indexOf(filePath);
+    if (to < 0) return;
+    const from = event && event.shiftKey && workingSelectionAnchor ? order.indexOf(workingSelectionAnchor) : -1;
+    if (from >= 0) {
+      order.slice(Math.min(from, to), Math.max(from, to) + 1).forEach(item => workingSelection.add(item));
+    } else {
+      if (workingSelection.has(filePath)) workingSelection.delete(filePath); else workingSelection.add(filePath);
+      workingSelectionAnchor = filePath;
+    }
+    syncWorkingSelection();
+  }
+
+  // Files no longer changed (discarded, committed) leave the selection.
+  function pruneWorkingSelection() {
+    const present = new Set(dashboardWorkingChanges().map(change => change.path));
+    workingSelection.forEach(item => { if (!present.has(item)) workingSelection.delete(item); });
+    if (workingSelectionAnchor && !present.has(workingSelectionAnchor)) workingSelectionAnchor = null;
+  }
+
+  function checkboxHtml(checked, action, label, filePath) {
+    return `<button type="button" class="change-check" role="checkbox" aria-checked="${checked}" data-action="${action}"` +
+      `${filePath === undefined ? '' : ` data-path="${escapeHtml(filePath)}"`} aria-label="${escapeHtml(label)}" title="${escapeHtml(label)}"></button>`;
+  }
+
+  // The selection's checkboxes, rows and Discard buttons, in both lists, without redrawing them.
+  function syncWorkingSelection() {
+    const changes = dashboardWorkingChanges();
+    const selected = selectedWorkingPaths().length;
+    const all = selected > 0 && selected === changes.length ? 'true' : selected ? 'mixed' : 'false';
+    document.querySelectorAll('[data-action="toggleWorkingSelection"]').forEach(box => {
+      const on = workingSelection.has(box.dataset.path);
+      if (box.getAttribute('aria-checked') !== String(on)) box.setAttribute('aria-checked', String(on));
+      const row = box.parentElement;
+      if (row && row.classList.contains('selected') !== on) row.classList.toggle('selected', on);
+    });
+    const selectAll = changes.length ? checkboxHtml(all, 'toggleAllWorkingSelection', all === 'true' ? 'Clear the selection' : 'Select every changed file') : '';
+    const tools = document.getElementById('sidebarChangesTools');
+    if (tools && tools.innerHTML !== selectAll) tools.innerHTML = selectAll;
+    const bar = document.getElementById('sidebarSelectionBar');
+    if (bar) {
+      const html = selected ? `<span>${selected} selected</span><button type="button" class="sidebar-selection-discard" data-action="discardWorkingSelection" title="Discard the changes to the selected files (asks first)">Discard…</button>` +
+        '<button type="button" class="sidebar-selection-clear" data-action="clearWorkingSelection" title="Clear the selection" aria-label="Clear the selection">×</button>' : '';
+      if (bar.innerHTML !== html) bar.innerHTML = html;
+      bar.hidden = !selected;
+    }
+    // The files list of the uncommitted changes: select all on the left, Discard on the right.
+    const working = selectedDashboardCommit === WORKING_TREE && changes.length > 0;
+    const listSelectAll = document.getElementById('changedFilesSelectAll');
+    const listActions = document.getElementById('changedFilesActions');
+    if (listSelectAll) listSelectAll.innerHTML = working ? selectAll : '';
+    if (listActions) {
+      listActions.innerHTML = working && selected
+        ? `<button type="button" class="changed-files-discard" data-action="discardWorkingSelection" title="Discard the changes to the selected files (asks first)">Discard ${selected}…</button>` : '';
+    }
+  }
+
+  function workingChangeStatus(change) {
+    const status = change.conflicted ? 'unmerged' : change.untracked ? 'added' : change.originalPath ? 'renamed'
+      : (change.indexStatus === 'D' || change.workTreeStatus === 'D') ? 'deleted' : (change.indexStatus === 'A') ? 'added' : 'modified';
+    const state = change.conflicted ? 'conflict' : change.untracked ? 'new' : change.staged && change.unstaged ? 'staged + modified' : change.staged ? 'staged' : 'modified';
+    return { status, state };
+  }
+
+  // The Side Bar draws at most this many changed files; the dashboard's list has them all.
+  const SIDEBAR_CHANGES_SHOWN = 500;
+
+  // The Side Bar's Changes, under Branches: each file opens its diff in an editor tab, so a long
+  // list or a large diff needs no resizing of the dashboard. A checkbox picks it for Discard, and
+  // its ↶ discards it alone.
+  function renderSidebarChanges() {
+    const list = document.getElementById('dashboardChanges');
+    const count = document.getElementById('changesRefCount');
+    if (!list) return;
+    const known = workingTree.repositoryPath === activeDashboardRepository;
+    const changes = dashboardWorkingChanges();
+    if (count) count.textContent = known ? String(changes.length) : '—';
+    const rows = changes.slice(0, SIDEBAR_CHANGES_SHOWN).map(change => {
+      const { status, state } = workingChangeStatus(change);
+      const slash = change.path.replace(/\/$/, '').lastIndexOf('/');
+      const name = slash >= 0 ? change.path.slice(slash + 1) : change.path;
+      const folder = slash >= 0 ? change.path.slice(0, slash) : '';
+      const selected = workingSelection.has(change.path);
+      const where = change.originalPath ? `${change.originalPath} → ${change.path}` : change.path;
+      return `<div class="sidebar-change-row${selected ? ' selected' : ''}" role="listitem">` +
+        checkboxHtml(selected, 'toggleWorkingSelection', `Select ${change.path}`, change.path) +
+        `<button type="button" class="sidebar-change-item status-${escapeHtml(status)}" data-action="openWorkingChange" data-path="${escapeHtml(change.path)}" title="${escapeHtml(`${where} · ${state}. Open the diff in an editor tab; Ctrl or Shift+click to select`)}">` +
+        `<span class="file-status-glyph">${changedFileGlyph(status)}</span><span class="sidebar-change-name">${escapeHtml(name)}</span><small>${escapeHtml(folder)}</small></button>` +
+        `<button type="button" class="sidebar-change-discard" data-action="discardWorkingChange" data-path="${escapeHtml(change.path)}" title="${escapeHtml(`Discard changes to ${name}…`)}" aria-label="${escapeHtml(`Discard changes to ${change.path}`)}">↶</button></div>`;
+    }).join('');
+    const more = changes.length > SIDEBAR_CHANGES_SHOWN
+      ? `<span class="sidebar-placeholder">${changes.length - SIDEBAR_CHANGES_SHOWN} more: see Uncommitted changes in the dashboard</span>` : '';
+    list.innerHTML = rows + more || `<span class="sidebar-placeholder">${known ? 'No uncommitted changes' : 'Loading changes…'}</span>`;
+    syncWorkingSelection();
+  }
+
+  // The diff editor shows files of the working tree and of commits; a stash's new files live outside its own commit.
+  function canOpenInEditor() {
+    if (selectedDashboardCommit === WORKING_TREE) return true;
+    return Boolean(selectedDashboardCommit && changeSummarySelection && !changeSummarySelection.local && !changeSummarySelection.stash);
+  }
+
+  function openInEditor(filePath) {
+    if (!activeDashboardRepository || !filePath || !canOpenInEditor()) return;
+    if (selectedDashboardCommit === WORKING_TREE) {
+      postMessage('openChangeInEditor', { repositoryPath: activeDashboardRepository, path: filePath, working: true });
+      return;
+    }
+    const file = (changeSummarySelection.files || []).find(item => item.path === filePath);
+    postMessage('openChangeInEditor', { repositoryPath: activeDashboardRepository, path: filePath,
+      oldPath: file && file.oldPath ? file.oldPath : undefined, base: comparisonBaseHash || null, target: selectedDashboardCommit });
+  }
+
+  function applySidebarSections() {
+    document.querySelectorAll('[data-sidebar-section]').forEach(section => {
+      const collapsed = collapsedSidebarSections.has(section.dataset.sidebarSection);
+      section.classList.toggle('collapsed', collapsed);
+      const toggle = section.querySelector('[data-action="toggleSidebarSection"]');
+      if (toggle) {
+        toggle.setAttribute('aria-expanded', String(!collapsed));
+        const chevron = toggle.querySelector('.sidebar-section-chevron');
+        if (chevron) chevron.textContent = collapsed ? '▸' : '▾';
+      }
+    });
   }
 
   function workingTreeCountText(changes) {
@@ -2016,8 +2285,10 @@
     if (payload) workingSummaryAnswered(payload.repositoryPath);
     if (!payload || payload.repositoryPath !== activeDashboardRepository) return;
     workingTree = { repositoryPath: payload.repositoryPath, changes: Array.isArray(payload.changes) ? payload.changes : [] };
+    pruneWorkingSelection();
     updateUncommittedRow();
-    const hasChanges = workingTree.changes.length > 0;
+    renderSidebarChanges();
+    const hasChanges = dashboardWorkingChanges().length > 0;
     if (openWorkingTreeAfterStash === payload.repositoryPath) {
       // A stash was just applied or popped: show where its changes went.
       openWorkingTreeAfterStash = null;
@@ -2049,8 +2320,34 @@
     renderWorkingTreeDetail();
   }
 
-  // The detail pane for the working tree: what the next commit would hold, file by file.
-  function renderWorkingTreeDetail() {
+  // A confirmed discard: its files leave every list at once; Git's result (discardFinished, after the
+  // new status) puts back any it could not discard.
+  function startDiscard(payload) {
+    if (!payload || payload.repositoryPath !== activeDashboardRepository || !Array.isArray(payload.paths)) return;
+    discarding = { repositoryPath: payload.repositoryPath, paths: new Set(payload.paths) };
+    refreshWorkingViews(true);
+  }
+
+  function finishDiscard(payload) {
+    if (!payload || payload.repositoryPath !== discarding.repositoryPath) return;
+    discarding = { repositoryPath: null, paths: new Set() };
+    refreshWorkingViews(payload.success === true);
+  }
+
+  // Everything that shows the uncommitted changes, from the status already known.
+  function refreshWorkingViews(keepDiff) {
+    pruneWorkingSelection();
+    updateUncommittedRow();
+    renderSidebarChanges();
+    if (selectedDashboardCommit !== WORKING_TREE) return;
+    if (dashboardWorkingChanges().length) renderWorkingTreeDetail(keepDiff);
+    else if (loadedHistoryCommits.length) loadParentCommitDetail(loadedHistoryCommits[0].hash);
+    else clearCommitDetail();
+  }
+
+  // The detail pane for the working tree: what the next commit would hold, file by file. With
+  // keepDiff (files only removed), the file shown keeps its diff instead of loading it again.
+  function renderWorkingTreeDetail(keepDiff) {
     const changes = dashboardWorkingChanges();
     const summary = document.getElementById('dashboardCommitSummary');
     const files = document.getElementById('dashboardChangedFiles');
@@ -2079,13 +2376,19 @@
     // Review changes follows the review lock; Review commit has no commit to review here.
     applyReviewLock();
     if (!files) return;
+    // Each file has a checkbox for Discard; Ctrl/Cmd or Shift+click on the file picks it too.
     files.innerHTML = changes.map(change => {
-      const status = change.conflicted ? 'unmerged' : change.untracked ? 'added' : change.originalPath ? 'renamed'
-        : (change.indexStatus === 'D' || change.workTreeStatus === 'D') ? 'deleted' : (change.indexStatus === 'A') ? 'added' : 'modified';
-      const state = change.conflicted ? 'conflict' : change.untracked ? 'new' : change.staged && change.unstaged ? 'staged + modified' : change.staged ? 'staged' : 'modified';
-      return `<button class="changed-file-item status-${escapeHtml(status)}" type="button" data-action="selectChangedFile" data-path="${escapeHtml(change.path)}" title="${escapeHtml(state)}"><span class="file-status-glyph">${changedFileGlyph(status)}</span><span class="file-path"><strong>${escapeHtml(change.path.split('/').pop())}</strong><small>${escapeHtml(change.originalPath ? `${change.originalPath} → ${change.path}` : change.path)} · ${escapeHtml(state)}</small></span><span>›</span></button>`;
+      const { status, state } = workingChangeStatus(change);
+      const selected = workingSelection.has(change.path);
+      return `<div class="changed-file-row${selected ? ' selected' : ''}">${checkboxHtml(selected, 'toggleWorkingSelection', `Select ${change.path}`, change.path)}` +
+        `<button class="changed-file-item status-${escapeHtml(status)}" type="button" data-action="selectChangedFile" data-path="${escapeHtml(change.path)}" title="${escapeHtml(`${state}. Double-click to open the diff in an editor tab; Ctrl or Shift+click to select`)}"><span class="file-status-glyph">${changedFileGlyph(status)}</span><span class="file-path"><strong>${escapeHtml(change.path.split('/').pop())}</strong><small>${escapeHtml(change.originalPath ? `${change.originalPath} → ${change.path}` : change.path)} · ${escapeHtml(state)}</small></span><span>›</span></button></div>`;
     }).join('');
+    syncWorkingSelection();
     const kept = selectedDashboardFile && Array.from(files.querySelectorAll('.changed-file-item')).find(item => item.dataset.path === selectedDashboardFile);
+    if (kept && keepDiff) {
+      kept.classList.add('active');
+      return;
+    }
     const first = kept || files.querySelector('.changed-file-item');
     if (first) actions.selectChangedFile(first);
   }
@@ -2181,6 +2484,7 @@
     if (diff) diff.innerHTML = '<span class="diff-placeholder">Select a changed file to load its patch.</span>';
     const count = document.getElementById('changedFileCount');
     if (count) count.textContent = '0';
+    clearFileListTools();
   }
 
   function showCommitDetailLoading() {
@@ -2190,6 +2494,17 @@
     if (summary) summary.innerHTML = '<div class="dashboard-loading">Loading commit detail…</div>';
     if (files) files.innerHTML = '';
     if (diff) diff.innerHTML = '<span class="diff-placeholder">Select a changed file to load its patch.</span>';
+    clearFileListTools();
+  }
+
+  // A commit's files have no selection, and nothing is open until a file is picked.
+  function clearFileListTools() {
+    ['changedFilesSelectAll', 'changedFilesActions'].forEach(id => {
+      const element = document.getElementById(id);
+      if (element) element.innerHTML = '';
+    });
+    const openButton = document.getElementById('openDiffInEditorButton');
+    if (openButton) openButton.hidden = true;
   }
 
   function changedFileGlyph(status) {
@@ -2369,6 +2684,13 @@
   });
 
   document.body.addEventListener('dblclick', function (e) {
+    // A changed file in the dashboard: its diff in an editor tab, where it has room.
+    const changedFile = e.target.closest('#dashboardChangedFiles .changed-file-item');
+    if (changedFile && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
+      e.preventDefault();
+      openInEditor(changedFile.dataset.path);
+      return;
+    }
     const branchRef = e.target.closest('.history-ref[data-branch]');
     if (!branchRef) return;
     e.preventDefault();
@@ -2419,10 +2741,12 @@
     });
     postMessage('sidebarSnapshot', { html: dashboardSidebar.innerHTML });
   }
+  // After the changes of the current task, not at the next frame: a dashboard behind another
+  // editor tab is not painted, and the Side Bar must not wait for it to be.
   function scheduleSidebarPublish() {
     if (sidebarPublishPending) return;
     sidebarPublishPending = true;
-    requestAnimationFrame(publishSidebar);
+    queueMicrotask(publishSidebar);
   }
   if (dashboardSidebar && typeof MutationObserver === 'function') {
     new MutationObserver(records => {
@@ -2435,8 +2759,9 @@
     const target = Array.from(dashboardSidebar.querySelectorAll('[data-action]')).find(element => mirrorKey(element) === payload.key);
     // A click from an older copy whose item is gone (or now disabled) does nothing.
     if (!target || target.disabled || target.getAttribute('aria-disabled') === 'true') return;
-    if (payload.event === 'dblclick') target.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
-    else target.click();
+    // The keys held with the click: Ctrl/Cmd and Shift pick changed files, as in this page.
+    const keys = { bubbles: true, cancelable: true, ctrlKey: payload.ctrlKey === true, metaKey: payload.metaKey === true, shiftKey: payload.shiftKey === true };
+    target.dispatchEvent(new MouseEvent(payload.event === 'dblclick' ? 'dblclick' : 'click', keys));
   }
 
   // Handle messages from extension
@@ -2502,6 +2827,14 @@
         case 'workingTreeChangesLoaded':
           if (message.payload && message.payload.purpose === 'dashboard') applyWorkingTreeSummary(message.payload);
           else renderWorkingTreeChanges(message.payload);
+          break;
+
+        case 'discardStarted':
+          startDiscard(message.payload);
+          break;
+
+        case 'discardFinished':
+          finishDiscard(message.payload);
           break;
 
         case 'workingTreePreviewLoaded': {
@@ -3098,7 +3431,8 @@
   const commitSelectAll = document.getElementById('commitSelectAll');
   if (commitSelectAll) {
     commitSelectAll.addEventListener('change', function () {
-      document.querySelectorAll('.commit-change-checkbox:not(:disabled)').forEach(checkbox => {
+      // The files the filter shows; hidden ones keep their ticks.
+      document.querySelectorAll('#commitChangesList .commit-change-row:not([hidden]) .commit-change-checkbox:not(:disabled)').forEach(checkbox => {
         checkbox.checked = commitSelectAll.checked;
       });
       updateCommitSelectionCount();
@@ -3120,10 +3454,7 @@
   if (commitChangesList) {
     commitChangesList.addEventListener('change', function (event) {
       if (!event.target.classList.contains('commit-change-checkbox')) return;
-      const selectable = Array.from(document.querySelectorAll('.commit-change-checkbox:not(:disabled)'));
-      if (commitSelectAll) {
-        commitSelectAll.checked = selectable.length > 0 && selectable.every(checkbox => checkbox.checked);
-      }
+      syncCommitSelectAll();
       updateCommitSelectionCount();
     });
   }
@@ -3500,6 +3831,7 @@
   // Initialize UI on load
   setupHistoryColumnResizers();
   setupDashboardSplitters();
+  applySidebarSections();
   if (repositoryData.length > 0) {
     if (!getRepository(activeDashboardRepository)) activeDashboardRepository = repositoryData[0].path;
     activateDashboardRepository(activeDashboardRepository);

@@ -54,6 +54,8 @@ const READ_ONLY_MESSAGES = new Set([
   'getCopilotSettings', 'setCopilotSettings', 'openExtensionSettings', 'setPinnedModels', 'setSelectedModel',
   // The Side Bar's copy of the repository list; no Git.
   'sidebarSnapshot',
+  // A changed file in the diff editor: reads Git, changes nothing.
+  'openChangeInEditor',
   // When the page drew its first history (repositoryManager.debug.timings); no Git.
   'dashboardTiming'
 ]);
@@ -239,10 +241,12 @@ export class RepositoryManagerPanel {
 
     this._panel.onDidChangeViewState(() => { this._autoFetchIfDue(); this._liveChanges.resume(); }, null, this._disposables);
     // Local changes stay current while you edit: file events refresh the repository list once they
-    // settle (repositoryManager.liveChanges). A hidden dashboard catches up when it is shown.
+    // settle (repositoryManager.liveChanges). They also run while only the Side Bar shows (its
+    // Changes list, with a diff open in front of the dashboard); with neither visible, the refresh
+    // waits and catches up when one is shown.
     this._liveChanges = new LiveChanges({
       refresh: () => this.refresh(),
-      canRefresh: () => this._panel.visible && this._actionsInFlight === 0,
+      canRefresh: () => (this._panel.visible || Boolean(RepositoryManagerLauncher.current?.visible)) && this._actionsInFlight === 0,
       setTimer: (callback, ms) => setTimeout(callback, ms),
       clearTimer: handle => clearTimeout(handle as NodeJS.Timeout),
       ignored: paths => ignoredPaths(paths, this._workspaceRoot)
@@ -377,6 +381,11 @@ export class RepositoryManagerPanel {
   /** A message for the dashboard webview (the Side Bar forwards its clicks this way). */
   public post(message: { type: string; payload?: unknown }): Thenable<boolean> {
     return this._panel.webview.postMessage(message);
+  }
+
+  /** The Side Bar was shown: file events held while nothing was visible refresh now. */
+  public sidebarShown(): void {
+    this._liveChanges.resume();
   }
 
   public async refresh(fullRefresh: boolean = false) {

@@ -23,11 +23,30 @@ export interface LocalChangesSnapshot {
 
 export const SNAPSHOT_MESSAGE = 'Local changes (Repository Manager review snapshot)';
 
-/** The snapshot of `root`'s working tree; undefined when there is nothing beyond HEAD. Throws without a first commit. */
-export async function snapshotLocalChanges(git: GitCommandService, root: string): Promise<LocalChangesSnapshot | undefined> {
-  const headSha = await git.execGit(['rev-parse', '--verify', 'HEAD^{commit}'], root, 10000)
-    .catch(() => { throw new Error('This repository has no commit yet: commit once, then review the changes after it.'); });
-  const indexPath = path.resolve(root, await git.execGit(['rev-parse', '--git-path', 'index'], root));
+/** Limit each explicit path list without widening a discard's snapshot to unrelated files. */
+const MAX_LISTED_PATHS = 200;
+
+/**
+ * The snapshot of `root`'s working tree; undefined when there is nothing beyond HEAD. Throws without a first commit.
+ * With `paths`, only those files are taken from the working tree (on top of what is staged): a
+ * discard needs a copy of the files it changes, not of every untracked file in the repository.
+ */
+export async function snapshotLocalChanges(git: GitCommandService, root: string, paths?: string[]): Promise<LocalChangesSnapshot | undefined> {
+  // Independent reads run together: each Git process costs its start-up time, which is most of it on Windows.
+  const [head, gitIndex, headInfo] = await Promise.allSettled([
+    git.execGit(['rev-parse', '--verify', 'HEAD^{commit}'], root, 10000),
+    git.execGit(['rev-parse', '--git-path', 'index'], root),
+    // HEAD's date (the snapshot's fixed date) and tree (to tell whether anything changed).
+    git.execGit(['log', '-1', '--format=%cI%n%T', 'HEAD'], root, 10000)
+  ]);
+  if (head.status === 'rejected') {
+    throw new Error('This repository has no commit yet: commit once, then review the changes after it.');
+  }
+  if (gitIndex.status === 'rejected') { throw gitIndex.reason; }
+  if (headInfo.status === 'rejected') { throw headInfo.reason; }
+  const headSha = head.value;
+  const [date, headTree] = headInfo.value.split('\n');
+  const indexPath = path.resolve(root, gitIndex.value);
   const temporaryIndex = `${indexPath}.repository-manager-review-${process.pid}-${Date.now()}`;
   try {
     // From the real index, so what is staged (including intent-to-add entries) is the starting point.
@@ -35,11 +54,19 @@ export async function snapshotLocalChanges(git: GitCommandService, root: string)
     const env: NodeJS.ProcessEnv = { ...process.env };
     env['GIT_INDEX_FILE'] = temporaryIndex;
     if (!existsSync(indexPath)) { await git.execGitRaw(['read-tree', 'HEAD'], root, 30000, false, env); }
-    await git.execGitRaw(['add', '-A'], root, 60000, false, env);
+    if (paths?.length) {
+      // A discard may overwrite a recreated rename source even when it is now ignored. Copy every
+      // explicitly requested path, and fail before discarding if any cannot be copied.
+      for (let index = 0; index < paths.length; index += MAX_LISTED_PATHS) {
+        await git.execGitRaw(['--literal-pathspecs', 'add', '-A', '-f', '--',
+          ...paths.slice(index, index + MAX_LISTED_PATHS)], root, 60000, false, env);
+      }
+    } else {
+      await git.execGitRaw(['add', '-A'], root, 60000, false, env);
+    }
     const tree = (await git.execGitRaw(['write-tree'], root, 30000, false, env)).trim();
-    if (tree === await git.execGit(['rev-parse', 'HEAD^{tree}'], root, 10000)) { return undefined; }
+    if (tree === headTree) { return undefined; }
     // A fixed identity and date: the snapshot never leaves this repository, and needs no user identity.
-    const date = await git.execGit(['log', '-1', '--format=%cI', 'HEAD'], root, 10000);
     for (const role of ['AUTHOR', 'COMMITTER']) {
       env[`GIT_${role}_NAME`] = 'Repository Manager';
       env[`GIT_${role}_EMAIL`] = 'review-snapshot@localhost';

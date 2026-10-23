@@ -37,6 +37,7 @@ const { GitCommandService } = require('../../out/services/gitCommandService.js')
 const { HistoryRewriteService } = require('../../out/services/historyRewriteService.js');
 const { HistoryActionService } = require('../../out/services/historyActionService.js');
 const { DiscardService } = require('../../out/services/discardService.js');
+const { CommitService } = require('../../out/services/commitService.js');
 const { buildUndoPrompt, collectUndoContext, describeUndoPlan, parseUndoPlan } = require('../../out/services/naturalUndo.js');
 Module._load = originalLoad;
 
@@ -117,10 +118,13 @@ async function main() {
     const discard = new DiscardService(service);
     let reloads = 0;
     const ctx = { workspaceRoot: root, conflictExplainer: copilot, async refresh() {}, async reloadDashboardHistory() { reloads++; },
+      panel: { webview: { postMessage: async () => true } },
       gitOps: { previewHistoryRewrite: (...args) => rewrite.preview(...args), executeHistoryRewrite: (...args) => rewrite.execute(...args),
         resolveHistoryRebase: (...args) => rewrite.resolveRebase(...args), describeHistoryCommit: (...args) => actions.describe(...args),
         applyHistoryCommit: (...args) => actions.apply(...args), abortHistoryAction: (...args) => actions.abort(...args),
-        planDiscard: (...args) => discard.plan(...args), discardChanges: (...args) => discard.discard(...args) } };
+        planDiscard: (...args) => discard.plan(...args), discardChanges: (...args) => discard.discard(...args),
+        resolveRepositoryPath: repositoryPath => service.resolveRepositoryPath(repositoryPath),
+        getWorkingTreeChanges: repositoryPath => new CommitService(service).getWorkingTreeChanges(repositoryPath) } };
 
     // Declining to send asks the model nothing.
     consent = undefined;

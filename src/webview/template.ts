@@ -172,6 +172,11 @@ function renderModals(repositories: RepositoryInfo[]): string {
           <input type="hidden" id="commitChangesRepositoryPath">
           <div class="commit-changes-toolbar">
             <label><input type="checkbox" id="commitSelectAll" checked> Select all</label>
+            <div class="commit-filter" id="commitFilter" role="group" aria-label="Show files">
+              <button type="button" data-action="setCommitFilter" data-filter="all" aria-pressed="true" title="Every changed file">All <span id="commitFilterAllCount">0</span></button>
+              <button type="button" data-action="setCommitFilter" data-filter="tracked" aria-pressed="false" title="Files Git already tracks: modified, staged, deleted, renamed">Tracked <span id="commitFilterTrackedCount">0</span></button>
+              <button type="button" data-action="setCommitFilter" data-filter="untracked" aria-pressed="false" title="New files Git does not track yet">Untracked <span id="commitFilterUntrackedCount">0</span></button>
+            </div>
             <span id="commitSelectionCount">0 selected</span>
           </div>
           <div class="commit-preview-layout">
@@ -287,9 +292,14 @@ function renderDashboardSidebar(): string {
         <div class="sidebar-section-title"><span>Repositories</span><span id="repositoryAlignment" title="Linked repositories on the parent repository's branch and at the commit it records">—</span></div>
         <div class="sidebar-repository-list" id="dashboardRepositories" role="group" aria-label="Repositories"></div>
       </section>
-      <section class="sidebar-section branches-section">
-        <div class="sidebar-section-title"><span>Branches</span><span id="branchRefCount">—</span></div>
+      <section class="sidebar-section branches-section" data-sidebar-section="branches">
+        <div class="sidebar-section-title"><button type="button" class="sidebar-section-toggle" data-action="toggleSidebarSection" data-section="branches" aria-expanded="true" aria-controls="dashboardBranches"><span class="sidebar-section-chevron" aria-hidden="true">▾</span><span>Branches</span></button><span id="branchRefCount">—</span></div>
         <div class="sidebar-ref-list" id="dashboardBranches"><span class="sidebar-placeholder">Loading branches…</span></div>
+      </section>
+      <section class="sidebar-section changes-section" data-sidebar-section="changes">
+        <div class="sidebar-section-title"><button type="button" class="sidebar-section-toggle" data-action="toggleSidebarSection" data-section="changes" aria-expanded="true" aria-controls="dashboardChanges" title="The active repository's uncommitted changes. Click a file to open its diff in an editor tab"><span class="sidebar-section-chevron" aria-hidden="true">▾</span><span>Changes</span></button><span class="sidebar-section-tools" id="sidebarChangesTools"></span><span id="changesRefCount">—</span></div>
+        <div class="sidebar-selection-bar" id="sidebarSelectionBar" hidden></div>
+        <div class="sidebar-changes-list" id="dashboardChanges" role="list" aria-label="Uncommitted changes"><span class="sidebar-placeholder">Loading changes…</span></div>
       </section>
       <footer class="sidebar-reference-summary">
         <button class="reference-summary-row" type="button" data-action="toggleReferenceSection" data-section="tags"><span>Tags</span><span id="tagRefCount">—</span><i>›</i></button>
@@ -358,12 +368,12 @@ function renderDashboard(repositories: RepositoryInfo[], workspaceFolders: Works
             </div>
             <div class="commit-content" id="commitContent">
               <div class="changed-files-panel">
-                <div class="panel-title"><span>Changed files</span><span id="changedFileCount">0</span></div>
+                <div class="panel-title"><span class="changed-files-tools" id="changedFilesSelectAll"></span><span>Changed files</span><span class="changed-files-tools changed-files-actions" id="changedFilesActions"></span><span id="changedFileCount">0</span></div>
                 <div class="changed-files-list" id="dashboardChangedFiles"></div>
               </div>
               <div class="dashboard-splitter dashboard-splitter-vertical" id="filesDiffSplitter" role="separator" aria-label="Resize changed files and diff panels" aria-orientation="vertical" tabindex="0"></div>
               <div class="diff-panel">
-                <div class="panel-title"><span id="diffFileName">Diff</span><span class="working-diff-modes" id="workingDiffModes" role="group" aria-label="Which uncommitted changes the diff shows" hidden><button type="button" data-action="workingDiffMode" data-mode="staged" title="The changes already staged (the index)">Staged</button><button type="button" data-action="workingDiffMode" data-mode="unstaged" title="The changes not staged yet (the working tree)">Unstaged</button></span><span id="diffTruncated"></span></div>
+                <div class="panel-title"><span id="diffFileName">Diff</span><span class="working-diff-modes" id="workingDiffModes" role="group" aria-label="Which uncommitted changes the diff shows" hidden><button type="button" data-action="workingDiffMode" data-mode="staged" title="The changes already staged (the index)">Staged</button><button type="button" data-action="workingDiffMode" data-mode="unstaged" title="The changes not staged yet (the working tree)">Unstaged</button></span><span id="diffTruncated"></span><button type="button" class="diff-open-editor" id="openDiffInEditorButton" data-action="openDiffInEditor" title="Open this file's diff in an editor tab, in VS Code's diff editor (double-click a file does the same)" hidden>Open ↗</button></div>
                 <pre class="diff-viewer" id="dashboardDiff"><span class="diff-placeholder">Select a changed file to load its patch.</span></pre>
               </div>
             </div>
@@ -487,6 +497,7 @@ export function getHtmlForWebview(repositories: RepositoryInfo[], resourceUris: 
 
   <div class="history-context-menu" id="changesContextMenu" role="menu" aria-label="Changed file actions" hidden>
     <button type="button" role="menuitem" data-action="contextSuggestResolution" title="Ask Copilot to resolve this file's conflicts. You see the result as a diff first; applying writes the file only, without staging it or continuing" hidden>Suggest Resolution…</button>
+    <button type="button" role="menuitem" data-action="contextOpenInEditor" title="Open this file's diff in an editor tab, in VS Code's diff editor">Open Changes</button>
     <button type="button" role="menuitem" data-action="contextReviewFile" title="Review only this file's changes with Copilot; the model may still read other files for context">Review Changes in This File</button>
     <button type="button" role="menuitem" data-action="contextDiscardFile" title="Put this file back as it is at HEAD (staged and unstaged changes); a new file is deleted. A copy is kept first">Discard Changes…</button>
     <button type="button" role="menuitem" data-action="contextDiscardAll" title="Put every changed file back as it is at HEAD and delete new files (not ignored ones). A copy is kept first">Discard All Changes…</button>

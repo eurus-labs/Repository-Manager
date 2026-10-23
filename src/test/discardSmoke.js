@@ -1,6 +1,6 @@
 const assert = require('node:assert/strict');
 const { execFileSync } = require('node:child_process');
-const { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } = require('node:fs');
+const { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } = require('node:fs');
 const { tmpdir } = require('node:os');
 const path = require('node:path');
 const Module = require('node:module');
@@ -14,6 +14,7 @@ Object.assign(process.env, {
 });
 const shown = [];
 let answer;
+let infoAnswer; // the button chosen in the message after a discard (Undo)
 const fakeVscode = {
   window: {
     async showWarningMessage(message, ...rest) {
@@ -21,7 +22,7 @@ const fakeVscode = {
       shown.push({ kind: options.modal ? 'confirm' : 'warning', message, detail: options.detail || '' });
       return options.modal ? answer : undefined;
     },
-    showInformationMessage(message) { shown.push({ kind: 'info', message }); },
+    showInformationMessage(message, ...items) { shown.push({ kind: 'info', message, items }); return Promise.resolve(infoAnswer); },
     showErrorMessage(message) { shown.push({ kind: 'error', message }); }
   },
   commands: { executeCommand() {} }
@@ -35,6 +36,8 @@ const { handleDiscardChanges } = require('../../out/handlers/webviewMessageHandl
 const { GitCommandService } = require('../../out/services/gitCommandService.js');
 const { DiscardService, DISCARD_REF_PREFIX } = require('../../out/services/discardService.js');
 const { HistoryService } = require('../../out/services/historyService.js');
+const { CommitService } = require('../../out/services/commitService.js');
+const { removeDiscardCopies } = require('../../out/commands/discardCommands.js');
 Module._load = originalLoad;
 
 const base = mkdtempSync(path.join(tmpdir(), 'repository-manager-discard-'));
@@ -61,12 +64,17 @@ function repository(name) {
 
 function context(root) {
   const service = new DiscardService(new GitCommandService(root));
-  const calls = { reloaded: 0, refreshed: 0 };
+  const calls = { reloaded: 0, refreshed: 0, posted: [] };
+  const git = new GitCommandService(root);
   const ctx = {
     workspaceRoot: root,
+    panel: { webview: { postMessage: async message => { calls.posted.push(message); return true; } } },
     gitOps: {
       planDiscard: (...args) => service.plan(...args),
-      discardChanges: (...args) => service.discard(...args)
+      discardChanges: (...args) => service.discard(...args),
+      restoreDiscarded: (...args) => service.restore(...args),
+      resolveRepositoryPath: repositoryPath => git.resolveRepositoryPath(repositoryPath),
+      getWorkingTreeChanges: repositoryPath => new CommitService(git).getWorkingTreeChanges(repositoryPath)
     },
     async reloadDashboardHistory(paths) { assert.deepEqual(paths, ['.']); calls.reloaded++; },
     async refresh() { calls.refreshed++; }
@@ -76,6 +84,76 @@ function context(root) {
 
 async function main() {
   try {
+    // A rename restores both names, so its copy must include a recreated original path too.
+    for (const recreated of [true, false, 'ignored']) {
+      const renamedRoot = repository(`rename-undo-${recreated}`);
+      const { service: renamedService } = context(renamedRoot);
+      git(renamedRoot, 'mv', 'a.txt', 'renamed.txt');
+      if (recreated) write(renamedRoot, 'a.txt', 'recreated original\n');
+      if (recreated === 'ignored') write(renamedRoot, '.gitignore', 'ignored.log\na.txt\n');
+      const discarded = await renamedService.discard('.', ['renamed.txt']);
+      assert.equal(discarded.success, true, discarded.message);
+      assert.equal(read(renamedRoot, 'a.txt'), 'a\n');
+      assert.equal(existsSync(path.join(renamedRoot, 'renamed.txt')), false);
+      if (recreated) assert.equal(git(renamedRoot, 'show', `${discarded.data.backup}:a.txt`), 'recreated original');
+      const restored = await renamedService.restore('.', discarded.data.backup, discarded.data.changed);
+      assert.equal(restored.success, true, restored.message);
+      assert.equal(read(renamedRoot, 'renamed.txt'), 'a\n');
+      if (recreated) assert.equal(read(renamedRoot, 'a.txt'), 'recreated original\n');
+      else assert.equal(existsSync(path.join(renamedRoot, 'a.txt')), false);
+    }
+
+    // Undo compares with the discard's original HEAD, even after commits or a branch switch.
+    // It still restores other selected files that have stayed at the original baseline.
+    for (const after of ['commit', 'branch', 'unrelated-commit']) {
+      const advancedRoot = repository(`undo-after-${after}`);
+      const { service: advancedService } = context(advancedRoot);
+      if (after === 'branch') {
+        git(advancedRoot, 'checkout', '-qb', 'other');
+        write(advancedRoot, 'a.txt', 'new branch contents\n');
+        git(advancedRoot, 'commit', '-qam', 'change on other branch');
+        git(advancedRoot, 'checkout', '-q', 'main');
+      }
+      write(advancedRoot, 'a.txt', 'discarded a\n');
+      write(advancedRoot, 'b.txt', 'discarded b\n');
+      const discarded = await advancedService.discard('.', ['a.txt', 'b.txt']);
+      assert.equal(discarded.success, true, discarded.message);
+      if (after === 'branch') git(advancedRoot, 'checkout', '-q', 'other');
+      else {
+        write(advancedRoot, after === 'commit' ? 'a.txt' : 'gone.txt', 'new committed contents\n');
+        git(advancedRoot, 'commit', '-qam', 'edit after discard');
+      }
+      const restored = await advancedService.restore('.', discarded.data.backup, discarded.data.changed);
+      assert.equal(restored.success, true, restored.message);
+      assert.deepEqual(restored.data.kept, after === 'unrelated-commit' ? [] : ['a.txt']);
+      assert.equal(read(advancedRoot, 'a.txt'), after === 'unrelated-commit' ? 'discarded a\n'
+        : after === 'branch' ? 'new branch contents\n' : 'new committed contents\n');
+      assert.equal(read(advancedRoot, 'b.txt'), 'discarded b\n');
+      assert.equal(git(advancedRoot, 'diff', '--cached', '--name-only'), '', 'Undo changed the index');
+    }
+
+    // Preserve index-only edits and new files recreated after discard, including ignored paths.
+    for (const after of ['staged', 'untracked', 'ignored']) {
+      const editedRoot = repository(`undo-after-${after}`);
+      const { service: editedService } = context(editedRoot);
+      const file = after === 'staged' ? 'a.txt' : 'new.txt';
+      write(editedRoot, file, 'discarded contents\n');
+      const discarded = await editedService.discard('.', [file]);
+      assert.equal(discarded.success, true, discarded.message);
+      write(editedRoot, file, 'new contents\n');
+      if (after === 'staged') {
+        git(editedRoot, 'add', file);
+        write(editedRoot, file, 'a\n'); // the worktree alone matches the baseline
+      }
+      if (after === 'ignored') write(editedRoot, '.gitignore', 'ignored.log\nnew.txt\n');
+      const before = read(editedRoot, file);
+      const restored = await editedService.restore('.', discarded.data.backup, discarded.data.changed);
+      assert.equal(restored.success, false, restored.message);
+      assert.deepEqual(restored.data.kept, [file]);
+      assert.equal(read(editedRoot, file), before);
+      if (after === 'staged') assert.equal(git(editedRoot, 'show', ':a.txt'), 'new contents');
+    }
+
     // Every kind of change in one repository.
     const root = repository('main');
     const lib = path.join(base, 'lib-origin');
@@ -113,41 +191,57 @@ async function main() {
     await handleDiscardChanges(ctx, { repositoryPath: '.', paths: ['a.txt'] });
     assert.equal(shown[0].kind, 'confirm');
     assert.equal(shown[0].message, 'Discard changes to a.txt?');
-    assert.match(shown[0].detail, /Staged and unstaged changes go back to HEAD\./);
-    assert.match(shown[0].detail, /A copy is kept first/);
+    assert.equal(shown[0].detail, 'a.txt\nIts staged and unstaged changes will be lost.\nA copy is kept first: Undo in the message that follows brings them back.');
     assert.equal(status(root), before, 'a cancelled Discard changed the working tree');
     assert.equal(calls.reloaded, 0);
 
-    // Confirmed: only that file goes back, and its message says how to bring it back.
+    // Confirmed: only that file goes back. The dashboard hears at once (discardStarted), then gets
+    // the new status and discardFinished; the history is not reloaded. The message offers Undo.
     answer = 'Discard';
+    infoAnswer = 'Undo';
     shown.length = 0;
     await handleDiscardChanges(ctx, { repositoryPath: '.', paths: ['a.txt'] });
-    assert.equal(read(root, 'a.txt'), 'a\n');
     assert.equal(read(root, 'b.txt'), 'b staged\n', 'another file was discarded');
-    const done = shown.at(-1);
-    assert.equal(done.kind, 'info');
-    const restoreOne = /git restore --source=([0-9a-f]{40}) --worktree -- a\.txt$/.exec(done.message);
-    assert.ok(restoreOne, `no restore command in: ${done.message}`);
-    assert.equal(calls.reloaded, 1);
-    assert.equal(calls.refreshed, 1);
-    git(root, 'restore', `--source=${restoreOne[1]}`, '--worktree', '--', 'a.txt');
-    assert.equal(read(root, 'a.txt'), 'a edited\n', 'the copy did not bring the file back');
+    assert.deepEqual(calls.posted.map(message => message.type), ['discardStarted', 'workingTreeChangesLoaded', 'discardFinished']);
+    assert.deepEqual(calls.posted[0].payload, { repositoryPath: '.', paths: ['a.txt'] });
+    assert.equal(calls.posted[1].payload.purpose, 'dashboard');
+    assert.ok(!calls.posted[1].payload.changes.some(change => change.path === 'a.txt'), 'the status after still lists a.txt');
+    assert.equal(calls.posted[2].payload.success, true);
+    assert.equal(calls.reloaded, 0, 'a discard reloaded the history');
+    assert.deepEqual(shown.find(item => item.kind === 'info'), { kind: 'info', message: 'Discarded changes to a.txt.', items: ['Undo'] });
+    // Undo (chosen above) brings the file back from the copy, as an unstaged change.
+    for (let i = 0; i < 100 && read(root, 'a.txt') !== 'a edited\n'; i++) await new Promise(resolve => setTimeout(resolve, 20));
+    assert.equal(read(root, 'a.txt'), 'a edited\n', 'Undo did not bring the file back');
+    for (let i = 0; i < 100 && shown.at(-1).message !== 'Brought back a.txt.'; i++) await new Promise(resolve => setTimeout(resolve, 20));
+    assert.equal(shown.at(-1).message, 'Brought back a.txt.');
+    infoAnswer = undefined;
+    calls.posted.length = 0;
 
     // A new file: deleted, with the folders that only held it; the copy brings it back too.
     shown.length = 0;
     await handleDiscardChanges(ctx, { repositoryPath: '.', paths: ['notes/new/idea.md'] });
-    assert.match(shown[0].detail, /This new file is deleted\./);
+    assert.match(shown[0].detail, /This new file will be deleted\./);
     assert.equal(existsSync(path.join(root, 'notes')), false, 'empty folders were left behind');
-    const restoreNew = /git restore --source=([0-9a-f]{40}) --worktree -- notes\/new\/idea\.md$/.exec(shown.at(-1).message);
-    assert.ok(restoreNew, shown.at(-1).message);
-    git(root, 'restore', `--source=${restoreNew[1]}`, '--worktree', '--', 'notes/new/idea.md');
+    const newCopy = git(root, 'for-each-ref', '--sort=-refname', '--count=1', '--format=%(objectname)', DISCARD_REF_PREFIX);
+    const undone = await service.restore('.', newCopy, ['notes/new/idea.md']);
+    assert.equal(undone.success, true, undone.message);
     assert.equal(read(root, 'notes/new/idea.md'), 'idea\n');
+    // Undo leaves a file edited since the discard as it is.
+    write(root, 'a.txt', 'a edited\n');
+    const copy = (await service.discard('.', ['a.txt'])).data.backup;
+    write(root, 'a.txt', 'typed after\n');
+    const editedSince = await service.restore('.', copy, ['a.txt']);
+    assert.equal(editedSince.success, false);
+    assert.match(editedSince.message, /a\.txt changed since the discard/);
+    assert.equal(read(root, 'a.txt'), 'typed after\n');
+    write(root, 'a.txt', 'a edited\n');
+    assert.equal((await service.restore('.', 'not-a-sha', ['a.txt'])).success, false);
 
     // All: tracked files back to HEAD (staged, new and quoted names too), new files deleted; the
     // linked repository, the nested repository and ignored files are left alone and named.
     const plan = await service.plan('.');
     assert.deepEqual(plan.skipped.map(item => item.path).sort(), ['lib', 'scratch/']);
-    answer = 'Discard all';
+    answer = 'Discard All';
     shown.length = 0;
     // A file saved while the question is open was not in it, so it is not deleted.
     const asking = fakeVscode.window.showWarningMessage;
@@ -160,12 +254,12 @@ async function main() {
     assert.equal(read(root, 'saved-meanwhile.txt'), 'not asked about\n', 'Discard all deleted a file it did not ask about');
     rmSync(path.join(root, 'saved-meanwhile.txt'));
     const confirm = shown[0];
-    assert.match(confirm.message, /^Discard all 6 changed files in \.\?$/);
-    assert.match(confirm.detail, /1 new file is deleted: notes\/new\/idea\.md\./);
+    assert.equal(confirm.message, `Discard all 6 files changed in main?`);
+    assert.match(confirm.detail, /^(\S.*\n){6}\n5 files go back to HEAD\.\n1 new file is deleted\./);
     assert.match(confirm.detail, /Left alone: lib \(a linked repository[^)]*\); scratch\/ \(a new Git repository[^)]*\)\./);
     const summary = shown.at(-1).message;
     // The question named what was left alone; the result names what was discarded.
-    assert.match(summary, /^Discarded changes to 6 files \(1 new file deleted\)\. To bring them back: git restore --source=[0-9a-f]{40} --worktree -- \.$/);
+    assert.equal(summary, 'Discarded changes to 6 files (1 new file deleted).');
     for (const [file, text] of [['a.txt', 'a\n'], ['b.txt', 'b\n'], ['gone.txt', 'gone\n'], ['tên có dấu cách.txt', 'base\n']]) {
       assert.equal(read(root, file), text, `${file} is not as at HEAD`);
     }
@@ -177,7 +271,7 @@ async function main() {
 
     // The copies are kept out of the dashboard's history.
     const backups = git(root, 'for-each-ref', '--format=%(objectname)', DISCARD_REF_PREFIX).split('\n').filter(Boolean);
-    assert.equal(backups.length, 3);
+    assert.equal(backups.length, 4);
     const history = await new HistoryService(new GitCommandService(root)).getHistory({ repositoryPath: '.', limit: 50, offset: 0 });
     assert.deepEqual(history.commits.map(commit => commit.subject), ['add lib', 'base']);
 
@@ -218,6 +312,40 @@ async function main() {
     assert.equal(unborn.success, false);
     assert.match(unborn.message, /no commit yet/);
     assert.equal(read(empty, 'first.txt'), 'first\n');
+
+    // A new symbolic link is deleted itself; the file it points to, outside the repository, stays.
+    const outside = path.join(base, 'outside.txt');
+    writeFileSync(outside, 'keep\n');
+    symlinkSync(outside, path.join(root, 'link.txt'));
+    const linked = await service.discard('.', ['link.txt']);
+    assert.equal(linked.success, true, linked.message);
+    assert.equal(existsSync(path.join(root, 'link.txt')), false);
+    assert.equal(readFileSync(outside, 'utf8'), 'keep\n', 'the link\'s target was deleted');
+
+    // Remove Discard Copies: asks first, naming each repository's count, then lets them all go.
+    const copiesBefore = git(root, 'for-each-ref', '--format=%(refname)', DISCARD_REF_PREFIX).split('\n').filter(Boolean).length;
+    assert.ok(copiesBefore > 1);
+    const copyGit = { getParentRepoInfo: async () => ({ name: 'main', path: '.', status: 'modified' }),
+      // An uninitialized linked repository is not read; one that fails to list is skipped.
+      getSubmodules: async () => [{ name: 'lib', path: 'lib', status: 'uninitialized' }, { name: 'broken', path: 'broken', status: 'clean' }],
+      listDiscardCopies: async repositoryPath => { if (repositoryPath === 'broken') throw new Error('no repo'); return service.listCopies(repositoryPath); },
+      removeDiscardCopies: (...args) => service.removeCopies(...args) };
+    const asked = [];
+    const told = [];
+    const copiesUi = answer => ({ confirm: async (message, detail, action) => { asked.push([message, detail, action]); return answer; },
+      notify: (message, isError) => told.push([message, Boolean(isError)]) });
+    await removeDiscardCopies(copyGit, copiesUi(false));
+    assert.deepEqual(asked[0].slice(0, 1), [`Remove ${copiesBefore} copies kept by Discard?`]);
+    assert.match(asked[0][1], new RegExp(`^main: ${copiesBefore} copies\\n\\nUndo of those discards will no longer work\\.`));
+    assert.equal(git(root, 'for-each-ref', '--format=%(refname)', DISCARD_REF_PREFIX).split('\n').filter(Boolean).length, copiesBefore, 'declining removed copies');
+    await removeDiscardCopies(copyGit, copiesUi(true));
+    assert.deepEqual(told, [[`Removed ${copiesBefore} copies in main.`, false]]);
+    assert.equal(git(root, 'for-each-ref', '--format=%(refname)', DISCARD_REF_PREFIX), '');
+    // Only discard copies: a review snapshot's ref, or a branch, is never touched.
+    assert.equal(await service.removeCopies('.', ['refs/heads/main', 'refs/repository-manager/snapshots/x']), 0);
+    assert.equal(git(root, 'rev-parse', '--verify', '-q', 'refs/heads/main').length, 40);
+    await removeDiscardCopies(copyGit, copiesUi(true));
+    assert.deepEqual(told.at(-1), ['No discard copies to remove.', false]);
 
     // Anything else from the webview is ignored.
     shown.length = 0;
