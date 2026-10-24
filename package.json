@@ -2,8 +2,8 @@
   "name": "repository-manager",
   "displayName": "Repository Manager",
   "description": "Coordinate branches and Git workflows across a parent repository and its linked repositories from one VS Code dashboard",
-  "version": "2.9.0",
-  "publisher": "repository-manager",
+  "version": "3.0.0",
+  "publisher": "eurus-labs",
   "engines": {
     "vscode": "^1.74.0"
   },

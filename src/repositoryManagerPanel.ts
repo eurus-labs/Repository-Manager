@@ -571,7 +571,7 @@ export class RepositoryManagerPanel {
         return;
       }
       if (message.type === 'openExtensionSettings') {
-        await vscode.commands.executeCommand('workbench.action.openSettings', '@ext:repository-manager.repository-manager');
+        await vscode.commands.executeCommand('workbench.action.openSettings', '@ext:eurus-labs.repository-manager');
         return;
       }
       if (message.type === 'sidebarSnapshot') {

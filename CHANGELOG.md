@@ -5,6 +5,12 @@ All notable changes to Repository Manager will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.0] - Unreleased
+
+### Changed
+
+- **BREAKING:** the publisher is now `eurus-labs`, so the extension ID is `eurus-labs.repository-manager`, ready for the Visual Studio Marketplace. VS Code treats it as a new extension: uninstall `repository-manager.repository-manager` before installing this version, or both run side by side. Settings under `repositoryManager.*` carry over; the dashboard's remembered state (the chosen model, Clean code, review permissions and review history) starts empty.
+
 ## [2.9.0] - 2026-10-23
 
 ### Added
