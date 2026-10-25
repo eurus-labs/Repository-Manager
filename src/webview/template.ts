@@ -368,7 +368,7 @@ function renderDashboard(repositories: RepositoryInfo[], workspaceFolders: Works
             </div>
             <div class="commit-content" id="commitContent">
               <div class="changed-files-panel">
-                <div class="panel-title"><span class="changed-files-tools" id="changedFilesSelectAll"></span><span>Changed files</span><span class="changed-files-tools changed-files-actions" id="changedFilesActions"></span><span id="changedFileCount">0</span></div>
+                <div class="panel-title"><span>Changed files</span><span id="changedFileCount">0</span></div>
                 <div class="changed-files-list" id="dashboardChangedFiles"></div>
               </div>
               <div class="dashboard-splitter dashboard-splitter-vertical" id="filesDiffSplitter" role="separator" aria-label="Resize changed files and diff panels" aria-orientation="vertical" tabindex="0"></div>

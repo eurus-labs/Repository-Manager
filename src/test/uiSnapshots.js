@@ -523,27 +523,28 @@ async function main() {
       ? [command, JSON.parse(left.query).path, right.fsPath.endsWith(path.join('src', 'app.txt')), title] : [command, left.fsPath.endsWith('live-new.txt')]);
     assert.deepEqual(opened.sort(), [['vscode.diff', 'src/app.txt', true, 'app.txt (HEAD ↔ Working Tree)'], ['vscode.open', true]]);
     await snap(side, '01f-sidebar-changes');
-    // Several files at once: a checkbox, or Ctrl+click in the Side Bar (the keys reach the dashboard),
-    // or a checkbox in the dashboard's list. Both lists show one selection.
+    // Several files at once, in the Side Bar only: a checkbox, or Ctrl+click (the keys reach the
+    // dashboard). The dashboard's list has no checkboxes, and Ctrl+click there just shows the diff.
     await side.click('#dashboardChanges .sidebar-change-item[data-path="lib-b"]', { modifiers: ['Control'] });
-    await page.click('#dashboardChangedFiles .change-check[data-path="live-new.txt"]');
+    await side.click('#dashboardChanges .change-check[data-path="live-new.txt"]');
     const checked = target => target.locator('[data-action="toggleWorkingSelection"][aria-checked="true"]').evaluateAll(boxes => boxes.map(box => box.dataset.path));
-    await side.waitForFunction(() => !document.getElementById('sidebarSelectionBar').hidden);
+    await side.waitForFunction(() => /^2 selected/.test(document.getElementById('sidebarSelectionBar').textContent));
     assert.deepEqual(await checked(side), ['lib-b', 'live-new.txt']);
     assert.match(await side.textContent('#sidebarSelectionBar'), /^2 selected\s*Discard…/);
-    assert.equal(await page.textContent('#changedFilesActions'), 'Discard 2…');
-    assert.equal(await page.getAttribute('#changedFilesSelectAll .change-check', 'aria-checked'), 'mixed');
-    await snap(page, '01g-selected-changes');
+    assert.equal(await page.locator('#dashboardChangedFiles .change-check, #commitContent [data-action="discardWorkingSelection"]').count(), 0);
+    await page.click('#dashboardChangedFiles .changed-file-item[data-path="src/app.txt"]', { modifiers: ['Control'] });
+    assert.equal(await page.textContent('#diffFileName'), 'src/app.txt');
+    assert.deepEqual(await checked(side), ['lib-b', 'live-new.txt']);
     await snap(side, '01h-sidebar-selected-changes');
-    // Right-clicking a selected file acts on the selection.
+    // Right-clicking a file in the dashboard's list acts on that file, whatever the Side Bar has selected.
     await page.click('#dashboardChangedFiles .changed-file-item[data-path="live-new.txt"]', { button: 'right' });
     await discardMenu.waitFor();
-    assert.equal(await discardMenu.locator('[data-action="contextDiscardFile"]').textContent(), 'Discard Changes to 2 Files…');
+    assert.equal(await discardMenu.locator('[data-action="contextDiscardFile"]').textContent(), 'Discard Changes…');
     await page.keyboard.press('Escape');
-    // The ×, and the selection is gone from both lists.
+    // The × clears the selection.
     await side.click('#sidebarSelectionBar [data-action="clearWorkingSelection"]');
     await side.waitForFunction(() => document.getElementById('sidebarSelectionBar').hidden);
-    assert.deepEqual(await checked(page), []);
+    assert.deepEqual(await checked(side), []);
     await page.click('#dashboardChangedFiles .changed-file-item[data-path="live-new.txt"]', { button: 'right' });
     await discardMenu.waitFor();
     assert.deepEqual(await discardItems(), ['Open Changes', 'Review Changes in This File', 'Discard Changes…', 'Discard All Changes…']);

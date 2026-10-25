@@ -102,8 +102,7 @@
   }
 
   // Right-click a changed file to open it in the diff editor or review just that file; for
-  // uncommitted changes, also Discard (that file, the selected files when it is one of them, or
-  // all). The Uncommitted changes row offers Discard All. The host asks before a discard and keeps a
+  // uncommitted changes, also Discard (that file or all; picking several is the Side Bar's). The Uncommitted changes row offers Discard All. The host asks before a discard and keeps a
   // copy first.
   let changesContextTarget = null;
   function showChangesContextMenu(element, x, y) {
@@ -112,8 +111,7 @@
     if (local ? !dashboardWorkingChanges().length : !changeSummarySelection || changeSummarySelection.local) return false;
     hideHistoryContextMenu();
     const filePath = file ? file.dataset.path : null;
-    // Right-clicking a selected file acts on the whole selection, as in VS Code's lists.
-    const paths = filePath && local && workingSelection.has(filePath) && workingSelection.size > 1 ? selectedWorkingPaths() : filePath ? [filePath] : [];
+    const paths = filePath ? [filePath] : [];
     changesContextTarget = { repositoryPath: activeDashboardRepository, path: filePath, paths, local };
     const menu = document.getElementById('changesContextMenu');
     // A file still in conflict (after a merge, rebase, pick, revert or stash) can get a suggested resolution.
@@ -123,7 +121,6 @@
     menu.querySelector('[data-action="contextReviewFile"]').hidden = !file;
     const discardFile = menu.querySelector('[data-action="contextDiscardFile"]');
     discardFile.hidden = !file || !local;
-    discardFile.textContent = paths.length > 1 ? `Discard Changes to ${paths.length} Files…` : 'Discard Changes…';
     menu.querySelector('[data-action="contextDiscardAll"]').hidden = !local;
     menu.hidden = false;
     const width = window.innerWidth || document.documentElement.clientWidth;
@@ -771,11 +768,6 @@
     selectChangedFile: (el, event) => {
       const filePath = el.dataset.path;
       if (!filePath || !selectedDashboardCommit) return;
-      // Uncommitted files: Ctrl/Cmd-click or Shift-click picks them for Discard, as the checkboxes do.
-      if (selectedDashboardCommit === WORKING_TREE && event && (event.ctrlKey || event.metaKey || event.shiftKey)) {
-        toggleWorkingSelection(filePath, event);
-        return;
-      }
       selectedDashboardFile = filePath;
       document.querySelectorAll('.changed-file-item').forEach(item => {
         item.classList.toggle('active', item.dataset.path === filePath);
@@ -2145,7 +2137,8 @@
       `${filePath === undefined ? '' : ` data-path="${escapeHtml(filePath)}"`} aria-label="${escapeHtml(label)}" title="${escapeHtml(label)}"></button>`;
   }
 
-  // The selection's checkboxes, rows and Discard buttons, in both lists, without redrawing them.
+  // The selection's checkboxes, rows and Discard bar in the Side Bar's Changes, without redrawing them.
+  // The dashboard's files list only shows diffs, so the selection lives in one place.
   function syncWorkingSelection() {
     const changes = dashboardWorkingChanges();
     const selected = selectedWorkingPaths().length;
@@ -2165,15 +2158,6 @@
         '<button type="button" class="sidebar-selection-clear" data-action="clearWorkingSelection" title="Clear the selection" aria-label="Clear the selection">×</button>' : '';
       if (bar.innerHTML !== html) bar.innerHTML = html;
       bar.hidden = !selected;
-    }
-    // The files list of the uncommitted changes: select all on the left, Discard on the right.
-    const working = selectedDashboardCommit === WORKING_TREE && changes.length > 0;
-    const listSelectAll = document.getElementById('changedFilesSelectAll');
-    const listActions = document.getElementById('changedFilesActions');
-    if (listSelectAll) listSelectAll.innerHTML = working ? selectAll : '';
-    if (listActions) {
-      listActions.innerHTML = working && selected
-        ? `<button type="button" class="changed-files-discard" data-action="discardWorkingSelection" title="Discard the changes to the selected files (asks first)">Discard ${selected}…</button>` : '';
     }
   }
 
@@ -2376,14 +2360,11 @@
     // Review changes follows the review lock; Review commit has no commit to review here.
     applyReviewLock();
     if (!files) return;
-    // Each file has a checkbox for Discard; Ctrl/Cmd or Shift+click on the file picks it too.
+    // Picking several files for Discard is the Side Bar's Changes; this list shows their diffs.
     files.innerHTML = changes.map(change => {
       const { status, state } = workingChangeStatus(change);
-      const selected = workingSelection.has(change.path);
-      return `<div class="changed-file-row${selected ? ' selected' : ''}">${checkboxHtml(selected, 'toggleWorkingSelection', `Select ${change.path}`, change.path)}` +
-        `<button class="changed-file-item status-${escapeHtml(status)}" type="button" data-action="selectChangedFile" data-path="${escapeHtml(change.path)}" title="${escapeHtml(`${state}. Double-click to open the diff in an editor tab; Ctrl or Shift+click to select`)}"><span class="file-status-glyph">${changedFileGlyph(status)}</span><span class="file-path"><strong>${escapeHtml(change.path.split('/').pop())}</strong><small>${escapeHtml(change.originalPath ? `${change.originalPath} → ${change.path}` : change.path)} · ${escapeHtml(state)}</small></span><span>›</span></button></div>`;
+      return `<button class="changed-file-item status-${escapeHtml(status)}" type="button" data-action="selectChangedFile" data-path="${escapeHtml(change.path)}" title="${escapeHtml(`${state}. Double-click to open the diff in an editor tab`)}"><span class="file-status-glyph">${changedFileGlyph(status)}</span><span class="file-path"><strong>${escapeHtml(change.path.split('/').pop())}</strong><small>${escapeHtml(change.originalPath ? `${change.originalPath} → ${change.path}` : change.path)} · ${escapeHtml(state)}</small></span><span>›</span></button>`;
     }).join('');
-    syncWorkingSelection();
     const kept = selectedDashboardFile && Array.from(files.querySelectorAll('.changed-file-item')).find(item => item.dataset.path === selectedDashboardFile);
     if (kept && keepDiff) {
       kept.classList.add('active');
@@ -2497,12 +2478,8 @@
     clearFileListTools();
   }
 
-  // A commit's files have no selection, and nothing is open until a file is picked.
+  // Nothing is open until a file is picked.
   function clearFileListTools() {
-    ['changedFilesSelectAll', 'changedFilesActions'].forEach(id => {
-      const element = document.getElementById(id);
-      if (element) element.innerHTML = '';
-    });
     const openButton = document.getElementById('openDiffInEditorButton');
     if (openButton) openButton.hidden = true;
   }

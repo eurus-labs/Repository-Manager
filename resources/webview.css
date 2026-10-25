@@ -3043,11 +3043,9 @@ body.sidebar-view { overflow: hidden; background: var(--vscode-sideBar-backgroun
   color: var(--text-secondary); background: var(--bg-raised); font-size: 11px; }
 .sidebar-selection-bar[hidden] { display: none; }
 .sidebar-selection-bar span { margin-right: auto; }
-.sidebar-selection-discard,
-.changed-files-discard { padding: 1px 8px; border: 1px solid color-mix(in srgb, var(--error) 55%, transparent); border-radius: 4px; color: var(--error);
+.sidebar-selection-discard { padding: 1px 8px; border: 1px solid color-mix(in srgb, var(--error) 55%, transparent); border-radius: 4px; color: var(--error);
   background: transparent; font: inherit; font-size: 11px; letter-spacing: 0; text-transform: none; cursor: pointer; }
-.sidebar-selection-discard:hover,
-.changed-files-discard:hover { background: rgba(240, 113, 120, .12); }
+.sidebar-selection-discard:hover { background: rgba(240, 113, 120, .12); }
 .sidebar-selection-clear { width: 20px; height: 20px; padding: 0; border: 0; border-radius: 4px; color: var(--text-muted); background: transparent; cursor: pointer; }
 .sidebar-selection-clear:hover { color: var(--text-primary); background: var(--bg-hover); }
 
@@ -3060,16 +3058,6 @@ body.sidebar-view { overflow: hidden; background: var(--vscode-sideBar-backgroun
 .change-check[aria-checked="true"]::after { content: '✓'; }
 .change-check[aria-checked="mixed"]::after { content: '−'; }
 .change-check:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 1px; }
-
-/* The uncommitted files in the dashboard: a checkbox each, select all and Discard in the title. */
-.changed-file-row { display: grid; grid-template-columns: 14px minmax(0, 1fr); align-items: center; gap: 6px; padding-left: 2px; }
-.changed-file-row.selected .changed-file-item { box-shadow: inset 2px 0 0 var(--accent); }
-.changed-files-panel .panel-title { justify-content: flex-start; gap: 8px; }
-.panel-title .changed-files-tools { display: inline-flex; align-items: center; overflow: visible; }
-.panel-title .changed-files-tools:empty { display: none; }
-.changed-files-actions { margin-left: auto; }
-.changed-files-actions:empty + #changedFileCount { margin-left: auto; }
-.changed-files-discard { padding: 0 7px; font-size: 10px; }
 
 /* Open ↗: the file's diff in VS Code's diff editor. */
 .diff-open-editor { flex: none; padding: 1px 8px; border: 1px solid var(--border-strong); border-radius: 4px; color: var(--text-secondary);
