@@ -91,6 +91,7 @@ Use Problem → Design → Predict → Build → Validate → Learn.
 - Breaking changes require both `!` and a `BREAKING CHANGE:` footer.
 - Update `CHANGELOG.md` (Keep a Changelog, under the upcoming version) before every PR; keep entries user-facing and summary-only. Parallel PRs conflict there: keep both entries under one version heading, and bump the version once.
 - Set the version with `npm version <x.y.z> --no-git-tag-version`; the release tag is the version of record.
+- Versions read `X.Y.Z`: X is the major version, Y the minor version, Z the bugfix (patch) version. Bump Y for any user-visible feature change, including removing or moving UI; bump Z only for bug fixes that leave the interaction unchanged.
 
 ## This Repository
 
