@@ -14,6 +14,7 @@ import { registerDiscardCommands } from './commands/discardCommands';
 import { RepositoryManagerLauncher } from './repositoryManagerLauncher';
 import { RepositoryManagerPanel } from './repositoryManagerPanel';
 import { CHANGE_DOCUMENT_SCHEME, ChangeDocumentProvider } from './changeDocuments';
+import { registerRequirements } from './requirements/requirementsView';
 
 let repositoryTreeProvider: RepositoryTreeProvider;
 let gitOps: GitOperations;
@@ -21,6 +22,9 @@ let prManager: PRManager;
 
 export function activate(context: vscode.ExtensionContext) {
   console.log('Repository Manager extension is now active');
+
+  // Before the workspace check: a clarification file opens in the Requirement editor anywhere.
+  registerRequirements(context);
 
   const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
 

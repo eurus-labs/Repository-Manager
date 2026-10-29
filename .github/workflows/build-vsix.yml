@@ -44,6 +44,9 @@ jobs:
       - name: UI snapshots
         run: node ./src/test/uiSnapshots.js
 
+      - name: Requirement editor UI
+        run: node ./src/test/requirementEditorUi.js
+
       - name: Upload UI snapshots
         if: always()
         uses: actions/upload-artifact@v4

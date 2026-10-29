@@ -456,6 +456,66 @@ export function getReviewHtml(resourceUris: SidebarResourceUris): string {
 </html>`;
 }
 
+/** The Requirement editor: a clarification file as a form; its script talks to RequirementEditorProvider. */
+export function getRequirementEditorHtml(resourceUris: SidebarResourceUris & { cspSource: string }): string {
+  const nonce = getNonce();
+  // Images: the editor's own blob: URLs for files in the repository, and https images named in
+  // Visual aids, which the webview loads straight from their site.
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${resourceUris.cspSource}; img-src ${resourceUris.cspSource} blob: https:; script-src 'nonce-${nonce}';">
+  <title>Requirement Editor</title>
+  <link rel="stylesheet" href="${resourceUris.styleUri}">
+</head>
+<body>
+<header>
+  <div class="title"><h1>Requirements clarification</h1><span id="state"></span></div>
+  <p id="filename">Opening Markdown…</p>
+  <div class="toolbar">
+    <button class="primary" id="save" title="Save (Ctrl+S)">Save</button>
+    <button id="reload">Reload</button>
+    <button id="download">Download draft</button>
+    <button id="add" title="New item that is not tied to a requirement. To clarify a requirement, use “+ Create dou item” in Requirements.">+ Item</button>
+    <button id="fold">Collapse all</button>
+    <span class="spacer"></span>
+    <input id="search" type="search" placeholder="Search items…" aria-label="Search items">
+    <select id="filter" aria-label="Filter by status"><option value="all">All statuses</option></select>
+  </div>
+  <div id="message" role="status" aria-live="polite"></div>
+</header>
+<div class="layout">
+  <nav class="rail" role="tablist" aria-orientation="vertical" aria-label="Views">
+    <button role="tab" id="tab-items" aria-selected="true" title="Items (Alt+1)">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01"/></svg>
+      <span>Items</span><small id="count-items"></small>
+    </button>
+    <button role="tab" id="tab-reqs" aria-selected="false" title="Requirements (Alt+2)">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 11l3 3 8-8M20 12v6a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h9"/></svg>
+      <span>Requirements</span><small id="count-reqs"></small>
+    </button>
+    <button role="tab" id="mode" aria-selected="false" title="Edit the whole Markdown source (Alt+3)">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 7l-5 5 5 5M16 7l5 5-5 5M14 4l-4 16"/></svg>
+      <span>Markdown</span>
+    </button>
+  </nav>
+  <nav class="outline" aria-label="Contents"><ul id="outline"></ul></nav>
+  <main>
+    <div id="form"></div>
+    <div id="trace" hidden></div>
+    <div id="raw" hidden>
+      <p class="note">Source mode edits the whole Markdown file. Choose Items or Requirements in the left rail to validate it and return to the form.</p>
+      <textarea id="source" aria-label="Markdown source" spellcheck="false"></textarea>
+    </div>
+    <footer>Markdown is the source of truth. Only fields you change are rewritten. Save does not update referenced requirements.</footer>
+  </main>
+</div>
+  <script nonce="${nonce}" src="${resourceUris.scriptUri}"></script>
+</body>
+</html>`;
+}
 export function getHtmlForWebview(repositories: RepositoryInfo[], resourceUris: WebviewResourceUris, workspaceFolders: WorkspaceFolderInfo[] = []): string {
   const nonce = getNonce();
 
