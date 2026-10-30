@@ -1099,10 +1099,13 @@ window.addEventListener('message', async event => {
     await load(undefined, msg.draft, msg.draftHash);
   } else if (msg.type === 'getContent') {
     // Saving or a backup: the text to write, and the version of the file it was edited from.
-    vscode.postMessage({ type: 'content', id: msg.id, content: doc ? content() : null, hash: doc?.hash ?? null });
+    const text = doc ? content() : null;
+    if (msg.purpose === 'save' && doc) saving = { content: text, sourceMode, values: fieldValues() };
+    vscode.postMessage({ type: 'content', id: msg.id, content: text, hash: doc?.hash ?? null });
   } else if (msg.type === 'saved') {
-    await load('Saved to Markdown.');
+    await afterSave();
   } else if (msg.type === 'saveFailed') {
+    saving = null;
     message(msg.error, true);
   } else if (msg.type === 'revert') {
     await load('Reloaded from disk.');
@@ -1112,6 +1115,35 @@ window.addEventListener('message', async event => {
     message('The file changed on disk. Save will be refused: download your draft, then Reload.', true);
   }
 });
+
+// What was saved, so edits typed while the file was being written are not lost by the reload.
+let saving = null;
+const fieldKey = f => (f.inquiry || '') + '\n' + f.label;
+const fieldValues = () => new Map(doc.fields.map((f, i) => [fieldKey(f), values[i]]));
+
+async function afterSave() {
+  const saved = saving;
+  saving = null;
+  if (!saved || content() === saved.content) { await load('Saved to Markdown.'); return; }
+  if (sourceMode) {
+    // The Markdown being edited stays as it is, now on top of the saved file.
+    const text = $('#source').value;
+    await load();
+    showSource(text);
+    setDirty(true);
+    message('Saved. Edits made while saving are kept and not saved yet.');
+    return;
+  }
+  const later = [];
+  doc.fields.forEach((f, i) => { if (saved.values.has(fieldKey(f)) && values[i] !== saved.values.get(fieldKey(f))) later.push([fieldKey(f), values[i]]); });
+  await load();
+  for (const [key, value] of later) {
+    const i = doc.fields.findIndex(f => fieldKey(f) === key);
+    if (i >= 0) setValue(i, value);
+  }
+  redrawViews();
+  message(later.length ? `Saved. ${later.length} field${later.length === 1 ? '' : 's'} edited while saving ${later.length === 1 ? 'is' : 'are'} kept and not saved yet.` : 'Saved to Markdown.');
+}
 
 async function createItemFor(id, definition) {
   showView('items');

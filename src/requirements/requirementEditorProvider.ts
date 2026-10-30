@@ -30,6 +30,9 @@ class RequirementDocument implements vscode.CustomDocument {
   draft?: string;
   /** The version of the file that text was edited from, so a file changed since is not overwritten. */
   draftHash?: string;
+  /** A save is running, and the page reported an edit during it. */
+  saving = false;
+  editedWhileSaving = false;
   /** The version of the file the page shows, so changes on disk by someone else are noticed. */
   hash?: string;
   readonly contentRequests = new Map<number, (reply: { content: string | null; hash: string | null }) => void>();
@@ -112,7 +115,11 @@ export class RequirementEditorProvider implements vscode.CustomEditorProvider<Re
       case 'request':
         return this.answer(document, message);
       case 'dirty':
-        if (message.dirty) { this.changes.fire({ document }); }
+        if (message.dirty && document.saving) {
+          document.editedWhileSaving = true;
+        } else if (message.dirty) {
+          this.changes.fire({ document });
+        }
         return;
       case 'content': {
         const reply = document.contentRequests.get(Number(message.id));
@@ -172,7 +179,7 @@ export class RequirementEditorProvider implements vscode.CustomEditorProvider<Re
   }
 
   /** The page's text and the version of the file it edited, asked for when saving or backing up. */
-  private requestContent(document: RequirementDocument): Promise<{ content: string; hash: string }> {
+  private requestContent(document: RequirementDocument, purpose: 'save' | 'backup'): Promise<{ content: string; hash: string }> {
     if (!document.page?.ready) { return Promise.reject(new Error('The Requirement editor is not open.')); }
     const id = ++this.nextRequest;
     return new Promise((resolve, reject) => {
@@ -184,24 +191,33 @@ export class RequirementEditorProvider implements vscode.CustomEditorProvider<Re
         clearTimeout(timer);
         if (reply.content === null || reply.hash === null) { reject(new Error('The file did not load, so there is nothing to save.')); } else { resolve({ content: reply.content, hash: reply.hash }); }
       });
-      this.post(document, { type: 'getContent', id });
+      this.post(document, { type: 'getContent', id, purpose });
     });
   }
 
   async saveCustomDocument(document: RequirementDocument): Promise<void> {
+    document.saving = true;
     try {
-      const { content, hash } = await this.requestContent(document);
+      const { content, hash } = await this.requestContent(document, 'save');
       document.hash = (await document.service.save(content, hash)).hash;
       this.post(document, { type: 'saved' });
     } catch (error) {
       // The page keeps its edits and says why; VS Code keeps the editor unsaved and says so too.
       this.post(document, { type: 'saveFailed', error: messageOf(error) });
       throw new Error(messageOf(error));
+    } finally {
+      document.saving = false;
+      // An edit made while saving: report it once VS Code has marked the save done, or the
+      // editor would look saved with edits that are not.
+      if (document.editedWhileSaving) {
+        document.editedWhileSaving = false;
+        setTimeout(() => this.changes.fire({ document }), 0);
+      }
     }
   }
 
   async saveCustomDocumentAs(document: RequirementDocument, destination: vscode.Uri): Promise<void> {
-    const { content } = await this.requestContent(document);
+    const { content } = await this.requestContent(document, 'save');
     document.service.parse(content);
     await fs.writeFile(destination.fsPath, content, 'utf8');
   }
@@ -212,7 +228,7 @@ export class RequirementEditorProvider implements vscode.CustomEditorProvider<Re
 
   async backupCustomDocument(document: RequirementDocument, context: vscode.CustomDocumentBackupContext): Promise<vscode.CustomDocumentBackup> {
     // The text and the version of the file it was edited from.
-    const { content, hash } = await this.requestContent(document);
+    const { content, hash } = await this.requestContent(document, 'backup');
     await fs.mkdir(path.dirname(context.destination.fsPath), { recursive: true });
     await fs.writeFile(context.destination.fsPath, JSON.stringify({ hash, content }), 'utf8');
     return { id: context.destination.toString(), delete: () => { void fs.rm(context.destination.fsPath, { force: true }); } };

@@ -191,6 +191,28 @@ async function main() {
     for (const label of Object.keys(old1[0].values).filter(k => k !== 'Approach' && k !== 'Updated at')) { assert.equal(new1[0].values[label], old1[0].values[label], label); }
     assert.equal(saved.slice(0, 40), before.slice(0, 40), 'front matter rewritten');
 
+    // Typing while the file is being written: the save keeps what was captured, and the later
+    // edit stays in the form as an unsaved edit instead of being lost to the reload.
+    let release;
+    const gate = new Promise(resolve => { release = resolve; });
+    const service = editor.document.service, realSave = service.save.bind(service);
+    let writing = false;
+    service.save = async (...args) => { writing = true; await gate; return realSave(...args); };
+    const desired = page.locator('#CLR-003-Q01 .field', { has: page.locator('label', { hasText: /^Desired outcome$/ }) }).locator('textarea');
+    await desired.fill('Saved part.');
+    await until(() => editor.dirty, 'the unsaved state');
+    await page.click('#save');
+    await until(() => writing, 'the save to start writing');
+    await desired.fill('Saved part. Typed while saving.');
+    release();
+    await page.locator('#message', { hasText: '1 field edited while saving is kept' }).waitFor();
+    service.save = realSave;
+    assert.ok(read().includes('Saved part.') && !read().includes('Typed while saving.'));
+    assert.equal(await desired.inputValue(), 'Saved part. Typed while saving.');
+    await until(() => editor.dirty, 'the later edit to count as unsaved');
+    await page.click('#save');
+    await until(() => read().includes('Typed while saving.') && !editor.dirty, 'the later edit to be saved');
+
     // Submit: a response joins History and the file is saved at once.
     const composer = page.locator('#CLR-003-Q01 form.composer');
     await composer.locator('input[aria-label="Author"]').fill('Minh');
