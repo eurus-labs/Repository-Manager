@@ -163,6 +163,10 @@ async function main() {
     const editor = await open(file);
     const page = editor.page;
     assert.equal(await page.textContent('#filename'), 'CLR-003 · CLR-003.md · schema v3');
+    // The header: where you are, the file's title, and the views as tabs with their counts.
+    assert.equal((await page.textContent('header .crumbs')).replace(/\s+/g, ' ').trim(), 'Repository Manager / Requirement Editor');
+    assert.equal(await page.textContent('#doc-title'), 'API integration discussion (schema v3)');
+    assert.deepEqual(await page.$$eval('nav.tabs [role=tab]', tabs => tabs.map(t => t.textContent.replace(/\s+/g, ' ').trim())), ['Clarifications 2', 'Requirements 1', 'Markdown']);
     assert.equal(await page.locator('section[data-item]').count(), 2);
     await page.locator('#CLR-003-Q01 figure.aid img').waitFor();
     assert.ok(await page.$eval('#CLR-003-Q01 figure.aid img', img => img.src.startsWith('blob:') && img.complete && img.naturalWidth > 0), 'the wireframe did not load');
@@ -224,20 +228,46 @@ async function main() {
 
     // Requirements: set a folder source, see Ready reasons, open a requirement's file at its line.
     await page.click('#tab-reqs');
-    await page.click('#source-card button:has-text("Set source…")');
+    await page.click('#source-bar button:has-text("Set source…")');
     await page.click('dialog input[value=folder]');
     await page.fill('dialog .field:has-text("Folder") input >> nth=-1', 'requirements');
     await page.click('dialog button:has-text("Save and sync")');
-    await page.locator('#req-REQ-012 .req-title', { hasText: 'Send messages' }).waitFor();
+    await page.locator('#req-REQ-012 .req-name', { hasText: 'Send messages' }).waitFor();
     assert.equal(JSON.parse(fs.readFileSync(path.join(repo, '.dou-editor.json'), 'utf8')).requirements.folder, 'requirements');
     assert.equal(await page.textContent('#req-REQ-012 .badge.ready'), 'Not ready');
+    assert.equal((await page.innerText('#source-bar .source-text')).replace(/\s+/g, ' ').trim(), 'Source: requirements/ · Local folder · Read-only requirements');
+    assert.equal(await page.textContent('#tab-reqs .count'), '3');
+    // A requirement without a clarification: why it is not ready, and the one next step.
+    const manual = page.locator('#req-REQ-013');
+    assert.equal(await manual.locator('.req-name').textContent(), 'Manual retry');
+    assert.match(await manual.locator('.req-meta').textContent(), /^requirements\/messaging\.rst:\d+ · Source document$/);
+    assert.deepEqual(await manual.locator('.subtabs [role=tab]').allTextContents(), ['Requirement', 'Clarifications · 0', 'Acceptance · 0']);
+    assert.deepEqual(await manual.locator('.blockers li').allTextContents(), ['No clarification item is linked to this requirement.', 'No accepted criteria are available.']);
+    assert.equal(await manual.locator('.next-action p').textContent(), 'Create a clarification for this requirement.');
+    assert.ok((await manual.locator('blockquote.req-text').textContent()).length > 0, 'the requirement text is not shown');
+    // REQ-012's tabs: its clarifications and the criteria they propose, with the PO's state.
+    const send = page.locator('#req-REQ-012');
+    assert.match(await send.locator('.next-action p').textContent(), /^Settle CLR-001-Q01|^Settle CLR-003-Q0/);
+    await send.locator('.subtabs [role=tab]', { hasText: 'Clarifications' }).click();
+    assert.equal(await send.locator('.linked li').count(), 3);
+    await send.locator('.subtabs [role=tab]', { hasText: 'Acceptance' }).click();
+    assert.deepEqual(await send.locator('.criteria li strong').allTextContents(), ['AC1', 'AC2']);
+    assert.deepEqual(await send.locator('.criteria li .badge').allTextContents(), ['proposed', 'proposed']);
+    await page.locator('#CLR-003-Q01').count(); // the tab survives a redraw
+    await page.fill('#req-search', 'retry');
+    assert.equal(await send.locator('.subtabs [aria-selected=true]').textContent(), 'Acceptance · 2');
+    await page.fill('#req-search', '');
+    await page.selectOption('#req-filter', 'empty');
+    assert.deepEqual(await page.$$eval('#req-list .req-card', cards => cards.map(c => c.id)), ['req-REQ-013', 'req-REQ_020']);
+    await page.selectOption('#req-filter', 'all');
+    await send.locator('.subtabs [role=tab]', { hasText: 'Requirement' }).click();
     await page.click('#req-REQ-012 .req-meta button.link');
     await until(() => host.opened.length, 'the requirement file');
     assert.deepEqual(host.opened[0], { file: path.join(repo, 'requirements', 'messaging.rst'), line: 3 }); // REQ-012 is on line 4; Range is 0-based
     await snap(page, '21-requirement-editor-requirements');
 
     // + Create dou item: a new item for the requirement, saved like any edit.
-    await page.click('#req-REQ-013 button.create');
+    await page.click('#req-REQ-013 .next-action button.create');
     await page.locator('#CLR-003-Q03').waitFor();
     await until(() => editor.dirty, 'the new item to mark the editor unsaved');
     await page.keyboard.press('Control+s'); // VS Code's keybinding, not the page's
@@ -315,6 +345,13 @@ async function main() {
     assert.equal(await narrow.page.textContent('#filename'), 'CLR-001 · CLR-001.md · schema v1');
     assert.equal(await narrow.page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth), 0, 'the page scrolls horizontally');
     await snap(narrow.page, '23-requirement-editor-narrow');
+    // The Requirements view at phone width, as in the design.
+    await narrow.page.click('#tab-reqs');
+    await narrow.page.locator('#req-REQ-013 .next-action').waitFor();
+    assert.equal(await narrow.page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth), 0, 'the Requirements view scrolls horizontally');
+    await snap(narrow.page, '24-requirement-editor-narrow-requirements');
+    await narrow.page.setViewportSize({ width: 390, height: 1600 });
+    await narrow.page.locator('#req-REQ-013').screenshot({ path: path.join(outputDir, '25-requirement-card-narrow.png'), animations: 'disabled' });
     await narrow.page.close();
 
     // A file that does not validate says why instead of showing a form.
@@ -325,7 +362,7 @@ async function main() {
     await invalid.page.close();
 
     assert.deepEqual(problems, []);
-    console.log('Requirement editor UI test passed; screenshots in ui-snapshots/20-23');
+    console.log('Requirement editor UI test passed; screenshots in ui-snapshots/20-25');
   } finally {
     await browser.close();
     server.close();

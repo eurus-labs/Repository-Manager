@@ -20,8 +20,9 @@ requests and agents edit it as text.
   a folder, an ID and a title, and writes the v3 template.
 - **Requirement Editor** is a custom editor for `.md` files, chosen per file
   (**Open With… › Requirement Editor**), so other Markdown keeps opening as text.
-  Its left rail switches between Items (the form), Requirements, and Markdown
-  (the whole file as text); Alt+1, Alt+2 and Alt+3 do the same.
+  Under the file's title, tabs switch between Clarifications (each item as a
+  form), Requirements, and Markdown (the whole file as text); Alt+1, Alt+2 and
+  Alt+3 do the same.
 
 ## Saving
 
@@ -64,7 +65,7 @@ Each inquiry uses `### <artifact-id>-Q<digits>` and these labels in order:
 
 Keep IDs stable. The editor cannot change the artifact ID. Never reuse removed IDs;
 for removed inquiries retain the entry with a resolution explaining withdrawal.
-**+ Item** chooses the next number after the highest present.
+**+ Clarification** chooses the next number after the highest present.
 Use impact actions ADD / CHANGE / REMOVE / NO_CHANGE, real requirement IDs,
 and concrete proposed edits. NEW is allowed before a requirement is allocated.
 Status agreed requires nonempty resolution and confirmation, not Pending.
@@ -136,8 +137,8 @@ An unresolved depends_on is informational; it does not automatically change stat
 ### Schema v3: one requirement per item
 
 **New Clarification File** starts from the v3 template;
-create an item for a requirement with "+ Create dou item" in the Requirements
-view, or one that is not about a requirement with "+ Item" (Requirement `None`).
+create an item for a requirement with "+ Create clarification" in the Requirements
+view, or one that is not about a requirement with "+ Clarification" (Requirement `None`).
 Criteria in an item without a requirement do not count toward any Ready. The file has no
 `## Context` or `## Scope`: `## Discussions` is the only level-2 heading the
 editor reads (a stray `## Context` is rejected). Each item uses these exact field
@@ -268,11 +269,22 @@ the host at the synced commit.
 
 ## Requirements view
 
-The Requirements view lists every requirement found there, plus any ID an item
-names that is not found. For each one it shows the title, `file:line`, the text,
-the dou items that clarify it and their status. **"+ Create dou item"** adds a
-new item to the open file with that requirement filled in; this is the usual way
-to start a v3 item. IDs in the form are chips that open this view.
+The Requirements view shows the source (where the requirements are read from),
+then a card for every requirement found there, plus any ID an item names that is
+not found; search by ID or text, or show only those Ready, Not ready, without a
+clarification, with unresolved clarifications, or not found. Each card shows the
+ID, Ready or Not ready, the title and `file:line`, and three tabs:
+
+- **Requirement**: the requirement's text, what keeps it Not ready, and the
+  **Next action**, the step that removes the first of those reasons (with a
+  button for it where there is one, such as **+ Create clarification** or
+  **Open** the item);
+- **Clarifications**: the items that clarify it and their status;
+- **Acceptance**: the criteria those items propose, with the PO's decision on each.
+
+**"+ Create clarification"** adds a new item to the open file with that
+requirement filled in; this is the usual way to start a v3 item. IDs in the form
+are chips that open this view.
 
 The folder is scanned recursively for `.rst` and `.md` files (no
 symlinks, hidden folders or `node_modules`; at most 5,000 files of 2 MB each).

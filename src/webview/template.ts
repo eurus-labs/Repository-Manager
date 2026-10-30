@@ -472,41 +472,54 @@ export function getRequirementEditorHtml(resourceUris: SidebarResourceUris & { c
 </head>
 <body>
 <header>
-  <div class="title"><h1>Requirements clarification</h1><span id="state"></span></div>
-  <p id="filename">Opening Markdown…</p>
-  <div class="toolbar">
-    <button class="primary" id="save" title="Save (Ctrl+S)">Save</button>
-    <button id="reload">Reload</button>
-    <button id="download">Download draft</button>
-    <button id="add" title="New item that is not tied to a requirement. To clarify a requirement, use “+ Create dou item” in Requirements.">+ Item</button>
-    <button id="fold">Collapse all</button>
-    <span class="spacer"></span>
-    <input id="search" type="search" placeholder="Search items…" aria-label="Search items">
-    <select id="filter" aria-label="Filter by status"><option value="all">All statuses</option></select>
+  <nav class="crumbs" aria-label="Location">Repository Manager <span aria-hidden="true">/</span> Requirement Editor</nav>
+  <div class="title">
+    <div class="heading"><h1 id="doc-title">Opening…</h1><p id="filename"></p></div>
+    <div class="toolbar">
+      <span id="state"></span>
+      <button class="primary" id="save" title="Save (Ctrl+S)">Save</button>
+      <button id="reload" title="Read the file again">Reload</button>
+      <button id="download" title="Save the current text to another file">Download draft</button>
+    </div>
   </div>
+  <nav class="tabs" role="tablist" aria-label="Views">
+    <button role="tab" id="tab-items" aria-selected="true" title="Clarifications (Alt+1)">Clarifications <span class="count" id="count-items"></span></button>
+    <button role="tab" id="tab-reqs" aria-selected="false" title="Requirements (Alt+2)">Requirements <span class="count" id="count-reqs"></span></button>
+    <button role="tab" id="mode" aria-selected="false" title="Edit the whole Markdown source (Alt+3)">Markdown</button>
+  </nav>
   <div id="message" role="status" aria-live="polite"></div>
 </header>
 <div class="layout">
-  <nav class="rail" role="tablist" aria-orientation="vertical" aria-label="Views">
-    <button role="tab" id="tab-items" aria-selected="true" title="Items (Alt+1)">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01"/></svg>
-      <span>Items</span><small id="count-items"></small>
-    </button>
-    <button role="tab" id="tab-reqs" aria-selected="false" title="Requirements (Alt+2)">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 11l3 3 8-8M20 12v6a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h9"/></svg>
-      <span>Requirements</span><small id="count-reqs"></small>
-    </button>
-    <button role="tab" id="mode" aria-selected="false" title="Edit the whole Markdown source (Alt+3)">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 7l-5 5 5 5M16 7l5 5-5 5M14 4l-4 16"/></svg>
-      <span>Markdown</span>
-    </button>
-  </nav>
   <nav class="outline" aria-label="Contents"><ul id="outline"></ul></nav>
   <main>
-    <div id="form"></div>
-    <div id="trace" hidden></div>
+    <div id="form-view">
+      <div class="view-tools">
+        <input id="search" type="search" placeholder="Search clarifications…" aria-label="Search clarifications">
+        <select id="filter" aria-label="Filter by status"><option value="all">All statuses</option></select>
+        <span class="spacer"></span>
+        <button id="add" title="A new clarification that is not tied to a requirement. To clarify a requirement, use “+ Create clarification” in Requirements.">+ Clarification</button>
+        <button id="fold">Collapse all</button>
+      </div>
+      <div id="form"></div>
+    </div>
+    <div id="trace" hidden>
+      <div class="source-bar" id="source-bar"></div>
+      <div class="view-tools">
+        <input id="req-search" type="search" placeholder="Search ID or text…" aria-label="Search requirements">
+        <select id="req-filter" aria-label="Filter requirements">
+          <option value="all">All requirements</option>
+          <option value="notready">Not ready</option>
+          <option value="ready">Ready</option>
+          <option value="empty">Without a clarification</option>
+          <option value="unresolved">With unresolved clarifications</option>
+          <option value="missing">Not found in the source</option>
+        </select>
+      </div>
+      <p class="summary" id="req-summary"></p>
+      <div id="req-list"></div>
+    </div>
     <div id="raw" hidden>
-      <p class="note">Source mode edits the whole Markdown file. Choose Items or Requirements in the left rail to validate it and return to the form.</p>
+      <p class="note">Source mode edits the whole Markdown file. Choose Clarifications or Requirements above to validate it and return to the form.</p>
       <textarea id="source" aria-label="Markdown source" spellcheck="false"></textarea>
     </div>
     <footer>Markdown is the source of truth. Only fields you change are rewritten. Save does not update referenced requirements.</footer>
