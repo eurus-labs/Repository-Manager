@@ -1,0 +1,1208 @@
+// The Requirement editor: a clarification file (dou) as a form, the requirements it clarifies, and
+// its Markdown. Ported from the Python dou-editor's page; the extension (RequirementEditorProvider)
+// answers what the page used to ask its local server, and VS Code owns saving and unsaved state.
+'use strict';
+const vscode = acquireVsCodeApi();
+const DISCUSSION = ['open', 'investigating', 'resolved'];
+const STATUSES = { 1: ['open', 'proposed', 'agreed'], 2: DISCUSSION, 3: DISCUSSION };
+const UNRESOLVED = new Set(['open', 'investigating', 'proposed']);
+const DATE_FIELDS = new Set(['Created at', 'Updated at']);
+const SHORT_FIELDS = new Set(['Related requirements', 'Requirement', 'Confirmed by', 'Next action', 'Current conclusion']);
+const WIDE_FIELDS = new Set(['Scope', 'Desired outcome', 'Approach', 'Proposed acceptance criteria', 'Visual aids', 'Question', 'Questions', 'Current understanding', 'Analysis / Proposal', 'References', 'History', 'Resolution', 'Requirement impact']);
+const SUMMARY_FIELDS = ['Question', 'Questions'];
+// First checklist question if there is one, else the first line.
+const summaryText = text => (text.split('\n').map(l => l.match(/^\s*[-*]\s*\[[ xX]\]\s*(.+)$/)).find(Boolean)?.[1] || text.split('\n')[0]).trim();
+const openQuestions = text => text.split('\n').filter(l => /^\s*[-*]\s*\[ \]/.test(l)).length;
+const CONCLUSION_FIELDS = ['Current conclusion', 'Resolution'];
+// v3 fields are shown in four groups; each heading goes before the group's first field.
+const GROUPS = { 'Scope': '1 · Scope & requirement', 'Questions': '2 · Analysis', 'History': '3 · History', 'Next action': '4 · Next action' };
+const ROLES = ['Dev', 'PO', 'User', 'Expert', 'Reviewer'];  // free choice; not authentication
+const EVENT_TYPES = ['response', 'question', 'proposal', 'conclusion', 'reopened', 'feedback'];
+const HINTS = {
+  'Desired outcome': 'The functionality, feature or result wanted, stated so it can be checked.',
+  'Requirement': 'The one requirement this item clarifies, e.g. REQ-012; Pending until known; None when the item is not about a requirement.',
+  'Questions': 'What is known, then each open question as "- [ ] …"; tick "- [x]" when answered. Unticked questions keep the requirement Not ready.',
+  'Next action': 'Owner: next step, e.g. "Dev (Minh): ask the API owner for the retry contract".',
+  'Approach': 'The proposed approach, with its impact, risks and how to verify it.',
+  'Proposed acceptance criteria': 'Checkable conditions, one per line, proposed for the PO to decide. Record the PO decision as a History event.',
+  'Visual aids': 'One per line: "Label: target". Target: an https link (previewed if it ends in .png/.jpg/.gif/.webp) or an image path relative to this file.',
+};
+const imageCache = new Map();  // image path -> Promise of a blob: URL
+// Same rule as the server: "- AC1: Given ..., when ..., then ...". Other lines are notes.
+const CRITERION = /^\s*[-*]\s*(AC\d+):\s*(\S.*?)\s*$/;
+const STATE_TONE = { accepted: 'resolved', rejected: 'rejected', proposed: 'investigating', changed: 'investigating' };
+// Field holding requirement IDs per schema version (v1 writes them inside Requirement impact).
+const REQUIREMENT_FIELD = { 1: 'Requirement impact', 2: 'Related requirements', 3: 'Requirement' };
+// Same rule as the server: REQ-012, FR-7, REQ-AUTH-3; not CLR-001-Q01.
+const REQUIREMENT_ID = /(?<![\w-])[A-Z][A-Z0-9]*(?:[-_][A-Z0-9]+)*[-_]\d+(?![\w-])/g;
+// A v3 Requirement field holds one ID written on purpose, e.g. REQ-012, REQ_012 or R_F4722.
+const EXPLICIT_ID = /^[A-Za-z][A-Za-z0-9_-]*\d[A-Za-z0-9_-]*$/;
+
+let doc = null;        // last parse result from the server, plus content/hash/filename
+let values = [];       // current text of each field (LF line endings)
+let baseline = [];     // the same, as parsed; unchanged fields are written back untouched
+let controls = [];     // field index -> the element showing it
+let refViews = [];     // redraw functions for reference lists and requirement chips
+let index = [];        // items from the .md files beside the document (saved state)
+let catalog = { configured: false, requirements: [] };  // from --requirements
+let dirty = false, sourceMode = false, view = 'items';
+
+const $ = selector => document.querySelector(selector);
+function el(tag, props = {}, ...children) {
+  const node = Object.assign(document.createElement(tag), props);
+  node.append(...children.filter(child => child != null));
+  return node;
+}
+function message(text, error = false) {
+  $('#message').textContent = text;
+  $('#message').className = error ? 'error' : '';
+}
+function setDirty(value) {
+  // VS Code shows the unsaved dot, asks before closing, and keeps a backup for hot exit. Every
+  // edit is reported, not only the first, so the backup follows the latest text.
+  if (value || value !== dirty) vscode.postMessage({ type: 'dirty', dirty: value });
+  dirty = value;
+  $('#state').textContent = value ? '● Unsaved changes' : 'All changes saved';
+  $('#state').className = value ? 'dirty' : '';
+}
+
+// Requests go to the extension, which answers with { ok, data } or { error }.
+let requestId = 0;
+const pending = new Map();
+function api(method, path, body) {
+  const id = ++requestId;
+  return new Promise((resolve, reject) => {
+    pending.set(id, { resolve, reject });
+    vscode.postMessage({ type: 'request', id, method, path, body });
+  });
+}
+
+// Local time with offset at second precision, e.g. 2026-10-27T14:05:09+07:00.
+function isoNow() {
+  const d = new Date(), pad = n => String(Math.abs(n)).padStart(2, '0'), offset = -d.getTimezoneOffset();
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+    + `${offset < 0 ? '-' : '+'}${pad(Math.trunc(offset / 60))}:${pad(offset % 60)}`;
+}
+function formatDate(value) {
+  const date = new Date(value);
+  return isNaN(date) ? value : date.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+}
+const lf = text => text.replace(/\r\n/g, '\n');
+const newline = () => (doc.content.includes('\r\n') ? '\r\n' : '\n');
+const decode = text => JSON.parse(text.replace(/^```json\s*/, '').replace(/```\s*$/, ''));
+const encode = list => '```json\n' + JSON.stringify(list, null, 2) + '\n```';
+const fieldIndex = (item, label) => doc.fields.findIndex(f => f.inquiry === item && f.label === label);
+
+// Rebuild the Markdown: spans are UTF-16 offsets (JavaScript string indexes), spliced from the end.
+function content() {
+  if (sourceMode) return $('#source').value.replace(/\n/g, newline());
+  let text = doc.content;
+  for (let i = doc.fields.length - 1; i >= 0; i--) {
+    const value = values[i].trim();
+    if (value === baseline[i]) continue;
+    const f = doc.fields[i];
+    text = text.slice(0, f.start) + ('\n' + value + '\n\n').replace(/\n/g, newline()) + text.slice(f.end);
+  }
+  return text;
+}
+
+function setValue(i, value) {
+  values[i] = value;
+  const control = controls[i];
+  if (control && control.value !== undefined && control.value !== value) control.value = value;
+  setDirty(true);
+  if (doc.fields[i].label === 'Status') {
+    updateStatus(doc.fields[i].inquiry);
+    const questions = fieldIndex(doc.fields[i].inquiry, 'Questions');
+    if (doc.version === 3 && value === 'resolved' && questions >= 0 && openQuestions(values[questions]))
+      message(`${doc.fields[i].inquiry}: tick every question before resolving; Save will refuse ${openQuestions(values[questions])} open question(s).`, true);
+  }
+  updateRailCounts();
+  drawOutline();
+  applyFilter();
+}
+
+function updateStatus(item) {
+  const status = values[fieldIndex(item, 'Status')];
+  const badge = document.querySelector(`section[data-item="${item}"] .badge`);
+  if (badge) { badge.textContent = status; badge.dataset.status = status; }
+}
+
+/* ---------- rendering ---------- */
+
+function render() {
+  baseline = doc.fields.map(f => lf(f.value));
+  values = [...baseline];
+  controls = [];
+  refViews = [];
+  const root = $('#form');
+  root.replaceChildren();
+  const sections = new Map();
+  doc.fields.forEach((f, i) => {
+    const key = f.inquiry || f.label;
+    if (!sections.has(key)) {
+      const section = f.inquiry ? itemSection(f.inquiry) : el('section', { id: 'section-' + f.label }, el('h2', { textContent: f.label }));
+      sections.set(key, section);
+      root.append(section);
+    }
+    const section = sections.get(key);
+    if (f.inquiry && doc.version === 3 && GROUPS[f.label]) section.querySelector('.grid').append(el('div', { className: 'group', textContent: GROUPS[f.label] }));
+    const field = renderField(f, i);
+    if (field) (section.querySelector('.grid') || section).append(field);
+  });
+  for (const item of doc.items) { updateStatus(item.id); updateConclusion(item.id); }
+  applyCollapsed();
+  updateRailCounts();
+  drawOutline();
+  applyFilter();
+}
+
+function itemSection(item) {
+  const fold = el('button', { type: 'button', className: 'fold', textContent: '▶', ariaLabel: 'Collapse or expand ' + item });
+  const title = el('h2', {}, fold, item, el('span', { className: 'badge' }));
+  title.addEventListener('click', event => { if (!event.target.closest('select, a')) setCollapsed(item, !folded.has(item)); });
+  const body = el('div', { className: 'item-body' });
+  const section = el('section', { id: item }, title, el('div', { className: 'peek' }), body);
+  section.dataset.item = item;
+  if (doc.version >= 2) {
+    const created = values[fieldIndex(item, 'Created at')], updated = values[fieldIndex(item, 'Updated at')];
+    body.append(el('div', { className: 'dates', textContent: `Created ${formatDate(created)} · Updated ${formatDate(updated)}`, title: `${created} / ${updated}` }));
+  }
+  body.append(el('div', { className: 'grid' }));
+  return section;
+}
+
+/* ---------- collapsing items (kept in memory, remembered per file when storage works) ---------- */
+
+let folded = new Set();
+const foldKey = () => 'collapsed.' + doc.filename;
+function loadFolded() {
+  try { folded = new Set(JSON.parse(remembered(foldKey(), '[]'))); } catch { folded = new Set(); }
+}
+function setFolded(items) {
+  folded = new Set(items);
+  remember(foldKey(), JSON.stringify([...folded]));
+  applyCollapsed();
+}
+const setCollapsed = (item, value) => setFolded(value ? [...folded, item] : [...folded].filter(x => x !== item));
+const setAllCollapsed = value => setFolded(value ? doc.items.map(item => item.id) : []);
+const expand = item => { if (folded.has(item)) setCollapsed(item, false); };
+
+function applyCollapsed() {
+  for (const item of doc.items) {
+    const section = document.getElementById(item.id);
+    if (!section) continue;
+    const isCollapsed = folded.has(item.id);
+    section.classList.toggle('collapsed', isCollapsed);
+    section.querySelector('h2 .fold').setAttribute('aria-expanded', String(!isCollapsed));
+    const summary = SUMMARY_FIELDS.map(label => fieldIndex(item.id, label)).find(n => n >= 0);
+    section.querySelector('.peek').textContent = summary >= 0 ? summaryText(values[summary]) : '';
+  }
+  const all = doc.items.length > 0 && doc.items.every(item => folded.has(item.id));
+  $('#fold').textContent = all ? 'Expand all' : 'Collapse all';
+}
+
+function renderField(f, i) {
+  if (DATE_FIELDS.has(f.label)) return null;  // shown in the item header; the server maintains them
+  const wrapper = el('div', { className: 'field' + (WIDE_FIELDS.has(f.label) || !f.inquiry ? ' wide' : '') });
+  // Context and Scope already carry their name in the section heading.
+  // History and Next action have their own group heading, so their label would repeat it.
+  const ownGroup = doc.version === 3 && (f.label === 'History' || f.label === 'Next action');
+  if (f.inquiry) wrapper.append(el('label', { className: 'label' + (ownGroup ? ' visually-hidden' : ''), textContent: f.label, htmlFor: 'f' + i }));
+  if (f.inquiry && doc.version === 3 && HINTS[f.label]) wrapper.append(el('span', { className: 'hint', textContent: HINTS[f.label] }));
+  if (doc.version >= 2 && f.label === 'History') wrapper.append(historyView(f.inquiry, i));
+  else if (doc.version >= 2 && f.label === 'References') wrapper.append(referencesView(f.inquiry, i));
+  else if (f.label === 'Status') {
+    const select = el('select', { id: 'f' + i, className: 'status' }, ...STATUSES[doc.version].map(s => el('option', { value: s, textContent: s })));
+    select.value = values[i];
+    select.addEventListener('change', () => setValue(i, select.value));
+    controls[i] = select;
+    wrapper.append(select);
+  } else {
+    const area = el('textarea', { id: 'f' + i, value: values[i], className: SHORT_FIELDS.has(f.label) ? 'short' : '' });
+    if (!f.inquiry) area.setAttribute('aria-label', f.label);
+    area.addEventListener('input', () => setValue(i, area.value));
+    controls[i] = area;
+    wrapper.append(area);
+    if (f.inquiry && doc.version === 3 && f.label === 'Questions') {
+      const list = el('ul', { className: 'checklist' });
+      const draw = () => {
+        const lines = values[i].split('\n');
+        list.replaceChildren(...lines.map((line, n) => {
+          const m = line.match(/^(\s*[-*]\s*\[)([ xX])(\]\s*)(.*)$/);
+          if (!m) return null;
+          const box = el('input', { type: 'checkbox', checked: m[2] !== ' ' });
+          box.onchange = () => {
+            const next = values[i].split('\n');
+            next[n] = m[1] + (box.checked ? 'x' : ' ') + m[3] + m[4];
+            setValue(i, next.join('\n'));
+            draw();
+          };
+          return el('li', {}, el('label', {}, box, el('span', { textContent: m[4] })));
+        }).filter(Boolean));
+      };
+      area.addEventListener('input', draw);
+      refViews.push(draw);
+      draw();
+      wrapper.append(list);
+    }
+    if (f.inquiry && doc.version === 3 && f.label === 'Next action') {
+      const warning = el('div', { className: 'warn' });
+      const check = () => {
+        const status = values[fieldIndex(f.inquiry, 'Status')];
+        warning.textContent = UNRESOLVED.has(status) && !/^[^:\n]{2,60}:\s*\S/.test(values[i].trim()) ? 'Name an owner: “Owner: next step”.' : '';
+      };
+      area.addEventListener('input', check);
+      refViews.push(check);
+      check();
+      wrapper.append(warning);
+    }
+    if (f.inquiry && doc.version === 3 && f.label === 'Proposed acceptance criteria') {
+      const draw = criteriaView(f.inquiry, i, area);
+      area.addEventListener('input', () => draw());
+      wrapper.append(draw.box);
+    }
+    if (f.inquiry && doc.version === 3 && f.label === 'Visual aids') {
+      const draw = visualAids(i);
+      // AC decisions record the Visual aids they were made on, so their state can change too.
+      area.addEventListener('input', () => { draw.later(); redrawViews(); });
+      wrapper.append(draw.box);
+    }
+    if (f.inquiry && f.label === REQUIREMENT_FIELD[doc.version]) {
+      const chips = requirementChips(i);
+      area.addEventListener('input', () => redrawViews());  // chips, criteria note, Ready counts
+      wrapper.append(chips.box);
+    }
+  }
+  return wrapper;
+}
+
+const requirementIds = text => [...new Set(text.match(REQUIREMENT_ID) || [])];
+// v1/v2 mention IDs in free text; a v3 item names exactly one.
+const requirementsOf = (version, text) => version === 3 ? (EXPLICIT_ID.test(text.trim()) ? [text.trim()] : []) : requirementIds(text);
+const definitions = id => catalog.requirements.filter(r => r.id === id);
+
+// Requirement IDs in a field, as chips that open the Requirements view.
+function requirementChips(i) {
+  const box = el('div', { className: 'chips' });
+  const draw = () => box.replaceChildren(...requirementsOf(doc.version, values[i]).map(id => {
+    const defs = definitions(id);
+    const chip = el('button', { type: 'button', className: 'chip', textContent: id, title: defs[0]?.title || 'Open in Requirements' });
+    chip.onclick = () => showView('reqs', id);
+    const missing = catalog.configured && !defs.length ? el('span', { className: 'warn', textContent: 'not found' }) : null;
+    return el('span', {}, chip, missing);
+  }));
+  draw.box = box;
+  refViews.push(draw);
+  draw();
+  return draw;
+}
+
+// v3 has no Current conclusion field: the latest conclusion event, unless reopened later.
+// Feedback after a settled conclusion is the signal to check whether it still holds.
+function latestConclusion(history) {
+  const at = history.findLastIndex(e => e.type === 'conclusion' || e.type === 'reopened');
+  if (at < 0) return null;
+  const feedback = history.slice(at + 1).filter(e => e.type === 'feedback');
+  return { event: history[at], settled: history[at].type === 'conclusion', feedbackSince: feedback.length };
+}
+
+function updateConclusion(item) {
+  const box = document.querySelector(`section[data-item="${item}"] .conclusion`);
+  if (!box) return;
+  let latest = null;
+  try { latest = latestConclusion(decode(values[fieldIndex(item, 'History')])); } catch { /* shown on save */ }
+  box.dataset.state = latest ? (latest.settled ? 'settled' : 'reopened') : 'none';
+  box.textContent = !latest ? '' : latest.settled
+    ? `Conclusion (${latest.event.author}, ${formatDate(latest.event.at)}): ${latest.event.content}`
+      + (latest.feedbackSince ? `\n⚠ ${latest.feedbackSince} feedback since this conclusion. Submit a reopened event if it changes the outcome.` : '')
+    : `Reopened by ${latest.event.author}: ${latest.event.content}`;
+}
+
+// "- Label: target" or "- target"; the target is an http(s) URL or a path relative to this file.
+function visualAidEntries(text) {
+  return text.split('\n').map(line => line.replace(/^\s*[-*]\s*/, '').trim()).filter(Boolean).map(line => {
+    const match = line.match(/^(?:(.+?):\s+)?(\S+)$/);
+    if (!match) return { text: line };
+    const [, label, target] = match;
+    if (/^https:\/\//i.test(target) && /\.(png|jpe?g|gif|webp)$/i.test(target.split(/[?#]/)[0])) return { label: label || target, remote: target };
+    if (/^https?:\/\//i.test(target)) return { label: label || target, url: target };
+    if (/\.(png|jpe?g|gif|webp)$/i.test(target)) return { label: label || target, image: target };
+    if (target.includes('/') || /\.\w+$/.test(target)) return { label: label || target, path: target };
+    return { text: line };
+  });
+}
+
+function imageUrl(relative) {
+  if (!imageCache.has(relative)) {
+    imageCache.set(relative, (async () => {
+      const { data, kind } = await api('GET', '/api/asset?path=' + encodeURIComponent(relative));
+      const bytes = Uint8Array.from(atob(data), c => c.charCodeAt(0));
+      return URL.createObjectURL(new Blob([bytes], { type: kind }));
+    })());
+  }
+  return imageCache.get(relative);
+}
+
+function openImage(src, label) {
+  const close = el('button', { type: 'button', textContent: 'Close' });
+  const dialog = el('dialog', {}, el('h2', { textContent: label }), el('img', { src, alt: label, referrerPolicy: 'no-referrer' }), el('div', { className: 'actions' }, close));
+  close.onclick = () => dialog.close();
+  dialog.onclose = () => dialog.remove();
+  document.body.append(dialog);
+  dialog.showModal();
+}
+
+function visualAids(i) {
+  const box = el('div', { className: 'aids' });
+  let timer;
+  const draw = () => box.replaceChildren(...visualAidEntries(values[i]).map(entry => {
+    if (entry.url) {
+      return el('div', {}, el('a', { href: entry.url, target: '_blank', rel: 'noopener noreferrer', textContent: entry.label, title: entry.url }));
+    }
+    if (entry.remote) {
+      // Loaded by the browser straight from that site (with whatever login it has there),
+      // without sending this page's address. Falls back to the link when it cannot load.
+      const host = new URL(entry.remote).host;
+      const name = entry.label === entry.remote ? new URL(entry.remote).pathname.split('/').pop() || host : entry.label;
+      const link = el('a', { href: entry.remote, target: '_blank', rel: 'noopener noreferrer', textContent: name, title: entry.remote });
+      const image = el('img', { src: entry.remote, alt: entry.label, title: 'Click to enlarge', referrerPolicy: 'no-referrer' });
+      const figure = el('figure', { className: 'aid' }, image, el('figcaption', {}, link));
+      image.onclick = () => openImage(entry.remote, entry.label);
+      image.onerror = () => image.replaceWith(el('div', { className: 'warn fallback',
+        textContent: `Preview unavailable: ${host} did not return the image here (it may need you to sign in). Open the link instead.` }));
+      return figure;
+    }
+    if (entry.image) {
+      // Caption is the label; the path stays available as a tooltip.
+      const figure = el('figure', { className: 'aid' }, el('figcaption', { textContent: entry.label === entry.image ? entry.image.split('/').pop() : entry.label, title: entry.image }));
+      imageUrl(entry.image).then(src => {
+        const image = el('img', { src, alt: entry.label, title: 'Click to enlarge' });
+        image.onclick = () => openImage(src, entry.label);
+        figure.prepend(image);
+      }, error => figure.append(el('div', { className: 'warn', textContent: error.message })));
+      return figure;
+    }
+    if (entry.path) return el('div', {}, entry.label, el('span', { className: 'note', textContent: ` (${entry.path}; only PNG, JPEG, GIF and WebP images are previewed)` }));
+    return el('div', { className: 'note', textContent: entry.text });
+  }));
+  draw.later = () => { clearTimeout(timer); timer = setTimeout(draw, 400); };
+  draw.box = box;
+  draw();
+  return draw;
+}
+
+/* ---------- acceptance criteria and PO decisions ---------- */
+
+const aidsOf = item => { const i = fieldIndex(item, 'Visual aids'); return i >= 0 ? values[i] : null; };
+
+function parseCriteria(text) {
+  return text.split('\n').map(line => line.match(CRITERION)).filter(Boolean).map(m => ({ id: m[1], text: m[2] }));
+}
+
+// Latest PO decision per criterion; a decision only counts for the exact text it was made on.
+// Latest PO decision per criterion; it only counts for the exact criterion text, and
+// for the Visual aids text, that the PO saw when deciding.
+function criteriaStates(text, history, aids = null) {
+  const latest = {};
+  for (const event of history) {
+    if (!Array.isArray(event.criteria)) continue;  // v3: a response listing criteria is a decision
+    for (const entry of event.criteria) latest[entry.id] = { ...entry, author: event.author, at: event.at };
+  }
+  return parseCriteria(text).map(c => {
+    const d = latest[c.id];
+    const aidsChanged = d && aids !== null && typeof d.aids === 'string' && d.aids.trim() !== aids.trim();
+    const state = !d ? 'proposed' : d.text !== c.text || aidsChanged ? 'changed' : d.decision;
+    return { ...c, state, why: aidsChanged && d.text === c.text ? 'visual aids changed' : '', by: d && state !== 'changed' ? `${d.author}, ${formatDate(d.at)}` : '' };
+  });
+}
+
+function criteriaView(item, i, area) {
+  const history = () => decode(values[fieldIndex(item, 'History')]);
+  const list = el('ul', { className: 'criteria' });
+  const unlinked = el('div', { className: 'warn' });
+  const add = el('button', { type: 'button', textContent: '+ Criterion' });
+  const decide = el('button', { type: 'button', textContent: 'PO decision…' });
+  const draw = () => {
+    let states = [];
+    try { states = criteriaStates(values[i], history(), aidsOf(item)); } catch { /* invalid History is reported on save */ }
+    list.replaceChildren(...states.map(c => {
+      const badge = el('span', { className: 'badge', title: c.why, textContent: c.state === 'changed' ? 'changed since decision' + (c.why ? ` (${c.why})` : '') : c.state === 'rejected' ? 'rejected · rewrite or remove' : c.state });
+      badge.dataset.status = STATE_TONE[c.state];
+      return el('li', {}, el('strong', { textContent: c.id }), badge, el('span', { textContent: c.text }), c.by ? el('span', { className: 'note', textContent: c.by }) : null);
+    }));
+    decide.disabled = !states.length;
+    decide.title = states.length ? '' : 'Add a criterion first';
+    // Criteria count toward a requirement's Ready only when the item names one.
+    const requirement = values[fieldIndex(item, 'Requirement')] ?? '';
+    unlinked.textContent = states.length && !EXPLICIT_ID.test(requirement.trim()) ? 'These criteria count toward Ready only once Requirement names a requirement.' : '';
+  };
+  add.onclick = () => {
+    // Never reuse an ID, including ones only left in earlier decisions.
+    const used = [...parseCriteria(values[i]).map(c => c.id), ...history().flatMap(e => (e.criteria || []).map(c => c.id))];
+    const next = 'AC' + (Math.max(0, ...used.map(id => Number(id.slice(2)))) + 1);
+    const current = /^(-\s*)?(pending)?$/i.test(values[i].trim()) ? '' : values[i].trimEnd() + '\n';
+    setValue(i, `${current}- ${next}: `);
+    area.focus();
+    area.setSelectionRange(area.value.length, area.value.length);
+    draw();
+  };
+  decide.onclick = () => decisionDialog(item, i, criteriaStates(values[i], history(), aidsOf(item)));
+  draw.box = el('div', {}, list, unlinked, el('div', { className: 'criteria-actions' }, add, decide));
+  refViews.push(draw);
+  draw();
+  return draw;
+}
+
+function decisionDialog(item, i, states) {
+  const author = el('input', { type: 'text', value: remembered('po-author', remembered('author')), ariaLabel: 'PO name' });
+  const rows = states.map(c => {
+    const select = el('select', { ariaLabel: 'Decision for ' + c.id },
+      el('option', { value: '', textContent: c.state === 'proposed' || c.state === 'changed' ? 'Not decided' : `Keep (${c.state})` }),
+      el('option', { value: 'accepted', textContent: 'Accept' }), el('option', { value: 'rejected', textContent: 'Reject' }));
+    return { c, select, row: el('div', { className: 'criterion' }, el('span', {}, el('strong', { textContent: c.id + ' ' }), c.text), select) };
+  });
+  const note = el('textarea', { placeholder: 'Optional note, e.g. why AC2 is rejected' });
+  const record = el('button', { type: 'submit', className: 'primary', textContent: 'Record decision and save' });
+  const cancel = el('button', { type: 'button', textContent: 'Cancel' });
+  const form = el('form', {}, el('h2', { textContent: `PO decision · ${item}` }),
+    el('p', { className: 'note', textContent: 'Recorded as role PO, together with the Visual aids shown now. The editor checks the role, not who you are; the approval of record is the pull request review.' }),
+    el('label', { className: 'field' }, el('span', { className: 'label', textContent: 'PO name' }), author),
+    ...rows.map(r => r.row),
+    el('label', { className: 'field' }, el('span', { className: 'label', textContent: 'Note' }), note),
+    el('div', { className: 'actions' }, cancel, record));
+  const dialog = el('dialog', {}, form);
+  cancel.onclick = () => dialog.close();
+  dialog.onclose = () => dialog.remove();
+  form.onsubmit = async event => {
+    event.preventDefault();
+    const aids = aidsOf(item);
+    const criteria = rows.filter(r => r.select.value).map(r => ({ id: r.c.id, decision: r.select.value, text: r.c.text, ...(aids === null ? {} : { aids }) }));
+    if (!author.value.trim() || !criteria.length) { message('Enter the PO name and decide at least one criterion.', true); return; }
+    remember('po-author', author.value.trim());
+    const summary = criteria.map(c => `${c.id} ${c.decision}`).join(', ');
+    const history = fieldIndex(item, 'History');
+    const events = decode(values[history]);
+    events.push({ id: 'EV-' + crypto.randomUUID(), at: isoNow(), author: author.value.trim(), role: 'PO',
+      content: note.value.trim() ? `${summary}. ${note.value.trim()}` : summary, criteria });
+    setValue(history, encode(events));
+    dialog.close();
+    redrawViews();
+    await save();
+  };
+  document.body.append(dialog);
+  dialog.showModal();
+}
+
+/* ---------- requirement readiness ---------- */
+
+const isPlaceholder = text => /^(-\s*)?(pending|tbd)?$/i.test(text.trim());
+
+// Reasons a requirement is not ready; an empty list means Ready.
+const normalized = text => text.toLowerCase().replace(/[\s.]+/g, ' ').trim();
+
+// Reasons a requirement is not ready; an empty list means Ready. The requirement's
+// acceptance criteria are those proposed in the items that clarify it.
+function readiness(items, defs) {
+  const reasons = [];
+  if (!catalog.configured) reasons.push('No requirements source yet, so accepted criteria cannot be checked against the requirement text');
+  else if (!defs.length) reasons.push(`Not found in ${catalog.root}`);
+  if (!items.length) reasons.push('No dou item yet: use “+ Create dou item”');
+  const requirementText = normalized(defs.map(d => d.title + '\n' + d.excerpt).join('\n'));
+  let criteriaCount = 0;
+  for (const item of items) {
+    const v = item.values;
+    if (UNRESOLVED.has(v.Status)) reasons.push(`${item.id} is ${v.Status}`);
+    if (item.version !== 3) continue;
+    const open = openQuestions(v.Questions || '');
+    if (open) reasons.push(`${item.id}: ${open} open question${open === 1 ? '' : 's'}`);
+    const states = criteriaStates(v['Proposed acceptance criteria'] || '', safeHistory(item), v['Visual aids'] ?? null);
+    if (!states.length) continue;  // a pure question needs no criteria of its own
+    criteriaCount += states.length;
+    if (isPlaceholder(v['Desired outcome'] || '')) reasons.push(`${item.id}: desired outcome missing`);
+    const undecided = states.filter(s => s.state === 'proposed' || s.state === 'changed');
+    if (undecided.length) reasons.push(`${item.id}: PO has not decided ${undecided.map(s => s.id + (s.state === 'changed' ? ` (changed since decision${s.why ? ': ' + s.why : ''})` : '')).join(', ')}`);
+    // A rejected criterion must be rewritten (which makes it "changed") or removed.
+    const rejected = states.filter(s => s.state === 'rejected');
+    if (rejected.length) reasons.push(`${item.id}: ${rejected.map(s => s.id).join(', ')} rejected by the PO; rewrite or remove`);
+    // Ready means the requirement itself says it: each accepted criterion appears in its text.
+    if (defs.length) {
+      const missing = states.filter(s => s.state === 'accepted' && !requirementText.includes(normalized(s.text)));
+      if (missing.length) reasons.push(`${item.id}: ${missing.map(s => s.id).join(', ')} accepted but not yet written into ${defs[0].file}`);
+    }
+  }
+  if (items.length && !criteriaCount) reasons.push('No acceptance criteria proposed for this requirement yet');
+  return reasons;
+}
+
+// Names, roles and collapsed items, kept by the extension for every editor on this machine.
+let memory = {};
+function remembered(key, fallback = '') {
+  return typeof memory[key] === 'string' && memory[key] ? memory[key] : fallback;
+}
+function remember(key, value) {
+  memory[key] = value;
+  vscode.postMessage({ type: 'remember', key, value });
+}
+
+function historyView(item, i) {
+  const v3 = doc.version === 3;
+  const box = el('div');
+  const list = el('ol', { className: 'timeline' });
+  const draw = () => {
+    const events = decode(values[i]);
+    list.replaceChildren(...events.map(e => {
+      const kind = Array.isArray(e.criteria) ? 'AC decision' : e.type;
+      const li = el('li', {},
+        el('div', { className: 'meta' }, kind ? el('span', { className: 'chip', textContent: kind }) : null, ` ${e.author} (${e.role}) · `,
+          el('time', { textContent: formatDate(e.at), title: e.at }), e.source ? ` · ${e.source}` : ''),
+        el('div', { className: 'body', textContent: e.content }));
+      li.dataset.type = Array.isArray(e.criteria) ? 'decision' : e.type || 'response';
+      return li;
+    }));
+    if (!events.length) list.replaceChildren(el('li', { className: 'empty', textContent: 'No responses yet.' }));
+  };
+  refViews.push(draw);
+
+  // Inline composer: write a response and submit it (adds it, then saves the file).
+  const author = el('input', { type: 'text', placeholder: 'Your name', value: remembered('author'), ariaLabel: 'Author' });
+  const role = el('select', { ariaLabel: 'Role' }, ...ROLES.map(r => el('option', { textContent: r })));
+  role.value = remembered('role', 'Dev');
+  const type = v3 ? null : el('select', { ariaLabel: 'Event type' }, ...EVENT_TYPES.map(r => el('option', { textContent: r })));
+  const source = el('input', { type: 'text', className: 'source', placeholder: 'Source (optional), e.g. Sprint 12 review, demo with the PO', ariaLabel: 'Source' });
+  const text = el('textarea', { placeholder: v3 ? 'Write a response…' : 'Write a response, question, proposal, conclusion or feedback…', ariaLabel: 'Response' });
+  // New input on a resolved item usually means it needs another look.
+  const reopen = el('input', { type: 'checkbox', checked: true });
+  const reopenLabel = el('label', { className: 'note reopen' }, reopen, ' Reopen this item (Status → investigating)');
+  const syncReopen = () => { reopenLabel.hidden = !v3 || values[fieldIndex(item, 'Status')] !== 'resolved'; };
+  refViews.push(syncReopen);
+  const submit = el('button', { type: 'submit', className: 'primary', textContent: 'Submit' });
+  const form = el('form', { className: 'composer' }, el('div', { className: 'row' + (v3 ? ' two' : '') }, author, role, type), source, text,
+    el('div', { className: 'actions' }, reopenLabel, el('span', { className: 'note', textContent: 'Submit adds the response and saves the file.' }), submit));
+  form.onsubmit = async event => {
+    event.preventDefault();
+    const entry = { author: author.value.trim(), role: role.value, ...(v3 ? {} : { type: type.value }), content: text.value.trim() };
+    if (source.value.trim()) entry.source = source.value.trim();
+    if (!entry.author || !entry.content) { message('Fill in your name and the content before submitting.', true); return; }
+    remember('author', entry.author);
+    remember('role', entry.role);
+    const events = decode(values[i]);
+    events.push({ id: 'EV-' + crypto.randomUUID(), at: isoNow(), ...entry });
+    setValue(i, encode(events));
+    if (!v3 && entry.type === 'conclusion') setValue(fieldIndex(item, 'Current conclusion'), entry.content);
+    if ((!v3 && entry.type === 'reopened') || (v3 && !reopenLabel.hidden && reopen.checked)) setValue(fieldIndex(item, 'Status'), 'investigating');
+    draw();
+    updateConclusion(item);
+    text.value = '';
+    source.value = '';
+    await save();
+  };
+  syncReopen();
+  draw();
+  box.append(list, form, el('p', { className: 'note', textContent: 'History is append-only. Submit a new response to correct an earlier one.' }));
+  return box;
+}
+
+function referencesView(item, i) {
+  const box = el('div');
+  const list = el('ul', { className: 'refs' });
+  const backlinks = el('p', { className: 'note' });
+  const draw = () => {
+    const refs = decode(values[i]);
+    list.replaceChildren(...refs.map((ref, n) => {
+      const matches = index.filter(x => x.id === ref.item_id);
+      const local = doc.items.some(x => x.id === ref.item_id);
+      const open = el('button', { type: 'button', className: 'link', textContent: ref.item_id });
+      open.onclick = () => openReference(ref.item_id, matches);
+      const remove = el('button', { type: 'button', className: 'icon', textContent: '×', title: 'Remove reference', ariaLabel: 'Remove reference to ' + ref.item_id });
+      remove.onclick = () => { const next = decode(values[i]); next.splice(n, 1); setValue(i, encode(next)); redrawViews(); };
+      return el('li', {}, el('span', { className: 'chip', textContent: ref.relation }), open, `— ${ref.reason}`,
+        local || matches.length === 1 ? null : el('span', { className: 'warn', textContent: matches.length ? '(ambiguous)' : '(not found beside this file)' }), remove);
+    }));
+    if (!refs.length) list.replaceChildren(el('li', { className: 'empty', textContent: 'No references.' }));
+    // Includes unsaved edits of this file, so a new reference shows on its target at once.
+    const incoming = traceItems().filter(x => x.id !== item && safeRefs(x).some(r => r.item_id === item));
+    backlinks.textContent = incoming.length ? 'Referenced by: ' + incoming.map(x => `${x.id} (${x.file})`).join(', ') : '';
+  };
+  const add = el('button', { type: 'button', textContent: '+ Add reference' });
+  add.onclick = () => openDialog('Reference another item', [
+    { name: 'item', label: 'Item ID', suggestions: [...new Set([...doc.items.map(x => x.id), ...index.map(x => x.id)])].filter(id => id !== item) },
+    { name: 'relation', label: 'Relation', options: ['related_to', 'depends_on', 'follows_up', 'supersedes'] },
+    { name: 'reason', label: 'Reason', multiline: true },
+  ], v => {
+    const refs = decode(values[i]);
+    refs.push({ item_id: v.item.toUpperCase(), relation: v.relation, reason: v.reason });
+    setValue(i, encode(refs));
+    redrawViews();
+  });
+  refViews.push(draw);
+  draw();
+  box.append(list, add, backlinks);
+  return box;
+}
+
+function safeHistory(entry) {
+  try { return decode(entry.values.History || '[]'); } catch { return []; }
+}
+
+function safeRefs(entry) {
+  try { return decode(entry.values.References || '[]'); } catch { return []; }
+}
+
+function openReference(id, matches) {
+  const local = document.getElementById(id);
+  if (local) {
+    expand(id);
+    $('#filter').value = 'all';
+    $('#search').value = '';
+    applyFilter();
+    local.scrollIntoView({ behavior: 'smooth' });
+  } else if (matches.length === 1) {
+    const close = el('button', { type: 'button', textContent: 'Close' });
+    const dialog = el('dialog', {}, el('h2', { textContent: `${id} · ${matches[0].file}` }),
+      el('pre', { textContent: Object.entries(matches[0].values).map(([k, v]) => `${k}\n${v}`).join('\n\n') }),
+      el('div', { className: 'actions' }, close));
+    close.onclick = () => dialog.close();
+    dialog.onclose = () => dialog.remove();
+    document.body.append(dialog);
+    dialog.showModal();
+  } else {
+    message(`${id} is unavailable or ambiguous. Keep referenced Markdown files in the same folder.`, true);
+  }
+}
+
+function openDialog(title, fields, submit) {
+  const form = el('form', { method: 'dialog' }, el('h2', { textContent: title }));
+  const inputs = {};
+  for (const spec of fields) {
+    let input;
+    if (spec.options) input = el('select', {}, ...spec.options.map(o => el('option', { textContent: o })));
+    else if (spec.multiline) input = el('textarea');
+    else input = el('input', { type: 'text', autocomplete: 'off' });
+    if (spec.suggestions) {
+      const list = el('datalist', { id: 'dl-' + spec.name }, ...spec.suggestions.map(s => el('option', { value: s })));
+      input.setAttribute('list', list.id);
+      form.append(list);
+    }
+    input.required = true;
+    inputs[spec.name] = input;
+    form.append(el('label', { className: 'field' }, el('span', { className: 'label', textContent: spec.label }), input));
+  }
+  const cancel = el('button', { type: 'button', textContent: 'Cancel' });
+  form.append(el('div', { className: 'actions' }, cancel, el('button', { type: 'submit', className: 'primary', textContent: 'Add' })));
+  const dialog = el('dialog', {}, form);
+  cancel.onclick = () => dialog.close();
+  form.onsubmit = event => {
+    event.preventDefault();
+    const result = Object.fromEntries(Object.entries(inputs).map(([k, v]) => [k, v.value.trim()]));
+    if (Object.values(result).some(v => !v)) return;
+    dialog.close();
+    submit(result);
+  };
+  dialog.onclose = () => dialog.remove();
+  document.body.append(dialog);
+  dialog.showModal();
+}
+
+function redrawViews() {
+  refViews.forEach(draw => draw());
+  updateRailCounts();
+  if (view === 'reqs') drawTrace();
+}
+
+/* ---------- requirements view ---------- */
+
+// Items of every clarification file beside this one; this file's items use unsaved values.
+function traceItems() {
+  const own = doc.items.map(item => {
+    const itemValues = {};
+    doc.fields.forEach((f, i) => { if (f.inquiry === item.id) itemValues[f.label] = values[i]; });
+    return { file: doc.filename, version: doc.version, id: item.id, values: itemValues, local: true };
+  });
+  return [...index.filter(x => x.file !== doc.filename), ...own];
+}
+
+function itemLine(item) {
+  const status = item.values.Status;
+  const badge = el('span', { className: 'badge', textContent: status });
+  badge.dataset.status = status;
+  const open = el('button', { type: 'button', className: 'link', textContent: item.id });
+  open.onclick = () => {
+    if (item.local) { showView('items'); openReference(item.id, []); }
+    else openReference(item.id, [item]);
+  };
+  const question = SUMMARY_FIELDS.map(label => item.values[label]).find(Boolean) || '';
+  const latest = item.version === 2 ? latestConclusion(safeHistory(item)) : null;
+  const conclusion = UNRESOLVED.has(status) || item.version === 3 ? '' : CONCLUSION_FIELDS.map(label => item.values[label]).find(Boolean) || '';
+  const feedback = latest?.settled && latest.feedbackSince ? el('span', { className: 'warn', textContent: `${latest.feedbackSince} feedback since conclusion` }) : null;
+  return el('li', {}, badge, open, el('span', { className: 'note', textContent: item.local ? '(this file)' : `(${item.file})` }), feedback,
+    el('div', { className: 'text', textContent: summaryText(question) + (conclusion ? '\nConclusion: ' + conclusion.split('\n')[0] : '') }));
+}
+
+function drawTrace() {
+  const byRequirement = groupByRequirement();
+  const status = $('#filter').value, query = $('#search').value.trim().toLowerCase();
+  // Document order of the requirement files; IDs that are not found come last.
+  const order = id => { const n = catalog.requirements.findIndex(r => r.id === id); return n < 0 ? Infinity : n; };
+  const ids = [...byRequirement.keys()].sort((a, b) => order(a) - order(b) || a.localeCompare(b, undefined, { numeric: true }));
+  const sections = [], outline = [];
+  let unresolvedCount = 0, missingCount = 0, readyCount = 0, emptyCount = 0;
+  for (const id of ids) {
+    const items = byRequirement.get(id), defs = definitions(id);
+    const unresolved = items.filter(item => UNRESOLVED.has(item.values.Status)).length;
+    if (unresolved) unresolvedCount++;
+    if (!items.length) emptyCount++;
+    if (catalog.configured && !defs.length) missingCount++;
+    if (!readiness(items, defs).length) readyCount++;
+    const text = [id, ...defs.map(d => d.title + '\n' + d.excerpt), ...items.map(item => item.id + '\n' + Object.values(item.values).join('\n'))].join('\n').toLowerCase();
+    if ((status !== 'all' && !items.some(item => item.values.Status === status)) || (query && !text.includes(query))) continue;
+
+    const reasons = readiness(items, defs);
+    const tone = reasons.length ? 'investigating' : 'resolved';
+    const ready = el('span', { className: 'badge ready', textContent: reasons.length ? 'Not ready' : 'Ready', title: reasons.join('\n') });
+    ready.dataset.status = tone;
+    const counts = el('span', { className: 'note', textContent: !items.length ? 'no dou item' : unresolved ? `${unresolved} unresolved item${unresolved === 1 ? '' : 's'}` : 'all items resolved' });
+    const section = el('section', { id: 'req-' + id },
+      el('h2', {}, id, defs[0]?.title ? el('span', { className: 'req-title', textContent: defs[0].title }) : null, ready, counts));
+    let where;
+    if (!catalog.configured) where = 'Set a requirements source above to show titles and text.';
+    else if (!defs.length) where = el('span', { className: 'warn', textContent: `Not found in ${catalog.root}. Check the ID or add the requirement.` });
+    else {
+      // With a Git source, locations open the file at the synced commit on the hosting site.
+      // From a folder, a location opens the file in VS Code at that line.
+      const places = defs.map(d => catalog.web
+        ? el('a', { href: `${catalog.web}${d.file.split('/').map(encodeURIComponent).join('/')}?plain=1#L${d.line}`, target: '_blank', rel: 'noopener noreferrer', textContent: `${d.file}:${d.line}` })
+        : catalog.source?.kind === 'folder' ? openLocation(d) : `${d.file}:${d.line}`);
+      where = el('span', {}, ...places.flatMap((x, n) => n ? [' · ', x] : [x]), defs.length > 1 ? `  (defined ${defs.length} times)` : '');
+    }
+    section.append(el('div', { className: 'req-meta' }, where));
+    if (reasons.length) section.append(el('ul', { className: 'reasons' }, ...reasons.map(r => el('li', { textContent: r }))));
+    if (defs[0]?.excerpt) section.append(el('details', {}, el('summary', { textContent: 'Requirement text' }), el('div', { className: 'req-text', textContent: defs[0].excerpt })));
+    if (items.length) section.append(el('ul', { className: 'linked' }, ...items.map(itemLine)));
+    if (doc.version === 3) {
+      const create = el('button', { type: 'button', className: 'create', textContent: '+ Create dou item' });
+      create.onclick = () => createItemFor(id, defs[0]);
+      section.append(el('div', { className: 'criteria-actions' }, create));
+    }
+    sections.push(section);
+
+    const dot = el('span', { className: 'dot' });
+    dot.dataset.status = tone;
+    outline.push(el('li', {}, el('a', { href: '#req-' + id }, dot, el('span', {}, id, el('small', { textContent: defs[0]?.title || '' })))));
+  }
+  const summary = `${ids.length} requirement${ids.length === 1 ? '' : 's'} · ${readyCount} ready · ${emptyCount} without a dou item · ${unresolvedCount} with unresolved items`
+    + (missingCount ? ` · ${missingCount} not found` : '')
+    + (catalog.skipped?.length ? ` · ${catalog.skipped.length} file(s) skipped` : '')
+    + (catalog.truncated ? ' · scan limit reached' : '')
+    + '. This file includes unsaved edits; other files are shown as saved.';
+  const empty = ids.length ? (sections.length ? null : el('p', { className: 'empty', textContent: 'No requirement matches the filter.' }))
+    : el('p', { className: 'empty', textContent: catalog.configured ? `No requirement found in ${catalog.root}.` : catalog.sync?.state === 'syncing' ? 'Fetching requirements…' : 'No requirements yet: set a requirements source above.' });
+  $('#trace').replaceChildren(...[sourceCard(), el('p', { className: 'summary', textContent: summary }), empty, ...sections].filter(Boolean));
+  $('#outline').replaceChildren(...outline);
+}
+
+function openLocation(definition) {
+  const link = el('button', { type: 'button', className: 'link', textContent: `${definition.file}:${definition.line}`, title: 'Open in the editor' });
+  link.onclick = () => vscode.postMessage({ type: 'openLocation', file: definition.file, line: definition.line });
+  return link;
+}
+
+function markRail() {
+  $('#tab-items').setAttribute('aria-selected', String(!sourceMode && view === 'items'));
+  $('#tab-reqs').setAttribute('aria-selected', String(!sourceMode && view === 'reqs'));
+  $('#mode').setAttribute('aria-selected', String(sourceMode));
+}
+
+// Rail target; leaving source mode validates the Markdown first and keeps you there if it is invalid.
+async function goTo(name) {
+  if (!doc) return;
+  if (sourceMode) {
+    try {
+      await reparse(content());
+    } catch (e) {
+      message('Fix the Markdown before leaving source mode:\n' + e.message, true);
+      return;
+    }
+    message('Source validated.');
+  }
+  showView(name);
+}
+
+function updateRailCounts() {
+  if (!doc) return;
+  $('#count-items').textContent = String(doc.items.length);
+  const groups = groupByRequirement();
+  const ready = [...groups].filter(([id, items]) => !readiness(items, definitions(id)).length).length;
+  $('#count-reqs').textContent = groups.size ? `${ready}/${groups.size} ready` : '';
+}
+
+function groupByRequirement() {
+  const groups = new Map(catalog.requirements.map(r => [r.id, []]));
+  for (const item of traceItems()) {
+    for (const id of requirementsOf(item.version, item.values[REQUIREMENT_FIELD[item.version]] || '')) {
+      if (!groups.has(id)) groups.set(id, []);
+      groups.get(id).push(item);
+    }
+  }
+  return groups;
+}
+
+function showView(name, focus) {
+  view = name;
+  markRail();
+  $('#form').hidden = name !== 'items';
+  $('#trace').hidden = name !== 'reqs';
+  $('#add').disabled = name !== 'items';
+  $('#fold').disabled = name !== 'items';
+  if (focus) { $('#filter').value = 'all'; $('#search').value = ''; }
+  if (name === 'reqs') drawTrace();
+  else { drawOutline(); applyFilter(); }
+  if (focus) document.getElementById('req-' + focus)?.scrollIntoView();
+}
+
+function drawOutline() {
+  if (view === 'reqs') return drawTrace();
+  const entries = doc.fields.filter(f => !f.inquiry && f.label).map(f => {
+    const link = el('a', { href: '#section-' + f.label }, el('span', { className: 'dot' }), f.label);
+    return el('li', {}, link);
+  });
+  for (const item of doc.items) {
+    const status = values[fieldIndex(item.id, 'Status')];
+    const summaryIndex = SUMMARY_FIELDS.map(label => fieldIndex(item.id, label)).find(n => n >= 0);
+    const summary = summaryIndex >= 0 ? summaryText(values[summaryIndex]) : '';
+    const dot = el('span', { className: 'dot', title: status });
+    dot.dataset.status = status;
+    const li = el('li', {}, el('a', { href: '#' + item.id }, dot, el('span', {}, item.id, el('small', { textContent: summary }))));
+    li.dataset.item = item.id;
+    entries.push(li);
+  }
+  $('#outline').replaceChildren(...entries);
+}
+
+function applyFilter() {
+  if (!doc) return;
+  if (view === 'reqs') return drawTrace();
+  const status = $('#filter').value, query = $('#search').value.trim().toLowerCase();
+  for (const item of doc.items) {
+    const text = doc.fields.map((f, i) => (f.inquiry === item.id ? values[i] : '')).join('\n').toLowerCase();
+    const hidden = (status !== 'all' && values[fieldIndex(item.id, 'Status')] !== status) || (query && !text.includes(query) && !item.id.toLowerCase().includes(query));
+    document.getElementById(item.id).hidden = hidden;
+    const entry = document.querySelector(`#outline li[data-item="${item.id}"]`);
+    if (entry) entry.hidden = hidden;
+  }
+}
+
+/* ---------- modes and actions ---------- */
+
+function showForm() {
+  sourceMode = false;
+  $('#raw').hidden = true;
+  $('#form').hidden = view !== 'items';
+  $('#trace').hidden = view !== 'reqs';
+  markRail();
+  for (const control of [$('#search'), $('#filter')]) control.disabled = false;
+  $('#add').disabled = view !== 'items';
+  $('#fold').disabled = view !== 'items';
+}
+
+function showSource(text) {
+  $('#source').value = lf(text);
+  sourceMode = true;
+  $('#form').hidden = true;
+  $('#trace').hidden = true;
+  $('#raw').hidden = false;
+  markRail();
+  for (const control of [$('#add'), $('#fold'), $('#search'), $('#filter')]) control.disabled = true;
+}
+
+// Re-parse unsaved text on the server (nothing is written) and show it as a form.
+async function reparse(text) {
+  const parsed = await api('POST', '/api/parse', { content: text });
+  if (parsed.id !== doc.id) throw Error('The artifact ID cannot change.');
+  doc = { ...doc, ...parsed, content: text };
+  showForm();
+  render();
+  setDirty(true);
+}
+
+function setupFilter() {
+  const select = $('#filter'), keep = select.value;
+  select.replaceChildren(el('option', { value: 'all', textContent: 'All statuses' }), ...STATUSES[doc.version].map(s => el('option', { value: s, textContent: s })));
+  select.value = STATUSES[doc.version].includes(keep) ? keep : 'all';
+}
+
+async function load(note = 'Loaded. Changes are written only when you save (Ctrl+S).', draft, draftHash) {
+  try {
+    doc = await api('GET', '/api/document');
+    imageCache.clear();  // pick up replaced image files
+    loadFolded();
+    $('#filename').textContent = `${doc.id} · ${doc.filename} · schema v${doc.version}`;
+    showForm();
+    setupFilter();
+    render();
+    setDirty(false);
+    message(note);
+    loadIndex();
+    // Unsaved edits VS Code kept from an earlier window (hot exit), on top of the file as it is now.
+    // The edits belong to the version of the file they were made on: if it changed since, Save
+    // is refused rather than replacing what someone else wrote meanwhile.
+    if (draft && draft !== doc.content) {
+      const changed = draftHash && draftHash !== doc.hash;
+      try {
+        await reparse(draft);
+        message(changed ? 'Restored unsaved edits, but the file changed on disk since. Save will be refused: download your draft, then Reload.'
+          : 'Restored unsaved edits. Save to keep them.', changed);
+      } catch {
+        showSource(draft);
+        setDirty(true);
+        message('Restored unsaved edits as Markdown: they do not validate yet.', true);
+      }
+      if (draftHash) doc.hash = draftHash;
+    }
+  } catch (e) {
+    message(e.message, true);
+  }
+}
+
+let syncPoll = null;
+async function loadIndex() {
+  try {
+    [index, catalog] = await Promise.all([api('GET', '/api/index'), api('GET', '/api/requirements')]);
+    useCatalog(catalog);
+  } catch (e) {
+    message('Reference index unavailable: ' + e.message, true);
+  }
+}
+
+// Show a catalog and, while a Git sync runs, check back every second.
+function useCatalog(next) {
+  catalog = next;
+  catalog.requirements ??= [];
+  redrawViews();
+  clearTimeout(syncPoll);
+  if (catalog.sync?.state === 'syncing') {
+    syncPoll = setTimeout(async () => {
+      try { useCatalog(await api('GET', '/api/requirements')); } catch (e) { message('Requirements unavailable: ' + e.message, true); }
+    }, 1000);
+  }
+}
+
+/* ---------- requirements source ---------- */
+
+function ago(iso) {
+  const seconds = (Date.now() - new Date(iso)) / 1000;
+  if (!isFinite(seconds)) return '';
+  if (seconds < 60) return 'just now';
+  if (seconds < 3600) return `${Math.round(seconds / 60)} min ago`;
+  if (seconds < 86400) return `${Math.round(seconds / 3600)} h ago`;
+  return formatDate(iso);
+}
+
+function sourceCard() {
+  const source = catalog.source || { kind: 'none' }, sync = catalog.sync || {};
+  const locked = source.from === 'command line';
+  const status = source.kind === 'none' ? ['Not set', 'investigating']
+    : sync.state === 'syncing' ? ['Syncing…', 'investigating']
+    : sync.state === 'error' ? ['Sync failed', 'rejected']
+    : source.kind === 'git' ? ['Up to date', 'resolved'] : ['Local folder', 'resolved'];
+  const badge = el('span', { className: 'badge', textContent: status[0] });
+  badge.dataset.status = status[1];
+  const rows = [];
+  if (source.kind === 'git') {
+    rows.push(el('div', {}, el('strong', { textContent: source.repo }), ` · branch ${source.ref} · folder ${source.path}`));
+    if (sync.commit) {
+      rows.push(el('div', { className: 'note' }, 'Commit ', el('code', { textContent: sync.commit.slice(0, 8) }), ` ${sync.subject || ''} · ${formatDate(sync.committed_at)}`,
+        sync.synced_at ? ` · synced ${ago(sync.synced_at)}` : ''));
+    }
+  } else if (source.kind === 'folder') {
+    rows.push(el('div', {}, el('strong', { textContent: source.folder }), el('span', { className: 'note', textContent: ' · read from this computer as it is now' })));
+  } else {
+    rows.push(el('div', { className: 'note', textContent: 'Choose where the requirement files are: a Git repository (the editor keeps its own copy and signs in with your Git login) or a folder on this computer.' }));
+  }
+  if (sync.error) {
+    rows.push(el('div', { className: 'warn', textContent: sync.error }));
+    if (source.kind === 'git') rows.push(el('div', { className: 'note' }, 'Check your Git login in a terminal: ', el('code', { textContent: `git ls-remote ${source.repo}` }),
+      sync.commit ? '. Showing the earlier copy until a sync succeeds.' : ''));
+  }
+  rows.push(el('div', { className: 'note', textContent: locked ? 'Set on the command line; it cannot be changed here.' : `Saved in ${source.from || '.dou-editor.json'} at the root of this repository; commit it to share with the team.` }));
+  const syncNow = el('button', { type: 'button', textContent: 'Sync now', disabled: source.kind !== 'git' || sync.state === 'syncing' });
+  syncNow.onclick = async () => {
+    try { useCatalog(await api('POST', '/api/requirements/sync', {})); } catch (e) { message(e.message, true); }
+  };
+  const change = el('button', { type: 'button', textContent: source.kind === 'none' ? 'Set source…' : 'Change source…', disabled: locked, className: source.kind === 'none' ? 'primary' : '' });
+  change.onclick = () => sourceDialog(source);
+  return el('section', { className: 'source-card', id: 'source-card' }, el('h2', {}, 'Requirements source', badge), ...rows,
+    el('div', { className: 'criteria-actions' }, ...(source.kind === 'git' ? [syncNow] : []), change));
+}
+
+function sourceDialog(current) {
+  const kind = name => el('label', { className: 'kind' }, el('input', { type: 'radio', name: 'kind', value: name, checked: (current.kind === 'none' ? 'git' : current.kind) === name }), ' ',
+    name === 'git' ? 'Git repository' : 'Folder on this computer');
+  const repo = el('input', { type: 'text', value: current.repo || '', placeholder: 'https://github.com/org/requirements.git or git@github.com:org/requirements.git' });
+  const ref = el('input', { type: 'text', value: current.ref || 'main', placeholder: 'main' });
+  const path = el('input', { type: 'text', value: current.path || 'docs/source', placeholder: 'docs/source' });
+  const folder = el('input', { type: 'text', value: current.folder || '', placeholder: '../requirements/docs/source' });
+  const field = (label, input, hint) => el('label', { className: 'field' }, el('span', { className: 'label', textContent: label }), input, hint ? el('span', { className: 'hint', textContent: hint }) : null);
+  const gitFields = el('div', {}, field('Repository URL', repo, 'Git signs in with your saved login (credential manager or SSH key). Never put a token in the URL.'),
+    field('Branch or tag', ref, 'Ready is judged on this ref, usually main.'), field('Folder in the repository', path, 'Where the .rst files are, e.g. docs/source.'));
+  const folderFields = el('div', {}, field('Folder', folder, 'Absolute, or relative to the root of this repository.'));
+  const save = el('button', { type: 'submit', className: 'primary', textContent: 'Save and sync' });
+  const cancel = el('button', { type: 'button', textContent: 'Cancel' });
+  const remove = el('button', { type: 'button', textContent: 'Remove source' });
+  const form = el('form', {}, el('h2', { textContent: 'Requirements source' }), el('div', { className: 'kinds' }, kind('git'), kind('folder')), gitFields, folderFields,
+    el('div', { className: 'actions' }, current.kind === 'none' ? null : remove, cancel, save));
+  const sync = () => { const git = form.querySelector('input[name=kind]:checked').value === 'git'; gitFields.hidden = !git; folderFields.hidden = git; };
+  form.addEventListener('change', sync);
+  const dialog = el('dialog', {}, form);
+  const submit = async body => {
+    try {
+      useCatalog(await api('POST', '/api/requirements/source', body));
+      dialog.close();
+      message(body.kind === 'none' ? 'Requirements source removed.' : `Requirements source saved in ${catalog.source.from}.`);
+    } catch (e) { message(e.message, true); }
+  };
+  cancel.onclick = () => dialog.close();
+  remove.onclick = () => submit({ kind: 'none' });
+  form.onsubmit = event => {
+    event.preventDefault();
+    const git = form.querySelector('input[name=kind]:checked').value === 'git';
+    submit(git ? { kind: 'git', repo: repo.value.trim(), ref: ref.value.trim(), path: path.value.trim() } : { kind: 'folder', folder: folder.value.trim() });
+  };
+  dialog.onclose = () => dialog.remove();
+  document.body.append(dialog);
+  sync();
+  dialog.showModal();
+}
+
+async function save() {
+  if (!doc || $('#save').disabled) return;
+  $('#save').disabled = true;
+  try {
+    // VS Code saves the editor; the extension asks this page for its text (below) and writes it.
+    await api('POST', '/api/save', {});
+  } catch (e) {
+    message(e.message, true);
+  } finally {
+    $('#save').disabled = false;
+  }
+}
+
+window.addEventListener('message', async event => {
+  const msg = event.data || {};
+  if (msg.type === 'response') {
+    const request = pending.get(msg.id);
+    if (!request) return;
+    pending.delete(msg.id);
+    if (msg.ok) request.resolve(msg.data); else request.reject(Error(msg.error || 'Request failed.'));
+  } else if (msg.type === 'init') {
+    memory = msg.memory || {};
+    await load(undefined, msg.draft, msg.draftHash);
+  } else if (msg.type === 'getContent') {
+    // Saving or a backup: the text to write, and the version of the file it was edited from.
+    const text = doc ? content() : null;
+    if (msg.purpose === 'save' && doc) saving = { content: text, sourceMode, values: fieldValues() };
+    vscode.postMessage({ type: 'content', id: msg.id, content: text, hash: doc?.hash ?? null });
+  } else if (msg.type === 'saved') {
+    await afterSave();
+  } else if (msg.type === 'saveFailed') {
+    saving = null;
+    message(msg.error, true);
+  } else if (msg.type === 'revert') {
+    await load('Reloaded from disk.');
+  } else if (msg.type === 'changedOnDisk' && !dirty) {
+    await load('The file changed on disk; reloaded.');
+  } else if (msg.type === 'changedOnDisk') {
+    message('The file changed on disk. Save will be refused: download your draft, then Reload.', true);
+  }
+});
+
+// What was saved, so edits typed while the file was being written are not lost by the reload.
+let saving = null;
+const fieldKey = f => (f.inquiry || '') + '\n' + f.label;
+const fieldValues = () => new Map(doc.fields.map((f, i) => [fieldKey(f), values[i]]));
+
+async function afterSave() {
+  const saved = saving;
+  saving = null;
+  if (!saved || content() === saved.content) { await load('Saved to Markdown.'); return; }
+  if (sourceMode) {
+    // The Markdown being edited stays as it is, now on top of the saved file.
+    const text = $('#source').value;
+    await load();
+    showSource(text);
+    setDirty(true);
+    message('Saved. Edits made while saving are kept and not saved yet.');
+    return;
+  }
+  const later = [];
+  doc.fields.forEach((f, i) => { if (saved.values.has(fieldKey(f)) && values[i] !== saved.values.get(fieldKey(f))) later.push([fieldKey(f), values[i]]); });
+  await load();
+  for (const [key, value] of later) {
+    const i = doc.fields.findIndex(f => fieldKey(f) === key);
+    if (i >= 0) setValue(i, value);
+  }
+  redrawViews();
+  message(later.length ? `Saved. ${later.length} field${later.length === 1 ? '' : 's'} edited while saving ${later.length === 1 ? 'is' : 'are'} kept and not saved yet.` : 'Saved to Markdown.');
+}
+
+async function createItemFor(id, definition) {
+  showView('items');
+  await addItem({ 'Requirement': id, 'Scope': definition?.title ? `Requirement ${id}: ${definition.title}\nIn scope: Pending\nOut of scope: Pending` : 'Pending' });
+}
+
+async function addItem(prefill = {}) {
+  if (!doc) return;
+  const used = doc.items.map(item => Number(item.id.slice(item.id.lastIndexOf('-Q') + 2)));
+  const id = `${doc.id}-Q${String(Math.max(0, ...used) + 1).padStart(2, '0')}`;
+  const now = isoNow();
+  const json = '```json\n[]\n```';
+  const fields = doc.version === 3
+    ? { 'Created at': now, 'Updated at': now, 'Status': 'open', 'Scope': 'Pending', 'Desired outcome': 'Pending', 'Requirement': 'None',
+        'Questions': 'Known: Pending\n- [ ] Describe the open question.', 'Approach': 'Pending', 'Proposed acceptance criteria': '- Pending',
+        'Visual aids': 'None yet', 'References': json, 'History': json, 'Next action': 'Pending', ...prefill }
+    : doc.version === 2
+    ? { 'Created at': now, 'Updated at': now, 'Status': 'open', 'Related requirements': 'Pending', 'Current understanding': 'Pending',
+        'Questions': 'Describe the question.', 'Analysis / Proposal': 'Pending', 'References': json, 'History': json,
+        'Current conclusion': 'Pending', 'Next action': 'Pending' }
+    : { 'Question': 'Describe the question.', 'Status': 'open', 'Resolution': 'Pending', 'Confirmed by': 'Pending', 'Requirement impact': 'Pending' };
+  const block = `### ${id}\n\n` + Object.entries(fields).map(([k, v]) => `**${k}**\n\n${v}\n`).join('\n');
+  const text = content().trimEnd() + newline() + newline() + block.replace(/\n/g, newline());
+  try {
+    await reparse(text);
+    const section = document.getElementById(id);
+    section.scrollIntoView({ behavior: 'smooth' });
+    section.querySelector('textarea')?.focus({ preventScroll: true });
+    message(`Added ${id}. Updated at is set when you save.`);
+  } catch (e) {
+    message(e.message, true);
+  }
+}
+
+$('#save').onclick = save;
+// The extension asks before discarding unsaved edits (webviews cannot show confirm()).
+$('#reload').onclick = () => { if (!dirty) load(); else vscode.postMessage({ type: 'reload' }); };
+$('#download').onclick = () => {
+  if (!doc) return;
+  vscode.postMessage({ type: 'download', content: content(), filename: doc.filename.replace(/\.md$/, '.draft.md') });
+};
+$('#mode').onclick = () => { if (doc && !sourceMode) showSource(content()); };
+$('#add').onclick = () => addItem();
+$('#tab-items').onclick = () => goTo('items');
+$('#fold').onclick = () => setAllCollapsed($('#fold').textContent === 'Collapse all');
+// Jumping to a collapsed item from the outline opens it.
+$('#outline').addEventListener('click', event => {
+  const link = event.target.closest('a');
+  if (link && view === 'items') expand(decodeURIComponent(link.hash.slice(1)));
+});
+$('#tab-reqs').onclick = () => goTo('reqs');
+$('#source').addEventListener('input', () => setDirty(true));
+$('#filter').addEventListener('change', applyFilter);
+$('#search').addEventListener('input', applyFilter);
+// Ctrl+S is VS Code's own Save, which reaches the extension and comes back as getContent.
+document.addEventListener('keydown', e => {
+  // Alt+1/2/3 switch views like the left rail.
+  const rail = { '1': '#tab-items', '2': '#tab-reqs', '3': '#mode' }[e.key];
+  if (e.altKey && !e.ctrlKey && !e.metaKey && rail) { e.preventDefault(); $(rail).click(); }
+});
+new ResizeObserver(() => document.documentElement.style.setProperty('--header-h', $('header').offsetHeight + 'px')).observe($('header'));
+vscode.postMessage({ type: 'ready' });

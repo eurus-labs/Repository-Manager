@@ -2,7 +2,7 @@
   "name": "repository-manager",
   "displayName": "Repository Manager",
   "description": "Coordinate branches and Git workflows across a parent repository and its linked repositories from one VS Code dashboard",
-  "version": "2.10.0",
+  "version": "2.11.0",
   "publisher": "repository-manager",
   "engines": {
     "vscode": "^1.74.0"
@@ -121,6 +121,24 @@
         "title": "Delete Branch Across Repositories",
         "category": "Repository Manager",
         "icon": "$(trash)"
+      },
+      {
+        "command": "repositoryManager.requirements.newFile",
+        "title": "New Clarification File",
+        "category": "Repository Manager",
+        "icon": "$(new-file)"
+      },
+      {
+        "command": "repositoryManager.requirements.refresh",
+        "title": "Refresh Requirements",
+        "category": "Repository Manager",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "repositoryManager.requirements.openAsText",
+        "title": "Open as Markdown Text",
+        "category": "Repository Manager",
+        "icon": "$(go-to-file)"
       }
     ],
     "viewsContainers": {
@@ -139,6 +157,11 @@
           "id": "repositoryManager.launcher",
           "name": "Repository Manager",
           "contextualTitle": "Repository Manager"
+        },
+        {
+          "id": "repositoryManager.requirements",
+          "name": "Requirements",
+          "contextualTitle": "Repository Manager"
         }
       ]
     },
@@ -148,12 +171,38 @@
           "command": "repositoryManager.openPanel",
           "when": "view == repositoryManager.launcher",
           "group": "navigation"
+        },
+        {
+          "command": "repositoryManager.requirements.newFile",
+          "when": "view == repositoryManager.requirements",
+          "group": "navigation@1"
+        },
+        {
+          "command": "repositoryManager.requirements.refresh",
+          "when": "view == repositoryManager.requirements",
+          "group": "navigation@2"
         }
       ],
       "commandPalette": [
         {
           "command": "repositoryManager.openPanel",
           "when": "workspaceFolderCount > 0"
+        },
+        {
+          "command": "repositoryManager.requirements.openAsText",
+          "when": "false"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "repositoryManager.requirements.openAsText",
+          "when": "view == repositoryManager.requirements && viewItem == clarificationFile",
+          "group": "inline"
+        },
+        {
+          "command": "repositoryManager.requirements.newFile",
+          "when": "view == repositoryManager.requirements && viewItem == clarificationFile",
+          "group": "1_new"
         }
       ]
     },
@@ -235,6 +284,24 @@
         "key": "ctrl+shift+g r",
         "mac": "cmd+shift+g r"
       }
+    ],
+    "viewsWelcome": [
+      {
+        "view": "repositoryManager.requirements",
+        "contents": "No clarification files in this workspace yet. A clarification file records questions about requirements, with their answers and the acceptance criteria the PO decides.\n[New Clarification File](command:repositoryManager.requirements.newFile)"
+      }
+    ],
+    "customEditors": [
+      {
+        "viewType": "repositoryManager.requirementEditor",
+        "displayName": "Requirement Editor",
+        "selector": [
+          {
+            "filenamePattern": "*.md"
+          }
+        ],
+        "priority": "option"
+      }
     ]
   },
   "scripts": {
@@ -244,8 +311,8 @@
     "watch": "tsc -watch -p ./",
     "pretest": "npm run compile && npm run lint",
     "lint": "eslint src --ext ts",
-    "test": "node ./out/test/runTest.js && node ./src/test/summaryWebviewSmoke.js && node ./src/test/historyActionHandlerSmoke.js && node ./src/test/historyRewriteHandlerSmoke.js && node ./src/test/conflictPredictionSmoke.js && node ./src/test/conflictExplanationSmoke.js && node ./src/test/conflictResolutionSmoke.js && node ./src/test/naturalUndoSmoke.js && node ./src/test/syncRecordedHandlerSmoke.js && node ./src/test/pullChangesSmoke.js && node ./src/test/autoFetchPanelSmoke.js && node ./src/test/backgroundFetchSmoke.js && node ./src/test/summaryProviderSmoke.js && node ./src/test/reviewSnapshotSmoke.js && node ./src/test/securityReviewSmoke.js && node ./src/test/securityReviewFindingsSmoke.js && node ./src/test/reviewReportSmoke.js && node ./src/test/reviewControllerSmoke.js && node ./src/test/reviewConsentSmoke.js && node ./src/test/reviewFixSmoke.js && node ./src/test/reviewLimitationsSmoke.js && node ./src/test/historyUpstreamSmoke.js && node ./src/test/reviewHistorySmoke.js && node ./src/test/reviewConversationSmoke.js && node ./src/test/historySearchSmoke.js && node ./src/test/repositoryListSmoke.js && node ./src/test/branchDeleteHandlerSmoke.js && node ./src/test/sidebarViewSmoke.js && node ./src/test/reviewResumeSmoke.js && node ./src/test/reviewSkillsSmoke.js && node ./src/test/reviewTriageCarrySmoke.js && node ./src/test/reviewBridgeSmoke.js && node ./src/test/commitHandlerSmoke.js && node ./src/test/commitMessageSmoke.js && node ./src/test/liveChangesSmoke.js && node ./src/test/reviewFileCoverageSmoke.js && node ./src/test/reviewExplainSmoke.js && node ./src/test/aiDirectedTextSmoke.js && node ./src/test/reviewRetrySmoke.js && node ./src/test/reviewSnapshotKeepSmoke.js && node ./src/test/stashSmoke.js && node ./src/test/stashActionSmoke.js && node ./src/test/discardSmoke.js && node ./src/test/changeDocumentsSmoke.js && node ./src/test/dashboardOpenSmoke.js && node ./src/test/pushCreatedBranchesSmoke.js && node ./src/test/modelPreferencesSmoke.js",
-    "test:ui": "npm run compile && node ./src/test/uiSnapshots.js",
+    "test": "node ./out/test/runTest.js && node ./src/test/summaryWebviewSmoke.js && node ./src/test/historyActionHandlerSmoke.js && node ./src/test/historyRewriteHandlerSmoke.js && node ./src/test/conflictPredictionSmoke.js && node ./src/test/conflictExplanationSmoke.js && node ./src/test/conflictResolutionSmoke.js && node ./src/test/naturalUndoSmoke.js && node ./src/test/syncRecordedHandlerSmoke.js && node ./src/test/pullChangesSmoke.js && node ./src/test/autoFetchPanelSmoke.js && node ./src/test/backgroundFetchSmoke.js && node ./src/test/summaryProviderSmoke.js && node ./src/test/reviewSnapshotSmoke.js && node ./src/test/securityReviewSmoke.js && node ./src/test/securityReviewFindingsSmoke.js && node ./src/test/reviewReportSmoke.js && node ./src/test/reviewControllerSmoke.js && node ./src/test/reviewConsentSmoke.js && node ./src/test/reviewFixSmoke.js && node ./src/test/reviewLimitationsSmoke.js && node ./src/test/historyUpstreamSmoke.js && node ./src/test/reviewHistorySmoke.js && node ./src/test/reviewConversationSmoke.js && node ./src/test/historySearchSmoke.js && node ./src/test/repositoryListSmoke.js && node ./src/test/branchDeleteHandlerSmoke.js && node ./src/test/sidebarViewSmoke.js && node ./src/test/reviewResumeSmoke.js && node ./src/test/reviewSkillsSmoke.js && node ./src/test/reviewTriageCarrySmoke.js && node ./src/test/reviewBridgeSmoke.js && node ./src/test/commitHandlerSmoke.js && node ./src/test/commitMessageSmoke.js && node ./src/test/liveChangesSmoke.js && node ./src/test/reviewFileCoverageSmoke.js && node ./src/test/reviewExplainSmoke.js && node ./src/test/aiDirectedTextSmoke.js && node ./src/test/reviewRetrySmoke.js && node ./src/test/reviewSnapshotKeepSmoke.js && node ./src/test/stashSmoke.js && node ./src/test/stashActionSmoke.js && node ./src/test/discardSmoke.js && node ./src/test/changeDocumentsSmoke.js && node ./src/test/dashboardOpenSmoke.js && node ./src/test/pushCreatedBranchesSmoke.js && node ./src/test/modelPreferencesSmoke.js && node ./src/test/requirementsParserSmoke.js && node ./src/test/requirementsViewSmoke.js",
+    "test:ui": "npm run compile && node ./src/test/uiSnapshots.js && node ./src/test/requirementEditorUi.js",
     "package": "vsce package",
     "bench:load": "node ./src/test/loadBench.js"
   },

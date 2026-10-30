@@ -17,6 +17,7 @@ A VS Code extension for Git workflows across a parent repository and its linked 
   - review skills (checklists by file type) turn on automatically; the **Clean code** skill, on unless you turn it off in the review tab's skills, adds maintainability notes that never block.
 
   Results are advisory. See [docs/security-compliance-review-engine.md](docs/security-compliance-review-engine.md) for how a review works.
+- **Requirement clarifications:** **Requirements** in the Side Bar lists the workspace's clarification files (Markdown that records questions about requirements, their answers, and the acceptance criteria the PO decides) with how many items are still open. They open in the **Requirement Editor**: a form per item, the requirements each item clarifies with whether they are Ready, and the Markdown itself. Requirements come from a folder or a Git repository of RST or Markdown files. See [docs/requirement-clarification-editor.md](docs/requirement-clarification-editor.md) for the file format.
 
 ## Install
 
