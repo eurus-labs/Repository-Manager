@@ -472,14 +472,14 @@ export function getRequirementEditorHtml(resourceUris: SidebarResourceUris & { c
 </head>
 <body>
 <header>
-  <nav class="crumbs" aria-label="Location">Repository Manager <span aria-hidden="true">/</span> Requirement Editor</nav>
   <div class="title">
+    <svg class="doc-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><path d="M9 13h6M9 17h4"/></svg>
     <div class="heading"><h1 id="doc-title">Opening…</h1><p id="filename"></p></div>
     <div class="toolbar">
       <span id="state"></span>
+      <button class="icon" id="reload" title="Reload: read the file again" aria-label="Reload"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 4v7h-7"/></svg></button>
+      <button class="icon" id="download" title="Download draft: save the current text to another file" aria-label="Download draft"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11"/><path d="M7 10l5 5 5-5"/><path d="M5 20h14"/></svg></button>
       <button class="primary" id="save" title="Save (Ctrl+S)">Save</button>
-      <button id="reload" title="Read the file again">Reload</button>
-      <button id="download" title="Save the current text to another file">Download draft</button>
     </div>
   </div>
   <nav class="tabs" role="tablist" aria-label="Views">
@@ -490,31 +490,27 @@ export function getRequirementEditorHtml(resourceUris: SidebarResourceUris & { c
   <div id="message" role="status" aria-live="polite"></div>
 </header>
 <div class="layout">
-  <nav class="outline" aria-label="Contents"><ul id="outline"></ul></nav>
+  <aside class="list-pane">
+    <div class="pane-tools" id="items-tools">
+      <input id="search" type="search" placeholder="Search ID, text, requirement…" aria-label="Search clarifications">
+      <div class="segs" id="filter" role="group" aria-label="Filter by status"></div>
+    </div>
+    <div class="pane-tools" id="reqs-tools" hidden>
+      <input id="req-search" type="search" placeholder="Search ID or text…" aria-label="Search requirements">
+      <div class="segs" id="req-filter" role="group" aria-label="Filter requirements"></div>
+    </div>
+    <nav class="outline" aria-label="Contents"><ul id="outline"></ul></nav>
+    <div class="pane-foot" id="items-foot">
+      <button id="add" title="A new clarification that is not tied to a requirement.">+ New clarification</button>
+      <p class="note">To clarify a requirement, use “+ Create clarification” in Requirements so its ID is filled in.</p>
+    </div>
+  </aside>
   <main>
     <div id="form-view">
-      <div class="view-tools">
-        <input id="search" type="search" placeholder="Search clarifications…" aria-label="Search clarifications">
-        <select id="filter" aria-label="Filter by status"><option value="all">All statuses</option></select>
-        <span class="spacer"></span>
-        <button id="add" title="A new clarification that is not tied to a requirement. To clarify a requirement, use “+ Create clarification” in Requirements.">+ Clarification</button>
-        <button id="fold">Collapse all</button>
-      </div>
       <div id="form"></div>
     </div>
     <div id="trace" hidden>
       <div class="source-bar" id="source-bar"></div>
-      <div class="view-tools">
-        <input id="req-search" type="search" placeholder="Search ID or text…" aria-label="Search requirements">
-        <select id="req-filter" aria-label="Filter requirements">
-          <option value="all">All requirements</option>
-          <option value="notready">Not ready</option>
-          <option value="ready">Ready</option>
-          <option value="empty">Without a clarification</option>
-          <option value="unresolved">With unresolved clarifications</option>
-          <option value="missing">Not found in the source</option>
-        </select>
-      </div>
       <p class="summary" id="req-summary"></p>
       <div id="req-list"></div>
     </div>

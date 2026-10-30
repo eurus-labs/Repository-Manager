@@ -163,11 +163,15 @@ async function main() {
     const editor = await open(file);
     const page = editor.page;
     assert.equal(await page.textContent('#filename'), 'CLR-003 · CLR-003.md · schema v3');
-    // The header: where you are, the file's title, and the views as tabs with their counts.
-    assert.equal((await page.textContent('header .crumbs')).replace(/\s+/g, ' ').trim(), 'Repository Manager / Requirement Editor');
+    // The header: the file's title, and the views as tabs with their counts.
     assert.equal(await page.textContent('#doc-title'), 'API integration discussion (schema v3)');
     assert.deepEqual(await page.$$eval('nav.tabs [role=tab]', tabs => tabs.map(t => t.textContent.replace(/\s+/g, ' ').trim())), ['Clarifications 2', 'Requirements 1', 'Markdown']);
     assert.equal(await page.locator('section[data-item]').count(), 2);
+    // List and detail: every item is listed, and only the chosen one (the first) is shown.
+    assert.deepEqual(await page.$$eval('#outline li[data-item]', items => items.map(i => i.dataset.item)), ['CLR-003-Q01', 'CLR-003-Q02']);
+    assert.equal(await page.isVisible('#CLR-003-Q01'), true);
+    assert.equal(await page.isVisible('#CLR-003-Q02'), false);
+    assert.match(await page.textContent('#CLR-003-Q01 .facts'), /Questions0 \/ 2 answeredAcceptance0 \/ 2 accepted/);
     await page.locator('#CLR-003-Q01 figure.aid img').waitFor();
     assert.ok(await page.$eval('#CLR-003-Q01 figure.aid img', img => img.src.startsWith('blob:') && img.complete && img.naturalWidth > 0), 'the wireframe did not load');
     await snap(page, '20-requirement-editor-items');
@@ -177,7 +181,8 @@ async function main() {
     assert.equal(await page.locator('#CLR-003-Q01 label', { hasText: 'Approach' }).count(), 1);
     await page.locator('#CLR-003-Q01 .field', { has: page.locator('label', { hasText: /^Approach$/ }) }).locator('textarea').fill('Retry with the same idempotency key. 😀');
     await until(() => editor.dirty, 'the unsaved state');
-    assert.equal(await page.textContent('#state'), '● Unsaved changes');
+    assert.equal(await page.textContent('#state'), '● 1 unsaved field');
+    assert.equal(await page.locator('#CLR-003-Q01 .field.edited').count(), 1);
     // Every edit reaches VS Code, not only the first, so a hot-exit backup follows the latest text.
     const changes = editor.changes;
     await page.locator('#CLR-003-Q01 .field', { has: page.locator('label', { hasText: /^Approach$/ }) }).locator('textarea').type(' ok');
@@ -242,11 +247,12 @@ async function main() {
     assert.equal(await manual.locator('.req-name').textContent(), 'Manual retry');
     assert.match(await manual.locator('.req-meta').textContent(), /^requirements\/messaging\.rst:\d+ · Source document$/);
     assert.deepEqual(await manual.locator('.subtabs [role=tab]').allTextContents(), ['Requirement', 'Clarifications · 0', 'Acceptance · 0']);
-    assert.deepEqual(await manual.locator('.blockers li').allTextContents(), ['No clarification item is linked to this requirement.', 'No accepted criteria are available.']);
+    assert.deepEqual(await manual.locator('.readiness li.unmet .why').allTextContents(), ['No clarification item is linked to this requirement.', 'No accepted criteria are available.']);
     assert.equal(await manual.locator('.next-action p').textContent(), 'Create a clarification for this requirement.');
     assert.ok((await manual.locator('blockquote.req-text').textContent()).length > 0, 'the requirement text is not shown');
     // REQ-012's tabs: its clarifications and the criteria they propose, with the PO's state.
     const send = page.locator('#req-REQ-012');
+    await page.click('#outline li[data-req="REQ-012"] button');
     assert.match(await send.locator('.next-action p').textContent(), /^Settle CLR-001-Q01|^Settle CLR-003-Q0/);
     await send.locator('.subtabs [role=tab]', { hasText: 'Clarifications' }).click();
     assert.equal(await send.locator('.linked li').count(), 3);
@@ -257,9 +263,10 @@ async function main() {
     await page.fill('#req-search', 'retry');
     assert.equal(await send.locator('.subtabs [aria-selected=true]').textContent(), 'Acceptance · 2');
     await page.fill('#req-search', '');
-    await page.selectOption('#req-filter', 'empty');
+    await page.click('#req-filter button[data-value=empty]');
     assert.deepEqual(await page.$$eval('#req-list .req-card', cards => cards.map(c => c.id)), ['req-REQ-013', 'req-REQ_020']);
-    await page.selectOption('#req-filter', 'all');
+    await page.click('#req-filter button[data-value=all]');
+    await page.click('#outline li[data-req="REQ-012"] button');
     await send.locator('.subtabs [role=tab]', { hasText: 'Requirement' }).click();
     await page.click('#req-REQ-012 .req-meta button.link');
     await until(() => host.opened.length, 'the requirement file');
@@ -267,6 +274,7 @@ async function main() {
     await snap(page, '21-requirement-editor-requirements');
 
     // + Create dou item: a new item for the requirement, saved like any edit.
+    await page.click('#outline li[data-req="REQ-013"] button');
     await page.click('#req-REQ-013 .next-action button.create');
     await page.locator('#CLR-003-Q03').waitFor();
     await until(() => editor.dirty, 'the new item to mark the editor unsaved');
@@ -275,6 +283,20 @@ async function main() {
     await until(() => read().includes('### CLR-003-Q03'), 'the new item');
     assert.equal(parse(read()).items[2].values.Requirement, 'REQ-013');
     await page.locator('#state', { hasText: 'All changes saved' }).waitFor(); // the reload after saving
+
+    // PO decision: one Accept / Reject / Later choice per criterion, a running tally, then a saved decision.
+    await page.click('#outline li[data-item="CLR-003-Q01"] button');
+    await page.click('#CLR-003-Q01 button:has-text("PO decision…")');
+    await page.fill('dialog input[aria-label="PO name"]', 'Lan');
+    await page.click('dialog [aria-label="Decision for AC1"] .opt:has-text("Accept")');
+    await page.click('dialog [aria-label="Decision for AC2"] .opt:has-text("Reject")');
+    assert.equal(await page.textContent('dialog .actions .note'), '1 accepted · 1 rejected · 0 unchanged');
+    assert.match(await page.textContent('dialog .warn'), /^AC2 will need to be rewritten or removed/);
+    await page.click('dialog button:has-text("Record decision and save")');
+    await until(() => /"decision": "rejected"/.test(read()), 'the PO decision');
+    assert.deepEqual(parse(read()).items[0].values.History.match(/"decision": "\w+"/g), ['"decision": "accepted"', '"decision": "rejected"']);
+    await page.locator('#state', { hasText: 'All changes saved' }).waitFor();
+    assert.deepEqual(await page.locator('#CLR-003-Q01 .criteria li .badge').allTextContents(), ['accepted', 'rejected · rewrite or remove']);
 
     // Markdown view: an invalid edit keeps you there with the reason.
     await page.keyboard.press('Alt+3');
@@ -288,6 +310,7 @@ async function main() {
     await page.locator('#form:not([hidden])').waitFor();
 
     // Someone else changes the file while there are unsaved edits: Save is refused, edits stay.
+    await page.click('#outline li[data-item="CLR-003-Q02"] button');
     await page.locator('#CLR-003-Q02 .field', { has: page.locator('label', { hasText: /^Approach$/ }) }).locator('textarea').fill('My local edit');
     await until(() => editor.dirty, 'the unsaved state');
     fs.writeFileSync(file, read().replace('Minh', 'Minh (edited elsewhere)'));
@@ -311,10 +334,12 @@ async function main() {
     assert.ok((await page.locator('#CLR-003-Q01 .timeline').textContent()).includes('Minh (edited elsewhere)'));
 
     // A change on disk while there are no unsaved edits just reloads.
+    await page.click('#outline li[data-item="CLR-003-Q01"] button');
     fs.writeFileSync(file, read().replace('Checked with the API owner.', 'Confirmed by the API owner.'));
     await page.locator('#CLR-003-Q01 .timeline', { hasText: 'Confirmed by the API owner.' }).waitFor();
 
     // Hot exit: VS Code backs up the unsaved text; a new window restores it over the file.
+    await page.click('#outline li[data-item="CLR-003-Q02"] button');
     await page.locator('#CLR-003-Q02 .field', { has: page.locator('label', { hasText: /^Approach$/ }) }).locator('textarea').fill('Kept across a restart');
     await until(() => editor.dirty, 'the unsaved state');
     const destination = fileUri(path.join(base, 'backups', 'clr-003'));
@@ -347,6 +372,7 @@ async function main() {
     await snap(narrow.page, '23-requirement-editor-narrow');
     // The Requirements view at phone width, as in the design.
     await narrow.page.click('#tab-reqs');
+    await narrow.page.click('#outline li[data-req="REQ-013"] button');
     await narrow.page.locator('#req-REQ-013 .next-action').waitFor();
     assert.equal(await narrow.page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth), 0, 'the Requirements view scrolls horizontally');
     await snap(narrow.page, '24-requirement-editor-narrow-requirements');
