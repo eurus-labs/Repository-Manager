@@ -492,7 +492,10 @@ export function getRequirementEditorHtml(resourceUris: SidebarResourceUris & { c
 <div class="layout">
   <aside class="list-pane">
     <div class="pane-tools" id="items-tools">
-      <input id="search" type="search" placeholder="Search ID, text, requirement…" aria-label="Search clarifications">
+      <div class="pane-row">
+        <input id="search" type="search" placeholder="Search ID or text…" aria-label="Search clarifications">
+        <button id="add" aria-label="New clarification" title="New clarification, not tied to a requirement. To clarify a requirement, use “+ Create clarification” in Requirements so its ID is filled in.">+ New</button>
+      </div>
       <div class="segs" id="filter" role="group" aria-label="Filter by status"></div>
     </div>
     <div class="pane-tools" id="reqs-tools" hidden>
@@ -500,10 +503,6 @@ export function getRequirementEditorHtml(resourceUris: SidebarResourceUris & { c
       <div class="segs" id="req-filter" role="group" aria-label="Filter requirements"></div>
     </div>
     <nav class="outline" aria-label="Contents"><ul id="outline"></ul></nav>
-    <div class="pane-foot" id="items-foot">
-      <button id="add" title="A new clarification that is not tied to a requirement.">+ New clarification</button>
-      <p class="note">To clarify a requirement, use “+ Create clarification” in Requirements so its ID is filled in.</p>
-    </div>
   </aside>
   <main>
     <div id="form-view">
