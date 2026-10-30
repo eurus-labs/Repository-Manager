@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Requirements** in the Repository Manager Side Bar: the workspace's clarification files, each with how many of its items are still open. **New Clarification File** starts one from a template.
 - The **Requirement Editor** (also under **Open With…** for any Markdown file) brings the dou-editor into VS Code, with no Python needed: edit each item as a form, add responses, record the PO's decisions on acceptance criteria, and see which requirements are Ready. Requirements come from a folder or from a Git repository (set in the editor and saved in `.dou-editor.json`). Saving works like any VS Code file, including the unsaved dot, Ctrl+S and restoring unsaved edits after a restart, and is refused if someone else changed the file meanwhile.
+- The Requirement Editor's views are tabs under the file's title: **Clarifications**, **Requirements** and **Markdown**. In Requirements, each requirement is a card with its own **Requirement**, **Clarifications** and **Acceptance** tabs, what keeps it Not ready, and the **Next action** that would move it on; search by ID or text, and filter by Ready, Not ready or without a clarification.
 
 ## [2.10.0] - 2026-10-26
 

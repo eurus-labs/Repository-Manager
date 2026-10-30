@@ -501,37 +501,47 @@ const isPlaceholder = text => /^(-\s*)?(pending|tbd)?$/i.test(text.trim());
 // Reasons a requirement is not ready; an empty list means Ready.
 const normalized = text => text.toLowerCase().replace(/[\s.]+/g, ' ').trim();
 
-// Reasons a requirement is not ready; an empty list means Ready. The requirement's
-// acceptance criteria are those proposed in the items that clarify it.
+// What keeps a requirement from Ready, each with the step that removes it (the first is the
+// Next action); an empty list means Ready. The requirement's acceptance criteria are those
+// proposed in the items that clarify it.
 function readiness(items, defs) {
   const reasons = [];
-  if (!catalog.configured) reasons.push('No requirements source yet, so accepted criteria cannot be checked against the requirement text');
-  else if (!defs.length) reasons.push(`Not found in ${catalog.root}`);
-  if (!items.length) reasons.push('No dou item yet: use “+ Create dou item”');
+  const add = (text, next, item) => reasons.push({ text, next, item });
+  if (!catalog.configured) add('No requirements source is set, so accepted criteria cannot be checked against the requirement text.', 'Set the requirements source.');
+  else if (!defs.length) add(`Not found in ${catalog.root}.`, 'Check the ID, or add the requirement to the requirement documents.');
+  if (!items.length) add('No clarification item is linked to this requirement.', 'Create a clarification for this requirement.');
   const requirementText = normalized(defs.map(d => d.title + '\n' + d.excerpt).join('\n'));
   let criteriaCount = 0;
   for (const item of items) {
     const v = item.values;
-    if (UNRESOLVED.has(v.Status)) reasons.push(`${item.id} is ${v.Status}`);
+    if (UNRESOLVED.has(v.Status)) add(`${item.id} is ${v.Status}.`, `Settle ${item.id} and set its Status to resolved.`, item);
     if (item.version !== 3) continue;
     const open = openQuestions(v.Questions || '');
-    if (open) reasons.push(`${item.id}: ${open} open question${open === 1 ? '' : 's'}`);
+    if (open) add(`${item.id}: ${open} open question${open === 1 ? '' : 's'}.`, `Answer and tick the open questions in ${item.id}.`, item);
     const states = criteriaStates(v['Proposed acceptance criteria'] || '', safeHistory(item), v['Visual aids'] ?? null);
     if (!states.length) continue;  // a pure question needs no criteria of its own
     criteriaCount += states.length;
-    if (isPlaceholder(v['Desired outcome'] || '')) reasons.push(`${item.id}: desired outcome missing`);
+    if (isPlaceholder(v['Desired outcome'] || '')) add(`${item.id}: desired outcome missing.`, `Write the desired outcome in ${item.id}.`, item);
     const undecided = states.filter(s => s.state === 'proposed' || s.state === 'changed');
-    if (undecided.length) reasons.push(`${item.id}: PO has not decided ${undecided.map(s => s.id + (s.state === 'changed' ? ` (changed since decision${s.why ? ': ' + s.why : ''})` : '')).join(', ')}`);
+    if (undecided.length) {
+      add(`${item.id}: PO has not decided ${undecided.map(s => s.id + (s.state === 'changed' ? ` (changed since decision${s.why ? ': ' + s.why : ''})` : '')).join(', ')}.`,
+        `Ask the PO to decide ${undecided.map(s => s.id).join(', ')} in ${item.id}.`, item);
+    }
     // A rejected criterion must be rewritten (which makes it "changed") or removed.
     const rejected = states.filter(s => s.state === 'rejected');
-    if (rejected.length) reasons.push(`${item.id}: ${rejected.map(s => s.id).join(', ')} rejected by the PO; rewrite or remove`);
+    if (rejected.length) add(`${item.id}: ${rejected.map(s => s.id).join(', ')} rejected by the PO.`, `Rewrite or remove ${rejected.map(s => s.id).join(', ')} in ${item.id}.`, item);
     // Ready means the requirement itself says it: each accepted criterion appears in its text.
     if (defs.length) {
       const missing = states.filter(s => s.state === 'accepted' && !requirementText.includes(normalized(s.text)));
-      if (missing.length) reasons.push(`${item.id}: ${missing.map(s => s.id).join(', ')} accepted but not yet written into ${defs[0].file}`);
+      if (missing.length) {
+        const ids = missing.map(s => s.id).join(', ');
+        add(`${item.id}: ${ids} accepted but not yet written into ${defs[0].file}.`, `Write ${ids} into ${defs[0].file}.`, item);
+      }
     }
   }
-  if (items.length && !criteriaCount) reasons.push('No acceptance criteria proposed for this requirement yet');
+  if (!criteriaCount) {
+    add('No accepted criteria are available.', items.length ? 'Propose acceptance criteria in a clarification for this requirement.' : 'Create a clarification for this requirement.');
+  }
   return reasons;
 }
 
@@ -727,10 +737,7 @@ function itemLine(item) {
   const badge = el('span', { className: 'badge', textContent: status });
   badge.dataset.status = status;
   const open = el('button', { type: 'button', className: 'link', textContent: item.id });
-  open.onclick = () => {
-    if (item.local) { showView('items'); openReference(item.id, []); }
-    else openReference(item.id, [item]);
-  };
+  open.onclick = () => openItem(item);
   const question = SUMMARY_FIELDS.map(label => item.values[label]).find(Boolean) || '';
   const latest = item.version === 2 ? latestConclusion(safeHistory(item)) : null;
   const conclusion = UNRESOLVED.has(status) || item.version === 3 ? '' : CONCLUSION_FIELDS.map(label => item.values[label]).find(Boolean) || '';
@@ -739,66 +746,154 @@ function itemLine(item) {
     el('div', { className: 'text', textContent: summaryText(question) + (conclusion ? '\nConclusion: ' + conclusion.split('\n')[0] : '') }));
 }
 
+const reqTabs = new Map();  // requirement ID -> the tab its card shows; kept across redraws
+
 function drawTrace() {
   const byRequirement = groupByRequirement();
-  const status = $('#filter').value, query = $('#search').value.trim().toLowerCase();
+  const filter = $('#req-filter').value, query = $('#req-search').value.trim().toLowerCase();
   // Document order of the requirement files; IDs that are not found come last.
   const order = id => { const n = catalog.requirements.findIndex(r => r.id === id); return n < 0 ? Infinity : n; };
   const ids = [...byRequirement.keys()].sort((a, b) => order(a) - order(b) || a.localeCompare(b, undefined, { numeric: true }));
-  const sections = [], outline = [];
+  const cards = [], outline = [];
   let unresolvedCount = 0, missingCount = 0, readyCount = 0, emptyCount = 0;
   for (const id of ids) {
     const items = byRequirement.get(id), defs = definitions(id);
-    const unresolved = items.filter(item => UNRESOLVED.has(item.values.Status)).length;
+    const unresolved = items.some(item => UNRESOLVED.has(item.values.Status));
+    const missing = catalog.configured && !defs.length;
+    const reasons = readiness(items, defs);
     if (unresolved) unresolvedCount++;
     if (!items.length) emptyCount++;
-    if (catalog.configured && !defs.length) missingCount++;
-    if (!readiness(items, defs).length) readyCount++;
+    if (missing) missingCount++;
+    if (!reasons.length) readyCount++;
+    const shown = { all: true, ready: !reasons.length, notready: reasons.length > 0, empty: !items.length, unresolved, missing }[filter];
     const text = [id, ...defs.map(d => d.title + '\n' + d.excerpt), ...items.map(item => item.id + '\n' + Object.values(item.values).join('\n'))].join('\n').toLowerCase();
-    if ((status !== 'all' && !items.some(item => item.values.Status === status)) || (query && !text.includes(query))) continue;
-
-    const reasons = readiness(items, defs);
-    const tone = reasons.length ? 'investigating' : 'resolved';
-    const ready = el('span', { className: 'badge ready', textContent: reasons.length ? 'Not ready' : 'Ready', title: reasons.join('\n') });
-    ready.dataset.status = tone;
-    const counts = el('span', { className: 'note', textContent: !items.length ? 'no dou item' : unresolved ? `${unresolved} unresolved item${unresolved === 1 ? '' : 's'}` : 'all items resolved' });
-    const section = el('section', { id: 'req-' + id },
-      el('h2', {}, id, defs[0]?.title ? el('span', { className: 'req-title', textContent: defs[0].title }) : null, ready, counts));
-    let where;
-    if (!catalog.configured) where = 'Set a requirements source above to show titles and text.';
-    else if (!defs.length) where = el('span', { className: 'warn', textContent: `Not found in ${catalog.root}. Check the ID or add the requirement.` });
-    else {
-      // With a Git source, locations open the file at the synced commit on the hosting site.
-      // From a folder, a location opens the file in VS Code at that line.
-      const places = defs.map(d => catalog.web
-        ? el('a', { href: `${catalog.web}${d.file.split('/').map(encodeURIComponent).join('/')}?plain=1#L${d.line}`, target: '_blank', rel: 'noopener noreferrer', textContent: `${d.file}:${d.line}` })
-        : catalog.source?.kind === 'folder' ? openLocation(d) : `${d.file}:${d.line}`);
-      where = el('span', {}, ...places.flatMap((x, n) => n ? [' · ', x] : [x]), defs.length > 1 ? `  (defined ${defs.length} times)` : '');
-    }
-    section.append(el('div', { className: 'req-meta' }, where));
-    if (reasons.length) section.append(el('ul', { className: 'reasons' }, ...reasons.map(r => el('li', { textContent: r }))));
-    if (defs[0]?.excerpt) section.append(el('details', {}, el('summary', { textContent: 'Requirement text' }), el('div', { className: 'req-text', textContent: defs[0].excerpt })));
-    if (items.length) section.append(el('ul', { className: 'linked' }, ...items.map(itemLine)));
-    if (doc.version === 3) {
-      const create = el('button', { type: 'button', className: 'create', textContent: '+ Create dou item' });
-      create.onclick = () => createItemFor(id, defs[0]);
-      section.append(el('div', { className: 'criteria-actions' }, create));
-    }
-    sections.push(section);
-
+    if (!shown || (query && !text.includes(query))) continue;
+    cards.push(requirementCard(id, items, defs, reasons));
     const dot = el('span', { className: 'dot' });
-    dot.dataset.status = tone;
+    dot.dataset.status = reasons.length ? 'investigating' : 'resolved';
     outline.push(el('li', {}, el('a', { href: '#req-' + id }, dot, el('span', {}, id, el('small', { textContent: defs[0]?.title || '' })))));
   }
-  const summary = `${ids.length} requirement${ids.length === 1 ? '' : 's'} · ${readyCount} ready · ${emptyCount} without a dou item · ${unresolvedCount} with unresolved items`
+  $('#req-summary').textContent = `${ids.length} requirement${ids.length === 1 ? '' : 's'} · ${readyCount} ready · ${emptyCount} without a clarification · ${unresolvedCount} with unresolved clarifications`
     + (missingCount ? ` · ${missingCount} not found` : '')
     + (catalog.skipped?.length ? ` · ${catalog.skipped.length} file(s) skipped` : '')
     + (catalog.truncated ? ' · scan limit reached' : '')
     + '. This file includes unsaved edits; other files are shown as saved.';
-  const empty = ids.length ? (sections.length ? null : el('p', { className: 'empty', textContent: 'No requirement matches the filter.' }))
+  const empty = ids.length ? (cards.length ? null : el('p', { className: 'empty', textContent: 'No requirement matches the filter.' }))
     : el('p', { className: 'empty', textContent: catalog.configured ? `No requirement found in ${catalog.root}.` : catalog.sync?.state === 'syncing' ? 'Fetching requirements…' : 'No requirements yet: set a requirements source above.' });
-  $('#trace').replaceChildren(...[sourceCard(), el('p', { className: 'summary', textContent: summary }), empty, ...sections].filter(Boolean));
+  $('#source-bar').replaceChildren(...sourceBar());
+  $('#req-list').replaceChildren(...[empty, ...cards].filter(Boolean));
   $('#outline').replaceChildren(...outline);
+}
+
+// One requirement: its title and place, then Requirement / Clarifications / Acceptance tabs.
+function requirementCard(id, items, defs, reasons) {
+  const def = defs[0];
+  const ready = el('span', { className: 'badge ready', textContent: reasons.length ? 'Not ready' : 'Ready', title: reasons.map(r => r.text).join('\n') });
+  ready.dataset.status = reasons.length ? 'investigating' : 'resolved';
+  let where;
+  if (!catalog.configured) where = el('span', { className: 'note', textContent: 'Set a requirements source to show the title and text.' });
+  else if (!def) where = el('span', { className: 'warn', textContent: `Not found in ${catalog.root}. Check the ID or add the requirement.` });
+  else {
+    // With a Git source, locations open the file at the synced commit on the hosting site.
+    // From a folder, a location opens the file in VS Code at that line.
+    const places = defs.map(d => catalog.web
+      ? el('a', { href: `${catalog.web}${d.file.split('/').map(encodeURIComponent).join('/')}?plain=1#L${d.line}`, target: '_blank', rel: 'noopener noreferrer', textContent: `${d.file}:${d.line}` })
+      : catalog.source?.kind === 'folder' ? openLocation(d) : `${d.file}:${d.line}`);
+    where = el('span', {}, ...places.flatMap((x, n) => n ? [' · ', x] : [x]), ' · Source document', defs.length > 1 ? ` · defined ${defs.length} times` : '');
+  }
+  const criteria = acceptanceOf(items);
+  const panels = {
+    requirement: () => requirementPanel(id, def, items, reasons),
+    clarifications: () => clarificationsPanel(id, def, items),
+    acceptance: () => acceptancePanel(criteria),
+  };
+  const tabs = [['requirement', 'Requirement'], ['clarifications', `Clarifications · ${items.length}`], ['acceptance', `Acceptance · ${criteria.length}`]];
+  let panel = panels[reqTabs.get(id) || 'requirement']();
+  const bar = el('div', { className: 'subtabs', role: 'tablist', ariaLabel: id });
+  for (const [key, label] of tabs) {
+    const tab = el('button', { type: 'button', role: 'tab', textContent: label });
+    tab.dataset.tab = key;
+    tab.setAttribute('aria-selected', String(key === (reqTabs.get(id) || 'requirement')));
+    tab.onclick = () => {
+      reqTabs.set(id, key);
+      bar.querySelectorAll('[role=tab]').forEach(t => t.setAttribute('aria-selected', String(t === tab)));
+      const next = panels[key]();
+      panel.replaceWith(next);
+      panel = next;
+    };
+    bar.append(tab);
+  }
+  return el('section', { id: 'req-' + id, className: 'req-card' },
+    el('div', { className: 'req-head' }, el('span', { className: 'req-id', textContent: id }), ready),
+    el('h2', { className: 'req-name', textContent: def?.title || id }),
+    el('div', { className: 'req-meta' }, where),
+    bar, panel);
+}
+
+function requirementPanel(id, def, items, reasons) {
+  const box = el('div', { className: 'subpanel', role: 'tabpanel' });
+  if (def?.excerpt) box.append(el('blockquote', { className: 'req-text', textContent: def.excerpt }));
+  if (reasons.length) {
+    box.append(el('div', { className: 'blockers' }, el('strong', { textContent: 'What keeps this requirement Not ready' }),
+      el('ul', {}, ...reasons.map(r => el('li', { textContent: r.text })))));
+  } else {
+    box.append(el('div', { className: 'ready-box', textContent: 'Ready: every clarification is resolved, and each accepted criterion is written into the requirement.' }));
+  }
+  const next = reasons[0];
+  let action = null;
+  if (next && !catalog.configured) {
+    action = el('button', { type: 'button', textContent: 'Set source…' });
+    action.onclick = () => sourceDialog(catalog.source || { kind: 'none' });
+  } else if (next && !items.length && doc.version === 3) {
+    action = createButton(id, def);
+  } else if (next?.item) {
+    action = el('button', { type: 'button', textContent: `Open ${next.item.id}` });
+    action.onclick = () => openItem(next.item);
+  }
+  box.append(el('div', { className: 'next-action' }, el('span', { className: 'label', textContent: 'Next action' }),
+    el('p', { textContent: next ? next.next : 'None: this requirement is Ready.' }), action));
+  return box;
+}
+
+function clarificationsPanel(id, def, items) {
+  const box = el('div', { className: 'subpanel', role: 'tabpanel' });
+  box.append(items.length ? el('ul', { className: 'linked' }, ...items.map(itemLine))
+    : el('p', { className: 'empty', textContent: 'No clarification is linked to this requirement yet.' }));
+  if (doc.version === 3) box.append(el('div', { className: 'criteria-actions' }, createButton(id, def)));
+  return box;
+}
+
+// Acceptance criteria proposed for a requirement by its v3 items, with the PO's latest decision.
+function acceptanceOf(items) {
+  return items.filter(item => item.version === 3).flatMap(item =>
+    criteriaStates(item.values['Proposed acceptance criteria'] || '', safeHistory(item), item.values['Visual aids'] ?? null).map(c => ({ ...c, item })));
+}
+
+function acceptancePanel(criteria) {
+  const box = el('div', { className: 'subpanel', role: 'tabpanel' });
+  if (!criteria.length) {
+    box.append(el('p', { className: 'empty', textContent: 'No acceptance criteria proposed yet. A clarification proposes them in its Proposed acceptance criteria; the PO accepts or rejects each one.' }));
+    return box;
+  }
+  box.append(el('ul', { className: 'criteria' }, ...criteria.map(c => {
+    const badge = el('span', { className: 'badge', title: c.why, textContent: c.state === 'changed' ? 'changed since decision' : c.state === 'rejected' ? 'rejected · rewrite or remove' : c.state });
+    badge.dataset.status = STATE_TONE[c.state];
+    const open = el('button', { type: 'button', className: 'link', textContent: c.item.id });
+    open.onclick = () => openItem(c.item);
+    return el('li', {}, el('strong', { textContent: c.id }), badge, el('span', { textContent: c.text }), el('span', { className: 'note' }, open, c.by ? ` · ${c.by}` : ''));
+  })));
+  return box;
+}
+
+function createButton(id, def) {
+  const create = el('button', { type: 'button', className: 'create primary', textContent: '+ Create clarification' });
+  create.onclick = () => createItemFor(id, def);
+  return create;
+}
+
+function openItem(item) {
+  if (item.local) { showView('items'); openReference(item.id, []); }
+  else openReference(item.id, [item]);
 }
 
 function openLocation(definition) {
@@ -813,7 +908,7 @@ function markRail() {
   $('#mode').setAttribute('aria-selected', String(sourceMode));
 }
 
-// Rail target; leaving source mode validates the Markdown first and keeps you there if it is invalid.
+// Tab target; leaving source mode validates the Markdown first and keeps you there if it is invalid.
 async function goTo(name) {
   if (!doc) return;
   if (sourceMode) {
@@ -833,7 +928,8 @@ function updateRailCounts() {
   $('#count-items').textContent = String(doc.items.length);
   const groups = groupByRequirement();
   const ready = [...groups].filter(([id, items]) => !readiness(items, definitions(id)).length).length;
-  $('#count-reqs').textContent = groups.size ? `${ready}/${groups.size} ready` : '';
+  $('#count-reqs').textContent = groups.size ? String(groups.size) : '';
+  $('#tab-reqs').title = groups.size ? `Requirements: ${ready} of ${groups.size} ready (Alt+2)` : 'Requirements (Alt+2)';
 }
 
 function groupByRequirement() {
@@ -850,11 +946,9 @@ function groupByRequirement() {
 function showView(name, focus) {
   view = name;
   markRail();
-  $('#form').hidden = name !== 'items';
+  $('#form-view').hidden = name !== 'items';
   $('#trace').hidden = name !== 'reqs';
-  $('#add').disabled = name !== 'items';
-  $('#fold').disabled = name !== 'items';
-  if (focus) { $('#filter').value = 'all'; $('#search').value = ''; }
+  if (focus) { $('#req-filter').value = 'all'; $('#req-search').value = ''; }
   if (name === 'reqs') drawTrace();
   else { drawOutline(); applyFilter(); }
   if (focus) document.getElementById('req-' + focus)?.scrollIntoView();
@@ -897,22 +991,18 @@ function applyFilter() {
 function showForm() {
   sourceMode = false;
   $('#raw').hidden = true;
-  $('#form').hidden = view !== 'items';
+  $('#form-view').hidden = view !== 'items';
   $('#trace').hidden = view !== 'reqs';
   markRail();
-  for (const control of [$('#search'), $('#filter')]) control.disabled = false;
-  $('#add').disabled = view !== 'items';
-  $('#fold').disabled = view !== 'items';
 }
 
 function showSource(text) {
   $('#source').value = lf(text);
   sourceMode = true;
-  $('#form').hidden = true;
+  $('#form-view').hidden = true;
   $('#trace').hidden = true;
   $('#raw').hidden = false;
   markRail();
-  for (const control of [$('#add'), $('#fold'), $('#search'), $('#filter')]) control.disabled = true;
 }
 
 // Re-parse unsaved text on the server (nothing is written) and show it as a form.
@@ -931,11 +1021,18 @@ function setupFilter() {
   select.value = STATUSES[doc.version].includes(keep) ? keep : 'all';
 }
 
+// The `title:` of the front matter, shown as the editor's heading.
+function documentTitle(text) {
+  const meta = /^---\r?\n([\s\S]*?)\r?\n---/.exec(text);
+  return (meta?.[1].match(/^title:[ \t]*(.+?)[ \t]*\r?$/m)?.[1] || '').replace(/^["']|["']$/g, '');
+}
+
 async function load(note = 'Loaded. Changes are written only when you save (Ctrl+S).', draft, draftHash) {
   try {
     doc = await api('GET', '/api/document');
     imageCache.clear();  // pick up replaced image files
     loadFolded();
+    $('#doc-title').textContent = documentTitle(doc.content) || doc.id;
     $('#filename').textContent = `${doc.id} · ${doc.filename} · schema v${doc.version}`;
     showForm();
     setupFilter();
@@ -998,41 +1095,32 @@ function ago(iso) {
   return formatDate(iso);
 }
 
-function sourceCard() {
+// "Source: requirements/ · Local folder · Read-only requirements", with its actions.
+function sourceBar() {
   const source = catalog.source || { kind: 'none' }, sync = catalog.sync || {};
   const locked = source.from === 'command line';
-  const status = source.kind === 'none' ? ['Not set', 'investigating']
-    : sync.state === 'syncing' ? ['Syncing…', 'investigating']
-    : sync.state === 'error' ? ['Sync failed', 'rejected']
-    : source.kind === 'git' ? ['Up to date', 'resolved'] : ['Local folder', 'resolved'];
-  const badge = el('span', { className: 'badge', textContent: status[0] });
-  badge.dataset.status = status[1];
-  const rows = [];
-  if (source.kind === 'git') {
-    rows.push(el('div', {}, el('strong', { textContent: source.repo }), ` · branch ${source.ref} · folder ${source.path}`));
-    if (sync.commit) {
-      rows.push(el('div', { className: 'note' }, 'Commit ', el('code', { textContent: sync.commit.slice(0, 8) }), ` ${sync.subject || ''} · ${formatDate(sync.committed_at)}`,
-        sync.synced_at ? ` · synced ${ago(sync.synced_at)}` : ''));
-    }
-  } else if (source.kind === 'folder') {
-    rows.push(el('div', {}, el('strong', { textContent: source.folder }), el('span', { className: 'note', textContent: ' · read from this computer as it is now' })));
-  } else {
-    rows.push(el('div', { className: 'note', textContent: 'Choose where the requirement files are: a Git repository (the editor keeps its own copy and signs in with your Git login) or a folder on this computer.' }));
-  }
+  const where = source.kind === 'git' ? source.repo : source.kind === 'folder' ? source.folder.replace(/\/?$/, '/') : 'not set';
+  const facts = source.kind === 'git' ? ['Git repository', `branch ${source.ref}`, `folder ${source.path}`] : source.kind === 'folder' ? ['Local folder'] : [];
+  if (sync.state === 'syncing') facts.push('Syncing…');
+  else if (sync.state === 'error') facts.push('Sync failed');
+  if (source.kind === 'git' && sync.commit) facts.push(`commit ${sync.commit.slice(0, 8)}${sync.synced_at ? `, synced ${ago(sync.synced_at)}` : ''}`);
+  if (source.kind !== 'none') facts.push('Read-only requirements');
+  const text = el('div', { className: 'source-text' }, el('div', {}, el('strong', { textContent: 'Source: ' }), el('span', { className: 'source-where', textContent: where })),
+    facts.length ? el('div', { className: 'note', textContent: '· ' + facts.join(' · ') }) : null,
+    source.kind === 'none' ? el('div', { className: 'note', textContent: 'Choose where the requirement files are: a Git repository (the editor keeps its own copy and signs in with your Git login) or a folder on this computer.' }) : null);
   if (sync.error) {
-    rows.push(el('div', { className: 'warn', textContent: sync.error }));
-    if (source.kind === 'git') rows.push(el('div', { className: 'note' }, 'Check your Git login in a terminal: ', el('code', { textContent: `git ls-remote ${source.repo}` }),
+    text.append(el('div', { className: 'warn', textContent: sync.error }));
+    if (source.kind === 'git') text.append(el('div', { className: 'note' }, 'Check your Git login in a terminal: ', el('code', { textContent: `git ls-remote ${source.repo}` }),
       sync.commit ? '. Showing the earlier copy until a sync succeeds.' : ''));
   }
-  rows.push(el('div', { className: 'note', textContent: locked ? 'Set on the command line; it cannot be changed here.' : `Saved in ${source.from || '.dou-editor.json'} at the root of this repository; commit it to share with the team.` }));
-  const syncNow = el('button', { type: 'button', textContent: 'Sync now', disabled: source.kind !== 'git' || sync.state === 'syncing' });
+  const syncNow = el('button', { type: 'button', textContent: 'Sync now', disabled: sync.state === 'syncing' });
   syncNow.onclick = async () => {
     try { useCatalog(await api('POST', '/api/requirements/sync', {})); } catch (e) { message(e.message, true); }
   };
-  const change = el('button', { type: 'button', textContent: source.kind === 'none' ? 'Set source…' : 'Change source…', disabled: locked, className: source.kind === 'none' ? 'primary' : '' });
+  const change = el('button', { type: 'button', textContent: source.kind === 'none' ? 'Set source…' : 'Change source…', disabled: locked, className: source.kind === 'none' ? 'primary' : '',
+    title: `Saved in ${source.from || '.dou-editor.json'} at the root of this repository; commit it to share with the team.` });
   change.onclick = () => sourceDialog(source);
-  return el('section', { className: 'source-card', id: 'source-card' }, el('h2', {}, 'Requirements source', badge), ...rows,
-    el('div', { className: 'criteria-actions' }, ...(source.kind === 'git' ? [syncNow] : []), change));
+  return [text, el('div', { className: 'source-actions' }, ...(source.kind === 'git' ? [syncNow] : []), change)];
 }
 
 function sourceDialog(current) {
@@ -1198,9 +1286,11 @@ $('#tab-reqs').onclick = () => goTo('reqs');
 $('#source').addEventListener('input', () => setDirty(true));
 $('#filter').addEventListener('change', applyFilter);
 $('#search').addEventListener('input', applyFilter);
+$('#req-filter').addEventListener('change', drawTrace);
+$('#req-search').addEventListener('input', drawTrace);
 // Ctrl+S is VS Code's own Save, which reaches the extension and comes back as getContent.
 document.addEventListener('keydown', e => {
-  // Alt+1/2/3 switch views like the left rail.
+  // Alt+1/2/3 switch views like the tabs.
   const rail = { '1': '#tab-items', '2': '#tab-reqs', '3': '#mode' }[e.key];
   if (e.altKey && !e.ctrlKey && !e.metaKey && rail) { e.preventDefault(); $(rail).click(); }
 });
