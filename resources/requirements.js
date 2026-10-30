@@ -1037,7 +1037,7 @@ function markRail() {
   $('#mode').setAttribute('aria-selected', String(sourceMode));
   // The list pane belongs to the form views; the Markdown view takes the whole width.
   document.body.classList.toggle('raw', sourceMode);
-  $('#items-tools').hidden = $('#items-foot').hidden = view !== 'items';
+  $('#items-tools').hidden = view !== 'items';
   $('#reqs-tools').hidden = view !== 'reqs';
   $('.list-pane').setAttribute('aria-label', view === 'reqs' ? 'Requirements' : 'Clarification items');
 }

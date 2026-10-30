@@ -5,6 +5,13 @@ All notable changes to Repository Manager will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.13.1] - 2026-10-31
+
+### Fixed
+
+- In the Side Bar, **Changes** stays visible when the Side Bar is short (for example with **Requirements** open below it): the list no longer shrinks to nothing, and the Side Bar scrolls when Branches and Changes do not both fit.
+- In the Requirement Editor, **+ New** sits beside the search box instead of at the bottom of the list, and the list is set in from the editor's edge so it no longer looks like a second Side Bar next to VS Code's own.
+
 ## [2.13.0] - 2026-10-30
 
 ### Changed
