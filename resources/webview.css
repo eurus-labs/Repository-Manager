@@ -3014,7 +3014,11 @@ body.sidebar-view { overflow: hidden; background: var(--vscode-sideBar-backgroun
 .branch-folder-head { color: var(--tone-ok, var(--accent)); font-size: 9px; font-weight: 700; letter-spacing: .04em; }
 
 /* Changes, under Branches: the uncommitted files, each opening its diff in an editor tab. */
-.changes-section { display: flex; flex: 0 1 auto; flex-direction: column; min-height: 0; max-height: 45%; }
+/* Changes never shrinks below its content (up to 45% of the view, or 160px when the view is short);
+   Branches keeps a few rows. When the Side Bar is too short for both, the whole view scrolls instead
+   of squeezing the Changes list to nothing. */
+.changes-section { display: flex; flex: 0 0 auto; flex-direction: column; min-height: 0; max-height: max(45%, 160px); }
+.sidebar-view .branches-section:not(.collapsed) { min-height: 96px; }
 .branches-section.collapsed + .changes-section { flex: 1 1 auto; max-height: none; }
 .changes-section .sidebar-section-title { gap: 6px; }
 .sidebar-section-tools { display: inline-flex; align-items: center; margin-left: auto; }
