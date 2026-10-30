@@ -34,12 +34,15 @@ Only fields you change are rewritten; untouched fields keep their exact bytes an
 line endings. A save is refused when the file changed since the editor loaded it
 (someone else, Git, or an agent wrote it), and your edits stay: **Download draft**
 writes them to another file, **Reload** asks before discarding them. When the file
-changes on disk and the editor has no unsaved edits, it reloads by itself. The
+changes on disk and the editor has no unsaved edits, it reloads by itself.
+Unsaved edits restored after a restart keep the version of the file they were made
+on: if the file changed while VS Code was closed, Save is refused the same way. The
 write is checked once more right before the file is replaced, and the replacement
 is atomic. There is no automatic merge, and Git history is the backup.
 
 Saving also checks the rules below: the artifact ID and schema version stay,
-items are never removed, Created at never changes, History only grows, and each
+items are never removed (in every schema; the Python dou-editor checked this from
+v2 on only), Created at never changes, History only grows, and each
 changed item gets a new Updated at. A schema change (for example v2 to v3) is done
 in a text editor or by an agent.
 
@@ -238,7 +241,8 @@ Requirements view, use **Set source… / Change source…**:
   `main`) and the folder with the `.rst` files (for example `docs/source`). The
   editor keeps its own shallow, sparse copy of just that folder in the
   extension's storage (VS Code's global storage for Repository Manager, under
-  `requirements/`) and fetches the branch when a file of the repository first
+  `requirements/`, one copy per URL, branch and folder) and fetches the branch
+  when a file of the repository first
   opens and on **Sync now**. You do not
   check the repository out yourself, and Ready is judged on that branch rather
   than on whatever happens to be checked out on your computer.

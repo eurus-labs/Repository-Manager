@@ -58,8 +58,9 @@ function message(text, error = false) {
   $('#message').className = error ? 'error' : '';
 }
 function setDirty(value) {
-  // VS Code shows the unsaved dot, asks before closing, and keeps a backup for hot exit.
-  if (value !== dirty) vscode.postMessage({ type: 'dirty', dirty: value });
+  // VS Code shows the unsaved dot, asks before closing, and keeps a backup for hot exit. Every
+  // edit is reported, not only the first, so the backup follows the latest text.
+  if (value || value !== dirty) vscode.postMessage({ type: 'dirty', dirty: value });
   dirty = value;
   $('#state').textContent = value ? '● Unsaved changes' : 'All changes saved';
   $('#state').className = value ? 'dirty' : '';
@@ -930,7 +931,7 @@ function setupFilter() {
   select.value = STATUSES[doc.version].includes(keep) ? keep : 'all';
 }
 
-async function load(note = 'Loaded. Changes are written only when you save (Ctrl+S).', draft) {
+async function load(note = 'Loaded. Changes are written only when you save (Ctrl+S).', draft, draftHash) {
   try {
     doc = await api('GET', '/api/document');
     imageCache.clear();  // pick up replaced image files
@@ -943,15 +944,20 @@ async function load(note = 'Loaded. Changes are written only when you save (Ctrl
     message(note);
     loadIndex();
     // Unsaved edits VS Code kept from an earlier window (hot exit), on top of the file as it is now.
+    // The edits belong to the version of the file they were made on: if it changed since, Save
+    // is refused rather than replacing what someone else wrote meanwhile.
     if (draft && draft !== doc.content) {
+      const changed = draftHash && draftHash !== doc.hash;
       try {
         await reparse(draft);
-        message('Restored unsaved edits. Save to keep them.');
+        message(changed ? 'Restored unsaved edits, but the file changed on disk since. Save will be refused: download your draft, then Reload.'
+          : 'Restored unsaved edits. Save to keep them.', changed);
       } catch {
         showSource(draft);
         setDirty(true);
         message('Restored unsaved edits as Markdown: they do not validate yet.', true);
       }
+      if (draftHash) doc.hash = draftHash;
     }
   } catch (e) {
     message(e.message, true);
@@ -1090,7 +1096,7 @@ window.addEventListener('message', async event => {
     if (msg.ok) request.resolve(msg.data); else request.reject(Error(msg.error || 'Request failed.'));
   } else if (msg.type === 'init') {
     memory = msg.memory || {};
-    await load(undefined, msg.draft);
+    await load(undefined, msg.draft, msg.draftHash);
   } else if (msg.type === 'getContent') {
     // Saving or a backup: the text to write, and the version of the file it was edited from.
     vscode.postMessage({ type: 'content', id: msg.id, content: doc ? content() : null, hash: doc?.hash ?? null });

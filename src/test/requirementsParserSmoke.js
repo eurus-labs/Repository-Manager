@@ -23,6 +23,9 @@ async function schemaV1() {
   spansMatch(text);
   assert.throws(() => parse(text.replace('proposed', 'agreed')));
   assert.throws(() => parse(text + text.slice(text.indexOf('### CLR-001-Q01'))));
+  // v1 items are kept too: removing one is refused, as in v2 and v3.
+  assert.equal(parse(text.slice(0, text.indexOf('### CLR-001-Q01'))).items.length, 0);
+  assert.throws(() => prepareSave(text, text.slice(0, text.indexOf('### CLR-001-Q01'))), /traceability/);
   // Reserved labels inside a fence are text, not structure.
   assert.ok(parse(replaceOnce(text, 'Pending', 'Pending\n\n```md\n**Question**\n### CLR-001-Q99\n```')));
 }
@@ -257,7 +260,16 @@ async function sources() {
   assert.equal(data.sync.state, 'ok', JSON.stringify(data.sync));
   assert.equal(data.sync.subject, 'first');
   assert.deepEqual(data.requirements.map(r => r.file), Array(3).fill('docs/source/messaging.rst'));
-  assert.ok(!fs.existsSync(path.join(source.cacheFolder(url), 'other')), 'the copy is not sparse');
+  assert.ok(!fs.existsSync(path.join(source.cacheFolder({ repo: url, ref: 'main', path: 'docs/source' }), 'other')), 'the copy is not sparse');
+  // Another repository reading the same URL at another folder keeps its own copy: syncing it
+  // leaves this source's files alone.
+  const otherConfig = path.join(folder, 'other.json');
+  const other = new RequirementSource(otherConfig, path.join(folder, 'cache'));
+  await other.save({ kind: 'git', repo: url, ref: 'main', path: 'other' });
+  await other.sync();
+  assert.equal((await other.describe()).sync.state, 'ok');
+  assert.notEqual(other.cacheFolder({ repo: url, ref: 'main', path: 'other' }), source.cacheFolder({ repo: url, ref: 'main', path: 'docs/source' }));
+  assert.equal((await source.describe()).requirements.length, 3, 'syncing another source replaced this one\'s files');
   const saved = JSON.parse(fs.readFileSync(config, 'utf8'));
   assert.equal(saved.requirements.path, 'docs/source');
   assert.equal(saved.other, 'kept');
@@ -267,12 +279,20 @@ async function sources() {
   await source.sync();
   data = await source.describe();
   assert.deepEqual([data.sync.subject, data.requirements[1].title], ['second', 'Manual retry v2']);
+  // A failing sync (the repository is unreachable) keeps the earlier copy and says why.
+  fs.renameSync(bare, bare + '.away');
+  await source.sync();
+  data = await source.describe();
+  assert.equal(data.sync.state, 'error');
+  assert.deepEqual([data.sync.subject, data.requirements.length], ['second', 3]);
+  fs.renameSync(bare + '.away', bare);
+  // A branch that does not exist is a new copy that cannot be made: nothing to show, and why.
   await source.save({ kind: 'git', repo: url, ref: 'missing', path: 'docs/source' });
   await source.sync();
   data = await source.describe();
   assert.equal(data.sync.state, 'error');
   assert.match(data.sync.error, /missing/);
-  assert.deepEqual([data.sync.subject, data.requirements.length], ['second', 3]);
+  assert.equal(data.configured, false);
   // A broken config file is reported, not thrown.
   fs.writeFileSync(config, '{"requirements": {"kind": "web"}}');
   assert.match((await new RequirementSource(config, path.join(folder, 'cache')).describe()).sync.error, /\.dou-editor\.json: Requirements source kind/);

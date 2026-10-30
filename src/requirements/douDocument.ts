@@ -358,12 +358,13 @@ export function prepareSave(old: string, proposed: string, now = nowIso()): stri
   if (previous.id !== next.id || previous.version !== next.version) {
     throw new DouError('Artifact ID/schema version must remain unchanged during Save.');
   }
-  if (next.version === 1) { return proposed; }
   const before = new Map(previous.items.map(i => [i.id, i.values]));
   const after = new Map(next.items.map(i => [i.id, i.values]));
+  // Every schema keeps its items (the Python dou-editor checked this from v2 on only).
   for (const key of before.keys()) {
     if (!after.has(key)) { throw new DouError('Keep old items for traceability; explain withdrawal in history.'); }
   }
+  if (next.version === 1) { return proposed; }
   const patches: Array<[number, number, string]> = [];
   for (const [itemId, values] of after) {
     const prior = before.get(itemId);

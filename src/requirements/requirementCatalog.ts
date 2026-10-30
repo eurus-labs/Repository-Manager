@@ -341,8 +341,13 @@ export class RequirementSource {
     }
   }
 
-  cacheFolder(repo: string): string {
-    return path.join(this.cacheRoot, createHash('sha256').update(repo, 'utf8').digest('hex').slice(0, 16));
+  /**
+   * The editor's copy of a Git source. Its ref and folder are part of the name: two repositories
+   * that read the same URL at another branch or folder would otherwise replace each other's files.
+   */
+  cacheFolder(source: { repo: string; ref: string; path: string }): string {
+    const key = `${source.repo}\n${source.ref}\n${source.path}`;
+    return path.join(this.cacheRoot, createHash('sha256').update(key, 'utf8').digest('hex').slice(0, 16));
   }
 
   /** Save a new source in the config file (other keys kept) and start syncing it. */
@@ -370,7 +375,7 @@ export class RequirementSource {
       return { folder, base: path.dirname(folder) };
     }
     if (this.source.kind === 'git') {
-      const cache = this.cacheFolder(this.source.repo);
+      const cache = this.cacheFolder(this.source);
       return { folder: path.join(cache, this.source.path), base: cache };
     }
     return undefined;
@@ -392,7 +397,7 @@ export class RequirementSource {
   }
 
   private async runSync(source: Extract<SourceSetting, { kind: 'git' }>): Promise<void> {
-    const cache = this.cacheFolder(source.repo);
+    const cache = this.cacheFolder(source);
     let result: SyncState;
     try {
       if (!await exists(path.join(cache, '.git'))) {

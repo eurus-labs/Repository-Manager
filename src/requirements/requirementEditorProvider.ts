@@ -28,6 +28,8 @@ class RequirementDocument implements vscode.CustomDocument {
   page?: { panel: vscode.WebviewPanel; ready: boolean };
   /** Text VS Code kept from an earlier window (hot exit), shown over the file when the page opens. */
   draft?: string;
+  /** The version of the file that text was edited from, so a file changed since is not overwritten. */
+  draftHash?: string;
   /** The version of the file the page shows, so changes on disk by someone else are noticed. */
   hash?: string;
   readonly contentRequests = new Map<number, (reply: { content: string | null; hash: string | null }) => void>();
@@ -63,7 +65,11 @@ export class RequirementEditorProvider implements vscode.CustomEditorProvider<Re
     const service = new DouService(uri.fsPath, await DouService.sourceFor(uri.fsPath, cache, this.sources));
     const document = new RequirementDocument(uri, service);
     if (context.backupId) {
-      document.draft = await fs.readFile(vscode.Uri.parse(context.backupId).fsPath, 'utf8').catch(() => undefined);
+      const backup = await fs.readFile(vscode.Uri.parse(context.backupId).fsPath, 'utf8').then(JSON.parse).catch(() => undefined);
+      if (backup && typeof backup.content === 'string') {
+        document.draft = backup.content;
+        document.draftHash = typeof backup.hash === 'string' ? backup.hash : undefined;
+      }
     }
     // Someone else changed the file: a page without unsaved edits reloads, one with edits warns.
     const watcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(vscode.Uri.file(path.dirname(uri.fsPath)), path.basename(uri.fsPath)));
@@ -100,8 +106,8 @@ export class RequirementEditorProvider implements vscode.CustomEditorProvider<Re
     switch (message.type) {
       case 'ready':
         if (document.page) { document.page.ready = true; }
-        this.post(document, { type: 'init', memory: this.memory.get(MEMORY_KEY, {}), draft: document.draft });
-        document.draft = undefined;
+        this.post(document, { type: 'init', memory: this.memory.get(MEMORY_KEY, {}), draft: document.draft, draftHash: document.draftHash });
+        document.draft = document.draftHash = undefined;
         return;
       case 'request':
         return this.answer(document, message);
@@ -205,9 +211,10 @@ export class RequirementEditorProvider implements vscode.CustomEditorProvider<Re
   }
 
   async backupCustomDocument(document: RequirementDocument, context: vscode.CustomDocumentBackupContext): Promise<vscode.CustomDocumentBackup> {
-    const { content } = await this.requestContent(document);
+    // The text and the version of the file it was edited from.
+    const { content, hash } = await this.requestContent(document);
     await fs.mkdir(path.dirname(context.destination.fsPath), { recursive: true });
-    await fs.writeFile(context.destination.fsPath, content, 'utf8');
+    await fs.writeFile(context.destination.fsPath, JSON.stringify({ hash, content }), 'utf8');
     return { id: context.destination.toString(), delete: () => { void fs.rm(context.destination.fsPath, { force: true }); } };
   }
 

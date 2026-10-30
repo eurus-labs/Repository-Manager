@@ -100,7 +100,7 @@ async function main() {
   const memory = new Map();
   const provider = new RequirementEditorProvider(fileUri(root), fileUri(path.join(base, 'storage')),
     { get: (key, fallback) => (memory.has(key) ? memory.get(key) : fallback), update: async (key, value) => { memory.set(key, value); } });
-  provider.onDidChangeCustomDocument(({ document }) => { const editor = editorOf(document); if (editor) { editor.dirty = true; } });
+  provider.onDidChangeCustomDocument(({ document }) => { const editor = editorOf(document); if (editor) { editor.dirty = true; editor.changes = (editor.changes || 0) + 1; } });
 
   const pages = new Map(); // path -> html
   const server = http.createServer((req, res) => {
@@ -174,6 +174,11 @@ async function main() {
     await page.locator('#CLR-003-Q01 .field', { has: page.locator('label', { hasText: /^Approach$/ }) }).locator('textarea').fill('Retry with the same idempotency key. 😀');
     await until(() => editor.dirty, 'the unsaved state');
     assert.equal(await page.textContent('#state'), '● Unsaved changes');
+    // Every edit reaches VS Code, not only the first, so a hot-exit backup follows the latest text.
+    const changes = editor.changes;
+    await page.locator('#CLR-003-Q01 .field', { has: page.locator('label', { hasText: /^Approach$/ }) }).locator('textarea').type(' ok');
+    await page.locator('#CLR-003-Q01 .field', { has: page.locator('label', { hasText: /^Approach$/ }) }).locator('textarea').fill('Retry with the same idempotency key. 😀');
+    await until(() => editor.changes >= changes + 3, 'a change event for each edit');
     await page.click('#save');
     await until(() => !editor.dirty && read() !== before, 'the save');
     await page.locator('#message', { hasText: 'Saved to Markdown.' }).waitFor();
@@ -269,7 +274,19 @@ async function main() {
     await until(() => restored.dirty, 'the restored edits to count as unsaved');
     assert.ok(!read().includes('Kept across a restart'), 'restoring wrote the file');
     await snap(restored.page, '22-requirement-editor-light-restored');
+
+    // The file changed while VS Code was closed: the restored edits belong to the old version, so
+    // Save is refused instead of overwriting what was written meanwhile.
+    const second = await provider.backupCustomDocument(restored.document, { destination: fileUri(path.join(base, 'backups', 'clr-003-b')) });
     await restored.page.close();
+    fs.writeFileSync(file, read().replace('Confirmed by the API owner.', 'Changed while VS Code was closed.'));
+    const stale = await open(file, { backupId: second.id });
+    await stale.page.locator('#message.error', { hasText: 'changed on disk since' }).waitFor();
+    await until(() => stale.dirty, 'the restored edits to count as unsaved');
+    await stale.page.click('#save');
+    await stale.page.locator('#message.error', { hasText: 'File changed externally' }).waitFor();
+    assert.ok(read().includes('Changed while VS Code was closed.') && !read().includes('Kept across a restart'), 'the stale draft overwrote the file');
+    await stale.page.close();
 
     // A v1 file at phone width: the form fits, nothing scrolls sideways.
     const narrow = await open(path.join(repo, 'docs', 'CLR-001.md'), { width: 390, height: 844 });
