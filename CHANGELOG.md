@@ -5,6 +5,13 @@ All notable changes to Repository Manager will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.13.0] - Unreleased
+
+### Changed
+
+- The Requirement Editor shows a list beside the detail of what you pick. In **Clarifications**, the list shows each item's status, requirement and progress; the chosen item shows its questions answered, criteria accepted, responses and owner at the top, its four groups as separate cards, edited fields marked until saved, and History as a conversation. In **Requirements**, the **Next action** comes first and the six conditions of Ready are a checklist, each with what keeps it unmet. The PO decision dialog picks Accept, Reject or Later per criterion and shows the tally before recording.
+- Items can no longer be collapsed; the list replaces Collapse all.
+
 ## [2.12.0] - 2026-10-30
 
 ### Changed

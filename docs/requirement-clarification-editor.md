@@ -20,8 +20,9 @@ requests and agents edit it as text.
   a folder, an ID and a title, and writes the v3 template.
 - **Requirement Editor** is a custom editor for `.md` files, chosen per file
   (**Open With… › Requirement Editor**), so other Markdown keeps opening as text.
-  Under the file's title, tabs switch between Clarifications (each item as a
-  form), Requirements, and Markdown (the whole file as text); Alt+1, Alt+2 and
+  Under the file's title, tabs switch between Clarifications (a list of items
+  beside the chosen item as a form), Requirements (a list of requirements beside
+  the chosen one), and Markdown (the whole file as text); Alt+1, Alt+2 and
   Alt+3 do the same.
 
 ## Saving
@@ -270,17 +271,20 @@ the host at the synced commit.
 ## Requirements view
 
 The Requirements view shows the source (where the requirements are read from),
-then a card for every requirement found there, plus any ID an item names that is
+then a list of every requirement found there, plus any ID an item names that is
 not found; search by ID or text, or show only those Ready, Not ready, without a
-clarification, with unresolved clarifications, or not found. Each card shows the
-ID, Ready or Not ready, the title and `file:line`, and three tabs:
+clarification, with unresolved clarifications, or not found. Each list entry shows
+the ID, Ready or Not ready with how many of the six conditions below are met, the
+title, and its clarifications. The chosen requirement shows its title and
+`file:line`, then:
 
-- **Requirement**: the requirement's text, what keeps it Not ready, and the
-  **Next action**, the step that removes the first of those reasons (with a
-  button for it where there is one, such as **+ Create clarification** or
+- the **Next action**, the step that removes the first reason it is Not ready
+  (with a button for it where there is one, such as **+ Create clarification** or
   **Open** the item);
-- **Clarifications**: the items that clarify it and their status;
-- **Acceptance**: the criteria those items propose, with the PO's decision on each.
+- **Readiness**: each condition of Ready, met or not, with what keeps it unmet;
+- three tabs: **Requirement** (its text), **Clarifications** (the items that
+  clarify it and their status) and **Acceptance** (the criteria those items
+  propose, with the PO's decision on each).
 
 **"+ Create clarification"** adds a new item to the open file with that
 requirement filled in; this is the usual way to start a v3 item. IDs in the form
@@ -333,8 +337,8 @@ images from the extension, `blob:` and `https:`.
 
 Remote requests happen only for a Git requirements source (the extension runs
 `git clone`/`git fetch` for the repository you set) and for https images listed
-in Visual aids, which the webview loads from their site. Names, roles and
-collapsed items are remembered in VS Code's global state on this machine.
+in Visual aids, which the webview loads from their site. Names and
+roles are remembered in VS Code's global state on this machine.
 
 ## How the port was done
 

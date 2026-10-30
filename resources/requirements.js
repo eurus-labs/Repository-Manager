@@ -46,6 +46,9 @@ let refViews = [];     // redraw functions for reference lists and requirement c
 let index = [];        // items from the .md files beside the document (saved state)
 let catalog = { configured: false, requirements: [] };  // from --requirements
 let dirty = false, sourceMode = false, view = 'items';
+let selected = null;     // the item (or file-level section) shown in the detail pane
+let selectedReq = null;  // the requirement shown in the Requirements view
+let statusFilter = 'all', reqFilter = 'all';
 
 const $ = selector => document.querySelector(selector);
 function el(tag, props = {}, ...children) {
@@ -62,7 +65,9 @@ function setDirty(value) {
   // edit is reported, not only the first, so the backup follows the latest text.
   if (value || value !== dirty) vscode.postMessage({ type: 'dirty', dirty: value });
   dirty = value;
-  $('#state').textContent = value ? '● Unsaved changes' : 'All changes saved';
+  // In the form, how many fields differ from the file; the Markdown view edits the whole text.
+  const edited = !sourceMode && doc ? values.filter((v, i) => v.trim() !== baseline[i]).length : 0;
+  $('#state').textContent = !value ? 'All changes saved' : edited ? `● ${edited} unsaved field${edited === 1 ? '' : 's'}` : '● Unsaved changes';
   $('#state').className = value ? 'dirty' : '';
 }
 
@@ -110,7 +115,9 @@ function setValue(i, value) {
   values[i] = value;
   const control = controls[i];
   if (control && control.value !== undefined && control.value !== value) control.value = value;
+  control?.closest('.field')?.classList.toggle('edited', value.trim() !== baseline[i]);
   setDirty(true);
+  if (doc.fields[i].inquiry) drawFacts(doc.fields[i].inquiry);
   if (doc.fields[i].label === 'Status') {
     updateStatus(doc.fields[i].inquiry);
     const questions = fieldIndex(doc.fields[i].inquiry, 'Questions');
@@ -123,9 +130,60 @@ function setValue(i, value) {
 }
 
 function updateStatus(item) {
-  const status = values[fieldIndex(item, 'Status')];
-  const badge = document.querySelector(`section[data-item="${item}"] .badge`);
-  if (badge) { badge.textContent = status; badge.dataset.status = status; }
+  const select = document.querySelector(`section[data-item="${item}"] select.status`);
+  if (select) select.dataset.status = values[fieldIndex(item, 'Status')];
+}
+
+// What an item's list entry and header show: its progress, read from the current values.
+function itemFacts(item) {
+  const value = label => { const n = fieldIndex(item, label); return n < 0 ? null : values[n]; };
+  const facts = { status: value('Status') };
+  const questions = value('Questions');
+  if (doc.version === 3 && questions !== null) {
+    const boxes = questions.split('\n').filter(l => /^\s*[-*]\s*\[[ xX]\]/.test(l)).length;
+    facts.questions = { total: boxes, done: boxes - openQuestions(questions) };
+  }
+  let history = [];
+  try { history = value('History') === null ? null : decode(value('History')); } catch { history = []; }
+  if (history) facts.responses = history.length;
+  if (doc.version === 3) {
+    let states = [];
+    try { states = criteriaStates(value('Proposed acceptance criteria') || '', history || [], aidsOf(item)); } catch { /* reported on save */ }
+    facts.criteria = { total: states.length, accepted: states.filter(s => s.state === 'accepted').length };
+    const next = (value('Next action') || '').trim().match(/^([^:\n]{2,60}):\s*\S/);
+    facts.owner = next ? next[1].trim() : '';
+    facts.outcome = value('Desired outcome') || '';
+  }
+  facts.requirements = requirementsOf(doc.version, value(REQUIREMENT_FIELD[doc.version]) || '');
+  const summary = SUMMARY_FIELDS.map(label => fieldIndex(item, label)).find(n => n >= 0);
+  facts.summary = doc.version === 3 && !isPlaceholder(facts.outcome) ? facts.outcome.split('\n')[0].trim() : summary >= 0 ? summaryText(values[summary]) : '';
+  return facts;
+}
+
+// The strip under an item's title: what keeps it from being resolved, and who acts next.
+function drawFacts(item) {
+  const section = document.getElementById(item);
+  if (!section) return;
+  const facts = itemFacts(item);
+  const cell = (label, value, part) => el('div', { className: 'fact' }, el('span', { className: 'label', textContent: label }), el('strong', { textContent: value }),
+    part ? el('span', { className: 'meter' }, Object.assign(el('span'), { style: `width: ${part.total ? Math.round(100 * part.done / part.total) : 0}%` })) : null);
+  const cells = [];
+  if (facts.questions) cells.push(cell('Questions', `${facts.questions.done} / ${facts.questions.total} answered`, facts.questions));
+  if (facts.criteria) cells.push(cell('Acceptance', `${facts.criteria.accepted} / ${facts.criteria.total} accepted`, { done: facts.criteria.accepted, total: facts.criteria.total }));
+  if (facts.responses !== undefined) cells.push(cell('Responses', String(facts.responses)));
+  if (facts.owner !== undefined) {
+    const owner = cell('Owner', facts.owner || 'None');
+    if (!facts.owner && UNRESOLVED.has(facts.status)) owner.classList.add('missing');
+    cells.push(owner);
+  }
+  section.querySelector('.facts').replaceChildren(...cells);
+  section.querySelector('.facts').hidden = !cells.length;
+  section.querySelector('.clarifies').replaceChildren(...(facts.requirements.length ? [el('span', { className: 'note', textContent: 'Clarifies' }),
+    ...facts.requirements.flatMap(id => {
+      const chip = el('button', { type: 'button', className: 'chip req', textContent: id, title: 'Open in Requirements' });
+      chip.onclick = () => showView('reqs', id);
+      return [chip, el('span', { textContent: definitions(id)[0]?.title || '' })];
+    })] : []));
 }
 
 /* ---------- rendering ---------- */
@@ -146,68 +204,67 @@ function render() {
       root.append(section);
     }
     const section = sections.get(key);
-    if (f.inquiry && doc.version === 3 && GROUPS[f.label]) section.querySelector('.grid').append(el('div', { className: 'group', textContent: GROUPS[f.label] }));
+    // v3: each of the four groups is its own card; v1/v2 items keep their fields in one card.
+    if (f.inquiry && doc.version === 3 && GROUPS[f.label]) section.querySelector('.item-body').append(groupCard(f.inquiry, GROUPS[f.label]));
     const field = renderField(f, i);
-    if (field) (section.querySelector('.grid') || section).append(field);
+    if (!field) return;
+    if (f.inquiry && f.label === 'Status') section.querySelector('.status-slot').append(field);
+    else ([...section.querySelectorAll('.grid')].pop() || section).append(field);
   });
-  for (const item of doc.items) { updateStatus(item.id); updateConclusion(item.id); }
-  applyCollapsed();
+  for (const item of doc.items) { updateStatus(item.id); updateConclusion(item.id); drawFacts(item.id); }
+  const ids = [...root.children].map(section => section.id);
+  if (!ids.includes(selected)) selected = doc.items[0]?.id || ids[0] || null;
   updateRailCounts();
+  drawOutline();
+  applyFilter();
+  showSelected();
+}
+
+function itemSection(item) {
+  const head = el('div', { className: 'item-head' },
+    el('div', { className: 'item-title' }, el('h2', { textContent: item }), el('div', { className: 'status-slot' })),
+    el('div', { className: 'clarifies' }));
+  const body = el('div', { className: 'item-body' });
+  const section = el('section', { id: item }, head, el('div', { className: 'facts' }), body);
+  section.dataset.item = item;
+  if (doc.version >= 2) {
+    const created = values[fieldIndex(item, 'Created at')], updated = values[fieldIndex(item, 'Updated at')];
+    head.querySelector('.item-title').append(el('span', { className: 'dates', textContent: `Created ${formatDate(created)} · Updated ${formatDate(updated)}`, title: `${created} / ${updated}` }));
+  }
+  if (doc.version === 3) {
+    section.insertBefore(el('nav', { className: 'jump', ariaLabel: 'Sections of ' + item }, ...Object.values(GROUPS).map((name, n) =>
+      el('a', { href: `#${item}-g${n + 1}` }, el('span', { className: 'num', textContent: String(n + 1) }), name.replace(/^\d+ · /, '')))), body);
+  } else {
+    body.append(el('div', { className: 'group-card' }, el('div', { className: 'grid' })));
+  }
+  return section;
+}
+
+function groupCard(item, name) {
+  const n = name.match(/^\d+/)[0];
+  return el('div', { className: 'group-card', id: `${item}-g${n}` },
+    el('h3', {}, el('span', { className: 'num', textContent: n }), name.replace(/^\d+ · /, '')), el('div', { className: 'grid' }));
+}
+
+/* ---------- selection: one item at a time in the detail pane ---------- */
+
+function selectItem(id) {
+  selected = id;
+  showSelected();
   drawOutline();
   applyFilter();
 }
 
-function itemSection(item) {
-  const fold = el('button', { type: 'button', className: 'fold', textContent: '▶', ariaLabel: 'Collapse or expand ' + item });
-  const title = el('h2', {}, fold, item, el('span', { className: 'badge' }));
-  title.addEventListener('click', event => { if (!event.target.closest('select, a')) setCollapsed(item, !folded.has(item)); });
-  const body = el('div', { className: 'item-body' });
-  const section = el('section', { id: item }, title, el('div', { className: 'peek' }), body);
-  section.dataset.item = item;
-  if (doc.version >= 2) {
-    const created = values[fieldIndex(item, 'Created at')], updated = values[fieldIndex(item, 'Updated at')];
-    body.append(el('div', { className: 'dates', textContent: `Created ${formatDate(created)} · Updated ${formatDate(updated)}`, title: `${created} / ${updated}` }));
-  }
-  body.append(el('div', { className: 'grid' }));
-  return section;
-}
-
-/* ---------- collapsing items (kept in memory, remembered per file when storage works) ---------- */
-
-let folded = new Set();
-const foldKey = () => 'collapsed.' + doc.filename;
-function loadFolded() {
-  try { folded = new Set(JSON.parse(remembered(foldKey(), '[]'))); } catch { folded = new Set(); }
-}
-function setFolded(items) {
-  folded = new Set(items);
-  remember(foldKey(), JSON.stringify([...folded]));
-  applyCollapsed();
-}
-const setCollapsed = (item, value) => setFolded(value ? [...folded, item] : [...folded].filter(x => x !== item));
-const setAllCollapsed = value => setFolded(value ? doc.items.map(item => item.id) : []);
-const expand = item => { if (folded.has(item)) setCollapsed(item, false); };
-
-function applyCollapsed() {
-  for (const item of doc.items) {
-    const section = document.getElementById(item.id);
-    if (!section) continue;
-    const isCollapsed = folded.has(item.id);
-    section.classList.toggle('collapsed', isCollapsed);
-    section.querySelector('h2 .fold').setAttribute('aria-expanded', String(!isCollapsed));
-    const summary = SUMMARY_FIELDS.map(label => fieldIndex(item.id, label)).find(n => n >= 0);
-    section.querySelector('.peek').textContent = summary >= 0 ? summaryText(values[summary]) : '';
-  }
-  const all = doc.items.length > 0 && doc.items.every(item => folded.has(item.id));
-  $('#fold').textContent = all ? 'Expand all' : 'Collapse all';
+function showSelected() {
+  for (const section of $('#form').children) section.hidden = section.id !== selected;
 }
 
 function renderField(f, i) {
   if (DATE_FIELDS.has(f.label)) return null;  // shown in the item header; the server maintains them
   const wrapper = el('div', { className: 'field' + (WIDE_FIELDS.has(f.label) || !f.inquiry ? ' wide' : '') });
-  // Context and Scope already carry their name in the section heading.
+  // Context and Scope already carry their name in the section heading; Status sits beside the item ID.
   // History and Next action have their own group heading, so their label would repeat it.
-  const ownGroup = doc.version === 3 && (f.label === 'History' || f.label === 'Next action');
+  const ownGroup = (doc.version === 3 && (f.label === 'History' || f.label === 'Next action')) || f.label === 'Status';
   if (f.inquiry) wrapper.append(el('label', { className: 'label' + (ownGroup ? ' visually-hidden' : ''), textContent: f.label, htmlFor: 'f' + i }));
   if (f.inquiry && doc.version === 3 && HINTS[f.label]) wrapper.append(el('span', { className: 'hint', textContent: HINTS[f.label] }));
   if (doc.version >= 2 && f.label === 'History') wrapper.append(historyView(f.inquiry, i));
@@ -244,7 +301,7 @@ function renderField(f, i) {
       area.addEventListener('input', draw);
       refViews.push(draw);
       draw();
-      wrapper.append(list);
+      area.before(list);  // the checklist is what people use; the text below edits it in full
     }
     if (f.inquiry && doc.version === 3 && f.label === 'Next action') {
       const warning = el('div', { className: 'warn' });
@@ -422,14 +479,14 @@ function criteriaView(item, i, area) {
   const list = el('ul', { className: 'criteria' });
   const unlinked = el('div', { className: 'warn' });
   const add = el('button', { type: 'button', textContent: '+ Criterion' });
-  const decide = el('button', { type: 'button', textContent: 'PO decision…' });
+  const decide = el('button', { type: 'button', className: 'primary', textContent: 'PO decision…' });
   const draw = () => {
     let states = [];
     try { states = criteriaStates(values[i], history(), aidsOf(item)); } catch { /* invalid History is reported on save */ }
     list.replaceChildren(...states.map(c => {
       const badge = el('span', { className: 'badge', title: c.why, textContent: c.state === 'changed' ? 'changed since decision' + (c.why ? ` (${c.why})` : '') : c.state === 'rejected' ? 'rejected · rewrite or remove' : c.state });
       badge.dataset.status = STATE_TONE[c.state];
-      return el('li', {}, el('strong', { textContent: c.id }), badge, el('span', { textContent: c.text }), c.by ? el('span', { className: 'note', textContent: c.by }) : null);
+      return el('li', {}, el('strong', { textContent: c.id }), el('span', { className: 'text', textContent: c.text }), badge, c.by ? el('span', { className: 'note', textContent: c.by }) : null);
     }));
     decide.disabled = !states.length;
     decide.title = states.length ? '' : 'Add a criterion first';
@@ -456,28 +513,42 @@ function criteriaView(item, i, area) {
 
 function decisionDialog(item, i, states) {
   const author = el('input', { type: 'text', value: remembered('po-author', remembered('author')), ariaLabel: 'PO name' });
+  // One choice per criterion: accept, reject, or leave it as it is (undecided, or the earlier decision).
   const rows = states.map(c => {
-    const select = el('select', { ariaLabel: 'Decision for ' + c.id },
-      el('option', { value: '', textContent: c.state === 'proposed' || c.state === 'changed' ? 'Not decided' : `Keep (${c.state})` }),
-      el('option', { value: 'accepted', textContent: 'Accept' }), el('option', { value: 'rejected', textContent: 'Reject' }));
-    return { c, select, row: el('div', { className: 'criterion' }, el('span', {}, el('strong', { textContent: c.id + ' ' }), c.text), select) };
+    const leave = c.state === 'proposed' || c.state === 'changed' ? 'Later' : `Keep ${c.state}`;
+    const choice = (value, label) => el('label', { className: 'opt' },el('input', { type: 'radio', name: 'decide-' + c.id, value, checked: !value }), el('span', { textContent: label }));
+    const group = el('span', { className: 'decide', role: 'radiogroup', ariaLabel: 'Decision for ' + c.id },
+      choice('accepted', 'Accept'), choice('rejected', 'Reject'), choice('', leave));
+    const value = () => group.querySelector('input:checked').value;
+    return { c, value, row: el('div', { className: 'criterion' }, el('strong', { textContent: c.id }), el('span', { textContent: c.text }), group) };
   });
+  const tally = el('span', { className: 'note' });
+  const warning = el('p', { className: 'warn' });
+  const count = () => {
+    const picked = rows.map(r => r.value());
+    const n = value => picked.filter(p => p === value).length;
+    tally.textContent = `${n('accepted')} accepted · ${n('rejected')} rejected · ${n('')} unchanged`;
+    const rejected = rows.filter(r => r.value() === 'rejected').map(r => r.c.id);
+    warning.textContent = rejected.length ? `${rejected.join(', ')} will need to be rewritten or removed before the requirement can be Ready.` : '';
+  };
   const note = el('textarea', { placeholder: 'Optional note, e.g. why AC2 is rejected' });
   const record = el('button', { type: 'submit', className: 'primary', textContent: 'Record decision and save' });
   const cancel = el('button', { type: 'button', textContent: 'Cancel' });
   const form = el('form', {}, el('h2', { textContent: `PO decision · ${item}` }),
     el('p', { className: 'note', textContent: 'Recorded as role PO, together with the Visual aids shown now. The editor checks the role, not who you are; the approval of record is the pull request review.' }),
     el('label', { className: 'field' }, el('span', { className: 'label', textContent: 'PO name' }), author),
-    ...rows.map(r => r.row),
+    el('fieldset', { className: 'criteria-pick' }, el('legend', { className: 'label', textContent: 'Criteria' }), ...rows.map(r => r.row)), warning,
     el('label', { className: 'field' }, el('span', { className: 'label', textContent: 'Note' }), note),
-    el('div', { className: 'actions' }, cancel, record));
+    el('div', { className: 'actions' }, tally, cancel, record));
+  form.addEventListener('change', count);
+  count();
   const dialog = el('dialog', {}, form);
   cancel.onclick = () => dialog.close();
   dialog.onclose = () => dialog.remove();
   form.onsubmit = async event => {
     event.preventDefault();
     const aids = aidsOf(item);
-    const criteria = rows.filter(r => r.select.value).map(r => ({ id: r.c.id, decision: r.select.value, text: r.c.text, ...(aids === null ? {} : { aids }) }));
+    const criteria = rows.filter(r => r.value()).map(r => ({ id: r.c.id, decision: r.value(), text: r.c.text, ...(aids === null ? {} : { aids }) }));
     if (!author.value.trim() || !criteria.length) { message('Enter the PO name and decide at least one criterion.', true); return; }
     remember('po-author', author.value.trim());
     const summary = criteria.map(c => `${c.id} ${c.decision}`).join(', ');
@@ -506,46 +577,55 @@ const normalized = text => text.toLowerCase().replace(/[\s.]+/g, ' ').trim();
 // proposed in the items that clarify it.
 function readiness(items, defs) {
   const reasons = [];
-  const add = (text, next, item) => reasons.push({ text, next, item });
-  if (!catalog.configured) add('No requirements source is set, so accepted criteria cannot be checked against the requirement text.', 'Set the requirements source.');
-  else if (!defs.length) add(`Not found in ${catalog.root}.`, 'Check the ID, or add the requirement to the requirement documents.');
-  if (!items.length) add('No clarification item is linked to this requirement.', 'Create a clarification for this requirement.');
+  const add = (rule, text, next, item) => reasons.push({ rule, text, next, item });
+  if (!catalog.configured) add('found', 'No requirements source is set, so accepted criteria cannot be checked against the requirement text.', 'Set the requirements source.');
+  else if (!defs.length) add('found', `Not found in ${catalog.root}.`, 'Check the ID, or add the requirement to the requirement documents.');
+  if (!items.length) add('found', 'No clarification item is linked to this requirement.', 'Create a clarification for this requirement.');
   const requirementText = normalized(defs.map(d => d.title + '\n' + d.excerpt).join('\n'));
   let criteriaCount = 0;
   for (const item of items) {
     const v = item.values;
-    if (UNRESOLVED.has(v.Status)) add(`${item.id} is ${v.Status}.`, `Settle ${item.id} and set its Status to resolved.`, item);
+    if (UNRESOLVED.has(v.Status)) add('resolved', `${item.id} is ${v.Status}.`, `Settle ${item.id} and set its Status to resolved.`, item);
     if (item.version !== 3) continue;
     const open = openQuestions(v.Questions || '');
-    if (open) add(`${item.id}: ${open} open question${open === 1 ? '' : 's'}.`, `Answer and tick the open questions in ${item.id}.`, item);
+    if (open) add('questions', `${item.id}: ${open} open question${open === 1 ? '' : 's'}.`, `Answer and tick the open questions in ${item.id}.`, item);
     const states = criteriaStates(v['Proposed acceptance criteria'] || '', safeHistory(item), v['Visual aids'] ?? null);
     if (!states.length) continue;  // a pure question needs no criteria of its own
     criteriaCount += states.length;
-    if (isPlaceholder(v['Desired outcome'] || '')) add(`${item.id}: desired outcome missing.`, `Write the desired outcome in ${item.id}.`, item);
+    if (isPlaceholder(v['Desired outcome'] || '')) add('outcome', `${item.id}: desired outcome missing.`, `Write the desired outcome in ${item.id}.`, item);
     const undecided = states.filter(s => s.state === 'proposed' || s.state === 'changed');
     if (undecided.length) {
-      add(`${item.id}: PO has not decided ${undecided.map(s => s.id + (s.state === 'changed' ? ` (changed since decision${s.why ? ': ' + s.why : ''})` : '')).join(', ')}.`,
+      add('criteria', `${item.id}: PO has not decided ${undecided.map(s => s.id + (s.state === 'changed' ? ` (changed since decision${s.why ? ': ' + s.why : ''})` : '')).join(', ')}.`,
         `Ask the PO to decide ${undecided.map(s => s.id).join(', ')} in ${item.id}.`, item);
     }
     // A rejected criterion must be rewritten (which makes it "changed") or removed.
     const rejected = states.filter(s => s.state === 'rejected');
-    if (rejected.length) add(`${item.id}: ${rejected.map(s => s.id).join(', ')} rejected by the PO.`, `Rewrite or remove ${rejected.map(s => s.id).join(', ')} in ${item.id}.`, item);
+    if (rejected.length) add('criteria', `${item.id}: ${rejected.map(s => s.id).join(', ')} rejected by the PO.`, `Rewrite or remove ${rejected.map(s => s.id).join(', ')} in ${item.id}.`, item);
     // Ready means the requirement itself says it: each accepted criterion appears in its text.
     if (defs.length) {
       const missing = states.filter(s => s.state === 'accepted' && !requirementText.includes(normalized(s.text)));
       if (missing.length) {
         const ids = missing.map(s => s.id).join(', ');
-        add(`${item.id}: ${ids} accepted but not yet written into ${defs[0].file}.`, `Write ${ids} into ${defs[0].file}.`, item);
+        add('written', `${item.id}: ${ids} accepted but not yet written into ${defs[0].file}.`, `Write ${ids} into ${defs[0].file}.`, item);
       }
     }
   }
   if (!criteriaCount) {
-    add('No accepted criteria are available.', items.length ? 'Propose acceptance criteria in a clarification for this requirement.' : 'Create a clarification for this requirement.');
+    add('criteria', 'No accepted criteria are available.', items.length ? 'Propose acceptance criteria in a clarification for this requirement.' : 'Create a clarification for this requirement.');
   }
   return reasons;
 }
+// The conditions of Ready, in the order the docs list them; each reason above names one.
+const READY_RULES = [
+  ['found', 'Found in the requirement documents and clarified by at least one item'],
+  ['resolved', 'Every item for it is resolved'],
+  ['questions', 'No unticked questions'],
+  ['criteria', 'At least one criterion, each accepted by the PO on its current text'],
+  ['outcome', 'Items that propose criteria have a Desired outcome'],
+  ['written', 'Accepted criteria are written into the requirement text'],
+];
 
-// Names, roles and collapsed items, kept by the extension for every editor on this machine.
+// Names and roles, kept by the extension for every editor on this machine.
 let memory = {};
 function remembered(key, fallback = '') {
   return typeof memory[key] === 'string' && memory[key] ? memory[key] : fallback;
@@ -563,10 +643,14 @@ function historyView(item, i) {
     const events = decode(values[i]);
     list.replaceChildren(...events.map(e => {
       const kind = Array.isArray(e.criteria) ? 'AC decision' : e.type;
-      const li = el('li', {},
-        el('div', { className: 'meta' }, kind ? el('span', { className: 'chip', textContent: kind }) : null, ` ${e.author} (${e.role}) · `,
-          el('time', { textContent: formatDate(e.at), title: e.at }), e.source ? ` · ${e.source}` : ''),
-        el('div', { className: 'body', textContent: e.content }));
+      const initials = String(e.author || '?').split(/\s+/).filter(Boolean).slice(0, 2).map(w => w[0].toUpperCase()).join('');
+      const role = el('span', { className: 'role', textContent: e.role });
+      role.dataset.role = e.role;
+      const li = el('li', {}, el('span', { className: 'avatar', textContent: initials, ariaHidden: 'true' }),
+        el('div', { className: 'event' },
+          el('div', { className: 'meta' }, el('strong', { textContent: e.author }), role, kind ? el('span', { className: 'chip', textContent: kind }) : null,
+            el('time', { textContent: formatDate(e.at), title: e.at }), e.source ? el('span', { textContent: e.source }) : null),
+          el('div', { className: 'body', textContent: e.content })));
       li.dataset.type = Array.isArray(e.criteria) ? 'decision' : e.type || 'response';
       return li;
     }));
@@ -587,7 +671,8 @@ function historyView(item, i) {
   const syncReopen = () => { reopenLabel.hidden = !v3 || values[fieldIndex(item, 'Status')] !== 'resolved'; };
   refViews.push(syncReopen);
   const submit = el('button', { type: 'submit', className: 'primary', textContent: 'Submit' });
-  const form = el('form', { className: 'composer' }, el('div', { className: 'row' + (v3 ? ' two' : '') }, author, role, type), source, text,
+  // v3 has no event type, so the source takes its place in the first row.
+  const form = el('form', { className: 'composer' }, el('div', { className: 'row' }, author, role, v3 ? source : type), v3 ? null : source, text,
     el('div', { className: 'actions' }, reopenLabel, el('span', { className: 'note', textContent: 'Submit adds the response and saves the file.' }), submit));
   form.onsubmit = async event => {
     event.preventDefault();
@@ -662,10 +747,9 @@ function safeRefs(entry) {
 function openReference(id, matches) {
   const local = document.getElementById(id);
   if (local) {
-    expand(id);
-    $('#filter').value = 'all';
+    statusFilter = 'all';
     $('#search').value = '';
-    applyFilter();
+    selectItem(id);
     local.scrollIntoView({ behavior: 'smooth' });
   } else if (matches.length === 1) {
     const close = el('button', { type: 'button', textContent: 'Close' });
@@ -750,29 +834,31 @@ const reqTabs = new Map();  // requirement ID -> the tab its card shows; kept ac
 
 function drawTrace() {
   const byRequirement = groupByRequirement();
-  const filter = $('#req-filter').value, query = $('#req-search').value.trim().toLowerCase();
+  const query = $('#req-search').value.trim().toLowerCase();
   // Document order of the requirement files; IDs that are not found come last.
   const order = id => { const n = catalog.requirements.findIndex(r => r.id === id); return n < 0 ? Infinity : n; };
   const ids = [...byRequirement.keys()].sort((a, b) => order(a) - order(b) || a.localeCompare(b, undefined, { numeric: true }));
   const cards = [], outline = [];
-  let unresolvedCount = 0, missingCount = 0, readyCount = 0, emptyCount = 0;
+  const counts = { all: ids.length, notready: 0, ready: 0, empty: 0, unresolved: 0, missing: 0 };
   for (const id of ids) {
     const items = byRequirement.get(id), defs = definitions(id);
     const unresolved = items.some(item => UNRESOLVED.has(item.values.Status));
     const missing = catalog.configured && !defs.length;
     const reasons = readiness(items, defs);
-    if (unresolved) unresolvedCount++;
-    if (!items.length) emptyCount++;
-    if (missing) missingCount++;
-    if (!reasons.length) readyCount++;
-    const shown = { all: true, ready: !reasons.length, notready: reasons.length > 0, empty: !items.length, unresolved, missing }[filter];
+    const matches = { all: true, ready: !reasons.length, notready: reasons.length > 0, empty: !items.length, unresolved, missing };
+    for (const key of Object.keys(counts)) if (key !== 'all' && matches[key]) counts[key]++;
     const text = [id, ...defs.map(d => d.title + '\n' + d.excerpt), ...items.map(item => item.id + '\n' + Object.values(item.values).join('\n'))].join('\n').toLowerCase();
-    if (!shown || (query && !text.includes(query))) continue;
+    if (!matches[reqFilter] || (query && !text.includes(query))) continue;
     cards.push(requirementCard(id, items, defs, reasons));
-    const dot = el('span', { className: 'dot' });
-    dot.dataset.status = reasons.length ? 'investigating' : 'resolved';
-    outline.push(el('li', {}, el('a', { href: '#req-' + id }, dot, el('span', {}, id, el('small', { textContent: defs[0]?.title || '' })))));
+    outline.push(requirementEntry(id, items, defs, reasons));
   }
+  const unresolvedCount = counts.unresolved, missingCount = counts.missing, readyCount = counts.ready, emptyCount = counts.empty;
+  // The detail pane shows one requirement: the chosen one while it is listed, else the first.
+  if (!cards.some(card => card.id === 'req-' + selectedReq)) selectedReq = cards[0]?.id.slice(4) ?? null;
+  for (const card of cards) card.hidden = card.id !== 'req-' + selectedReq;
+  for (const entry of outline) entry.querySelector('button').setAttribute('aria-current', String(entry.dataset.req === selectedReq));
+  drawSegs($('#req-filter'), [['all', 'All'], ['notready', 'Not ready'], ['ready', 'Ready'], ['empty', 'No clarification'], ['unresolved', 'Unresolved'], ['missing', 'Not found']]
+    .filter(([key]) => key === 'all' || counts[key] || key === reqFilter).map(([key, label]) => [key, label, counts[key]]), reqFilter, value => { reqFilter = value; drawTrace(); });
   $('#req-summary').textContent = `${ids.length} requirement${ids.length === 1 ? '' : 's'} · ${readyCount} ready · ${emptyCount} without a clarification · ${unresolvedCount} with unresolved clarifications`
     + (missingCount ? ` · ${missingCount} not found` : '')
     + (catalog.skipped?.length ? ` · ${catalog.skipped.length} file(s) skipped` : '')
@@ -783,6 +869,35 @@ function drawTrace() {
   $('#source-bar').replaceChildren(...sourceBar());
   $('#req-list').replaceChildren(...[empty, ...cards].filter(Boolean));
   $('#outline').replaceChildren(...outline);
+}
+
+// Filter buttons with their counts; the pressed one is the current filter.
+function drawSegs(box, options, current, pick) {
+  box.replaceChildren(...options.map(([value, label, count]) => {
+    const button = el('button', { type: 'button', className: 'seg', textContent: count === undefined ? label : `${label} ${count}` });
+    button.dataset.value = value;
+    button.setAttribute('aria-pressed', String(value === current));
+    button.onclick = () => pick(value);
+    return button;
+  }));
+}
+
+// A requirement in the list: its ID, Ready state, title, and one bar segment per Ready condition.
+function requirementEntry(id, items, defs, reasons) {
+  const failed = new Set(reasons.map(r => r.rule));
+  const met = READY_RULES.filter(([rule]) => !failed.has(rule)).length;
+  const state = el('span', { className: 'pill', textContent: !reasons.length ? 'Ready' : !items.length ? 'No clarification' : `Not ready · ${met}/${READY_RULES.length}` });
+  state.dataset.status = !reasons.length ? 'resolved' : items.length ? 'investigating' : 'none';
+  const resolved = items.filter(item => !UNRESOLVED.has(item.values.Status)).length;
+  const button = el('button', { type: 'button', className: 'entry' },
+    el('span', { className: 'entry-top' }, el('span', { className: 'entry-id', textContent: id }), state),
+    el('span', { className: 'entry-text', textContent: defs[0]?.title || (catalog.configured ? 'Not found in the source' : '') }),
+    items.length ? el('span', { className: 'bars', ariaHidden: 'true' }, ...READY_RULES.map(([rule]) => el('span', { className: failed.has(rule) ? '' : 'met' }))) : null,
+    el('span', { className: 'entry-meta', textContent: items.length ? `${items.length} clarification${items.length === 1 ? '' : 's'} · ${resolved}/${items.length} resolved` : defs[0] ? `${defs[0].file}:${defs[0].line}` : '' }));
+  button.onclick = () => { selectedReq = id; drawTrace(); };
+  const li = el('li', {}, button);
+  li.dataset.req = id;
+  return li;
 }
 
 // One requirement: its title and place, then Requirement / Clarifications / Acceptance tabs.
@@ -803,7 +918,7 @@ function requirementCard(id, items, defs, reasons) {
   }
   const criteria = acceptanceOf(items);
   const panels = {
-    requirement: () => requirementPanel(id, def, items, reasons),
+    requirement: () => requirementPanel(id, def),
     clarifications: () => clarificationsPanel(id, def, items),
     acceptance: () => acceptancePanel(criteria),
   };
@@ -827,18 +942,32 @@ function requirementCard(id, items, defs, reasons) {
     el('div', { className: 'req-head' }, el('span', { className: 'req-id', textContent: id }), ready),
     el('h2', { className: 'req-name', textContent: def?.title || id }),
     el('div', { className: 'req-meta' }, where),
-    bar, panel);
+    nextAction(id, def, items, reasons), readinessList(reasons),
+    el('div', { className: 'req-tabs' }, bar, panel));
 }
 
-function requirementPanel(id, def, items, reasons) {
+// Each condition of Ready, met or not, with the reasons that keep it unmet.
+function readinessList(reasons) {
+  const met = READY_RULES.filter(([rule]) => !reasons.some(r => r.rule === rule)).length;
+  return el('div', { className: 'readiness' },
+    el('h3', {}, 'Readiness ', el('span', { className: 'note', textContent: `${met} of ${READY_RULES.length} conditions met` })),
+    el('ul', {}, ...READY_RULES.map(([rule, label]) => {
+      const why = reasons.filter(r => r.rule === rule);
+      const li = el('li', { className: why.length ? 'unmet' : 'met' }, el('span', { className: 'mark', ariaLabel: why.length ? 'Not met' : 'Met', role: 'img' }),
+        el('span', { className: 'condition' }, el('span', { textContent: label }), ...why.map(r => el('span', { className: 'why', textContent: r.text }))));
+      return li;
+    })));
+}
+
+function requirementPanel(id, def) {
   const box = el('div', { className: 'subpanel', role: 'tabpanel' });
-  if (def?.excerpt) box.append(el('blockquote', { className: 'req-text', textContent: def.excerpt }));
-  if (reasons.length) {
-    box.append(el('div', { className: 'blockers' }, el('strong', { textContent: 'What keeps this requirement Not ready' }),
-      el('ul', {}, ...reasons.map(r => el('li', { textContent: r.text })))));
-  } else {
-    box.append(el('div', { className: 'ready-box', textContent: 'Ready: every clarification is resolved, and each accepted criterion is written into the requirement.' }));
-  }
+  box.append(def?.excerpt ? el('blockquote', { className: 'req-text', textContent: def.excerpt })
+    : el('p', { className: 'empty', textContent: catalog.configured ? 'This requirement is not in the source, so there is no text to show.' : 'Set a requirements source to show the text.' }));
+  return box;
+}
+
+// The step that removes the first reason the requirement is not Ready, with its button.
+function nextAction(id, def, items, reasons) {
   const next = reasons[0];
   let action = null;
   if (next && !catalog.configured) {
@@ -847,11 +976,11 @@ function requirementPanel(id, def, items, reasons) {
   } else if (next && !items.length && doc.version === 3) {
     action = createButton(id, def);
   } else if (next?.item) {
-    action = el('button', { type: 'button', textContent: `Open ${next.item.id}` });
+    action = el('button', { type: 'button', className: 'primary', textContent: `Open ${next.item.id}` });
     action.onclick = () => openItem(next.item);
   }
-  box.append(el('div', { className: 'next-action' }, el('span', { className: 'label', textContent: 'Next action' }),
-    el('p', { textContent: next ? next.next : 'None: this requirement is Ready.' }), action));
+  const box = el('div', { className: 'next-action' + (next ? '' : ' done') },
+    el('div', {}, el('span', { className: 'label', textContent: 'Next action' }), el('p', { textContent: next ? next.next : 'None: this requirement is Ready.' })), action);
   return box;
 }
 
@@ -906,6 +1035,11 @@ function markRail() {
   $('#tab-items').setAttribute('aria-selected', String(!sourceMode && view === 'items'));
   $('#tab-reqs').setAttribute('aria-selected', String(!sourceMode && view === 'reqs'));
   $('#mode').setAttribute('aria-selected', String(sourceMode));
+  // The list pane belongs to the form views; the Markdown view takes the whole width.
+  document.body.classList.toggle('raw', sourceMode);
+  $('#items-tools').hidden = $('#items-foot').hidden = view !== 'items';
+  $('#reqs-tools').hidden = view !== 'reqs';
+  $('.list-pane').setAttribute('aria-label', view === 'reqs' ? 'Requirements' : 'Clarification items');
 }
 
 // Tab target; leaving source mode validates the Markdown first and keeps you there if it is invalid.
@@ -948,26 +1082,40 @@ function showView(name, focus) {
   markRail();
   $('#form-view').hidden = name !== 'items';
   $('#trace').hidden = name !== 'reqs';
-  if (focus) { $('#req-filter').value = 'all'; $('#req-search').value = ''; }
+  if (focus) { reqFilter = 'all'; $('#req-search').value = ''; selectedReq = focus; }
   if (name === 'reqs') drawTrace();
   else { drawOutline(); applyFilter(); }
-  if (focus) document.getElementById('req-' + focus)?.scrollIntoView();
+  if (focus) window.scrollTo(0, 0);
 }
 
+// The list pane in Clarifications: file-level sections, then one entry per item with its progress.
 function drawOutline() {
   if (view === 'reqs') return drawTrace();
-  const entries = doc.fields.filter(f => !f.inquiry && f.label).map(f => {
-    const link = el('a', { href: '#section-' + f.label }, el('span', { className: 'dot' }), f.label);
-    return el('li', {}, link);
-  });
+  const entry = (id, top, text, meta) => {
+    const button = el('button', { type: 'button', className: 'entry' }, el('span', { className: 'entry-top' }, ...top),
+      text ? el('span', { className: 'entry-text', textContent: text }) : null, meta?.length ? el('span', { className: 'entry-meta' }, ...meta) : null);
+    button.setAttribute('aria-current', String(id === selected));
+    button.onclick = () => selectItem(id);
+    const li = el('li', {}, button);
+    li.dataset.item = id;
+    return li;
+  };
+  const entries = doc.fields.filter(f => !f.inquiry && f.label).map(f => entry('section-' + f.label, [el('span', { className: 'entry-id', textContent: f.label })], 'About the whole file', null));
   for (const item of doc.items) {
-    const status = values[fieldIndex(item.id, 'Status')];
-    const summaryIndex = SUMMARY_FIELDS.map(label => fieldIndex(item.id, label)).find(n => n >= 0);
-    const summary = summaryIndex >= 0 ? summaryText(values[summaryIndex]) : '';
-    const dot = el('span', { className: 'dot', title: status });
-    dot.dataset.status = status;
-    const li = el('li', {}, el('a', { href: '#' + item.id }, dot, el('span', {}, item.id, el('small', { textContent: summary }))));
-    li.dataset.item = item.id;
+    const facts = itemFacts(item.id);
+    const dot = el('span', { className: 'dot' });
+    const pill = el('span', { className: 'pill', textContent: facts.status });
+    dot.dataset.status = pill.dataset.status = facts.status;
+    const meta = [
+      ...facts.requirements.map(id => el('span', { className: 'entry-req', textContent: id })),
+      facts.questions?.total ? el('span', { textContent: `${facts.questions.done}/${facts.questions.total} questions` }) : null,
+      facts.criteria?.total ? el('span', { textContent: `${facts.criteria.accepted}/${facts.criteria.total} AC accepted` }) : null,
+      facts.responses ? el('span', { textContent: `${facts.responses} response${facts.responses === 1 ? '' : 's'}` }) : null,
+      facts.owner === '' && UNRESOLVED.has(facts.status) ? el('span', { className: 'warn', textContent: 'No owner' }) : null,
+    ].filter(Boolean);
+    const short = item.id.startsWith(doc.id + '-') ? item.id.slice(doc.id.length + 1) : item.id;
+    const li = entry(item.id, [dot, el('span', { className: 'entry-id', textContent: short, title: item.id }), pill], facts.summary, meta);
+    li.querySelector('button').setAttribute('aria-label', `${item.id}, ${facts.status}: ${facts.summary}`);
     entries.push(li);
   }
   $('#outline').replaceChildren(...entries);
@@ -976,14 +1124,19 @@ function drawOutline() {
 function applyFilter() {
   if (!doc) return;
   if (view === 'reqs') return drawTrace();
-  const status = $('#filter').value, query = $('#search').value.trim().toLowerCase();
+  const query = $('#search').value.trim().toLowerCase();
+  const counts = { all: doc.items.length };
+  for (const s of STATUSES[doc.version]) counts[s] = 0;
   for (const item of doc.items) {
+    const status = values[fieldIndex(item.id, 'Status')];
+    if (status in counts) counts[status]++;
     const text = doc.fields.map((f, i) => (f.inquiry === item.id ? values[i] : '')).join('\n').toLowerCase();
-    const hidden = (status !== 'all' && values[fieldIndex(item.id, 'Status')] !== status) || (query && !text.includes(query) && !item.id.toLowerCase().includes(query));
-    document.getElementById(item.id).hidden = hidden;
+    const hidden = (statusFilter !== 'all' && status !== statusFilter) || (query && !text.includes(query) && !item.id.toLowerCase().includes(query));
     const entry = document.querySelector(`#outline li[data-item="${item.id}"]`);
     if (entry) entry.hidden = hidden;
   }
+  drawSegs($('#filter'), [['all', 'All', counts.all], ...STATUSES[doc.version].map(s => [s, s[0].toUpperCase() + s.slice(1), counts[s]])],
+    statusFilter, value => { statusFilter = value; applyFilter(); });
 }
 
 /* ---------- modes and actions ---------- */
@@ -1016,9 +1169,7 @@ async function reparse(text) {
 }
 
 function setupFilter() {
-  const select = $('#filter'), keep = select.value;
-  select.replaceChildren(el('option', { value: 'all', textContent: 'All statuses' }), ...STATUSES[doc.version].map(s => el('option', { value: s, textContent: s })));
-  select.value = STATUSES[doc.version].includes(keep) ? keep : 'all';
+  if (!STATUSES[doc.version].includes(statusFilter)) statusFilter = 'all';
 }
 
 // The `title:` of the front matter, shown as the editor's heading.
@@ -1031,7 +1182,6 @@ async function load(note = 'Loaded. Changes are written only when you save (Ctrl
   try {
     doc = await api('GET', '/api/document');
     imageCache.clear();  // pick up replaced image files
-    loadFolded();
     $('#doc-title').textContent = documentTitle(doc.content) || doc.id;
     $('#filename').textContent = `${doc.id} · ${doc.filename} · schema v${doc.version}`;
     showForm();
@@ -1257,6 +1407,9 @@ async function addItem(prefill = {}) {
   const text = content().trimEnd() + newline() + newline() + block.replace(/\n/g, newline());
   try {
     await reparse(text);
+    statusFilter = 'all';
+    $('#search').value = '';
+    selectItem(id);
     const section = document.getElementById(id);
     section.scrollIntoView({ behavior: 'smooth' });
     section.querySelector('textarea')?.focus({ preventScroll: true });
@@ -1276,17 +1429,9 @@ $('#download').onclick = () => {
 $('#mode').onclick = () => { if (doc && !sourceMode) showSource(content()); };
 $('#add').onclick = () => addItem();
 $('#tab-items').onclick = () => goTo('items');
-$('#fold').onclick = () => setAllCollapsed($('#fold').textContent === 'Collapse all');
-// Jumping to a collapsed item from the outline opens it.
-$('#outline').addEventListener('click', event => {
-  const link = event.target.closest('a');
-  if (link && view === 'items') expand(decodeURIComponent(link.hash.slice(1)));
-});
 $('#tab-reqs').onclick = () => goTo('reqs');
 $('#source').addEventListener('input', () => setDirty(true));
-$('#filter').addEventListener('change', applyFilter);
 $('#search').addEventListener('input', applyFilter);
-$('#req-filter').addEventListener('change', drawTrace);
 $('#req-search').addEventListener('input', drawTrace);
 // Ctrl+S is VS Code's own Save, which reaches the extension and comes back as getContent.
 document.addEventListener('keydown', e => {
