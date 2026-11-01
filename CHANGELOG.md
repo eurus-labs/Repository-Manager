@@ -5,6 +5,15 @@ All notable changes to Repository Manager will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.14.0] - Unreleased
+
+### Changed
+
+- **Requirements** has its own icon in the Activity Bar instead of sharing Repository Manager's, so opening it no longer opens the Git dashboard.
+- Its side bar is where you choose what the Requirement Editor shows: **Clarifications** lists each file's items (an edited or new item is marked before it is saved), and **Requirements** lists the requirements the current file clarifies, each Ready or with how many conditions are met. Each has a filter in its title. A click shows that item or requirement in the editor.
+- The Requirement Editor shows one item or requirement across its whole width, with a breadcrumb saying which, and a **Form / Markdown** switch. Its own list, search, filter buttons and Clarifications / Requirements tabs are gone, since the side bar does that now.
+- While a Requirement Editor is the active tab, the status bar shows how many requirements are Ready and how many fields are unsaved.
+
 ## [2.13.0] - 2026-10-30
 
 ### Changed

@@ -23,6 +23,21 @@ const CONTENT_TIMEOUT_MS = 10_000;
 
 type PageMessage = { type: string; id?: number; method?: string; path?: string; body?: Record<string, unknown>; [key: string]: unknown };
 
+/** What the side bar shows of an open file, as the page sends it: its current, unsaved state. */
+export interface OutlineItem { id: string; status: string; summary: string; requirements: string[]; unsaved: boolean; new: boolean }
+export interface OutlineRequirement {
+  id: string; title: string; ready: boolean; empty: boolean; missing: boolean; unresolved: boolean;
+  met: number; rules: number; next: string; clarifications: number;
+}
+export interface PageOutline {
+  id: string; title: string; version: number; items: OutlineItem[]; requirements: OutlineRequirement[];
+  dirty: boolean; unsavedFields: number; sourceMode: boolean;
+  selected: { kind: 'item' | 'req'; id: string | null };
+  source: { configured: boolean; root: string; kind: string; syncing: boolean; error: string };
+  skipped: number; truncated: boolean;
+}
+export type Selection = { kind: 'item' | 'req'; id: string };
+
 class RequirementDocument implements vscode.CustomDocument {
   /** The page showing this file, once it loaded. */
   page?: { panel: vscode.WebviewPanel; ready: boolean };
@@ -35,6 +50,10 @@ class RequirementDocument implements vscode.CustomDocument {
   editedWhileSaving = false;
   /** The version of the file the page shows, so changes on disk by someone else are noticed. */
   hash?: string;
+  /** The page's latest outline (items and requirements with unsaved edits), for the side bar. */
+  outline?: PageOutline;
+  /** What the side bar asked to show before the page was ready. */
+  pendingSelect?: Selection;
   readonly contentRequests = new Map<number, (reply: { content: string | null; hash: string | null }) => void>();
   private readonly disposables: vscode.Disposable[] = [];
 
@@ -51,15 +70,58 @@ export class RequirementEditorProvider implements vscode.CustomEditorProvider<Re
   /** One requirements source per repository (its `.dou-editor.json`), shared by its files. */
   private readonly sources = new Map<string, RequirementSource>();
   private nextRequest = 0;
+  /** Open files, by URI, and the one last shown (the side bar's Requirements follow it). */
+  private readonly documents = new Map<string, RequirementDocument>();
+  private current?: RequirementDocument;
+  private readonly outlines = new vscode.EventEmitter<void>();
+  /** An open file's outline changed, or which file is current did. */
+  readonly onDidChangeOutline = this.outlines.event;
 
   constructor(private readonly extensionUri: vscode.Uri, private readonly storageUri: vscode.Uri, private readonly memory: vscode.Memento) {}
 
-  static register(context: vscode.ExtensionContext): vscode.Disposable {
+  static register(context: vscode.ExtensionContext): RequirementEditorProvider {
     const provider = new RequirementEditorProvider(context.extensionUri, context.globalStorageUri, context.globalState);
-    return vscode.window.registerCustomEditorProvider(REQUIREMENT_EDITOR_VIEW_TYPE, provider, {
+    context.subscriptions.push(vscode.window.registerCustomEditorProvider(REQUIREMENT_EDITOR_VIEW_TYPE, provider, {
       webviewOptions: { retainContextWhenHidden: true },
       supportsMultipleEditorsPerDocument: false
-    });
+    }));
+    return provider;
+  }
+
+  /** The outline of an open file, or undefined when it is not open (the side bar reads the file). */
+  outlineFor(uri: vscode.Uri): PageOutline | undefined {
+    return this.documents.get(uri.toString())?.outline;
+  }
+
+  /** The file last shown in a Requirement editor, while it is open. */
+  get currentDocument(): { uri: vscode.Uri; outline?: PageOutline } | undefined {
+    return this.current;
+  }
+
+  /** Show an item or a requirement in the open editor of `uri` (once its page is ready). */
+  select(uri: vscode.Uri, selection: Selection): void {
+    const document = this.documents.get(uri.toString());
+    if (!document) { return; }
+    if (document.page?.ready) {
+      this.post(document, { type: 'select', ...selection });
+    } else {
+      document.pendingSelect = selection;
+    }
+  }
+
+  /** Ask the page of `uri` (else the current file) to start an action: add an item, or set the source. */
+  command(name: 'addItem' | 'sourceDialog', uri?: vscode.Uri): boolean {
+    const document = uri ? this.documents.get(uri.toString()) : this.current;
+    if (!document?.page?.ready) { return false; }
+    document.page.panel.reveal(undefined, false);
+    this.post(document, { type: 'command', name });
+    return true;
+  }
+
+  private setCurrent(document: RequirementDocument | undefined): void {
+    if (this.current === document) { return; }
+    this.current = document;
+    this.outlines.fire();
   }
 
   async openCustomDocument(uri: vscode.Uri, context: vscode.CustomDocumentOpenContext): Promise<RequirementDocument> {
@@ -83,6 +145,14 @@ export class RequirementEditorProvider implements vscode.CustomEditorProvider<Re
     watcher.onDidChange(changed);
     watcher.onDidCreate(changed);
     document.track(watcher);
+    const key = uri.toString();
+    this.documents.set(key, document);
+    document.track({
+      dispose: () => {
+        if (this.documents.get(key) === document) { this.documents.delete(key); }
+        if (this.current === document) { this.setCurrent([...this.documents.values()].pop()); } else { this.outlines.fire(); }
+      }
+    });
     return document;
   }
 
@@ -96,6 +166,8 @@ export class RequirementEditorProvider implements vscode.CustomEditorProvider<Re
     });
     document.page = { panel, ready: false };
     panel.webview.onDidReceiveMessage((message: PageMessage) => { void this.receive(document, message); });
+    panel.onDidChangeViewState(() => { if (panel.active) { this.setCurrent(document); } });
+    if (panel.active || !this.current) { this.setCurrent(document); }
     panel.onDidDispose(() => {
       if (document.page?.panel === panel) { document.page = undefined; }
     });
@@ -109,8 +181,13 @@ export class RequirementEditorProvider implements vscode.CustomEditorProvider<Re
     switch (message.type) {
       case 'ready':
         if (document.page) { document.page.ready = true; }
-        this.post(document, { type: 'init', memory: this.memory.get(MEMORY_KEY, {}), draft: document.draft, draftHash: document.draftHash });
+        this.post(document, { type: 'init', memory: this.memory.get(MEMORY_KEY, {}), draft: document.draft, draftHash: document.draftHash, select: document.pendingSelect });
         document.draft = document.draftHash = undefined;
+        document.pendingSelect = undefined;
+        return;
+      case 'outline':
+        document.outline = message.outline as PageOutline;
+        this.outlines.fire();
         return;
       case 'request':
         return this.answer(document, message);

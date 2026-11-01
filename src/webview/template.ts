@@ -482,45 +482,33 @@ export function getRequirementEditorHtml(resourceUris: SidebarResourceUris & { c
       <button class="primary" id="save" title="Save (Ctrl+S)">Save</button>
     </div>
   </div>
-  <nav class="tabs" role="tablist" aria-label="Views">
-    <button role="tab" id="tab-items" aria-selected="true" title="Clarifications (Alt+1)">Clarifications <span class="count" id="count-items"></span></button>
-    <button role="tab" id="tab-reqs" aria-selected="false" title="Requirements (Alt+2)">Requirements <span class="count" id="count-reqs"></span></button>
-    <button role="tab" id="mode" aria-selected="false" title="Edit the whole Markdown source (Alt+3)">Markdown</button>
-  </nav>
+  <div class="subhead">
+    <nav class="crumbs" id="crumbs" aria-label="Location"></nav>
+    <div class="seg-switch" role="group" aria-label="View">
+      <button type="button" id="mode-form" aria-pressed="true" title="Form (Alt+1)">Form</button>
+      <button type="button" id="mode" aria-pressed="false" title="Edit the whole Markdown source (Alt+3)">Markdown</button>
+    </div>
+  </div>
   <div id="message" role="status" aria-live="polite"></div>
 </header>
-<div class="layout">
-  <aside class="list-pane">
-    <div class="pane-tools" id="items-tools">
-      <input id="search" type="search" placeholder="Search ID, text, requirement…" aria-label="Search clarifications">
-      <div class="segs" id="filter" role="group" aria-label="Filter by status"></div>
+<main>
+  <div id="form-view">
+    <div id="form"></div>
+    <div class="empty-state" id="empty" hidden>
+      <p>This file has no clarification yet.</p>
+      <button type="button" class="primary" id="add">+ New clarification</button>
     </div>
-    <div class="pane-tools" id="reqs-tools" hidden>
-      <input id="req-search" type="search" placeholder="Search ID or text…" aria-label="Search requirements">
-      <div class="segs" id="req-filter" role="group" aria-label="Filter requirements"></div>
-    </div>
-    <nav class="outline" aria-label="Contents"><ul id="outline"></ul></nav>
-    <div class="pane-foot" id="items-foot">
-      <button id="add" title="A new clarification that is not tied to a requirement.">+ New clarification</button>
-      <p class="note">To clarify a requirement, use “+ Create clarification” in Requirements so its ID is filled in.</p>
-    </div>
-  </aside>
-  <main>
-    <div id="form-view">
-      <div id="form"></div>
-    </div>
-    <div id="trace" hidden>
-      <div class="source-bar" id="source-bar"></div>
-      <p class="summary" id="req-summary"></p>
-      <div id="req-list"></div>
-    </div>
-    <div id="raw" hidden>
-      <p class="note">Source mode edits the whole Markdown file. Choose Clarifications or Requirements above to validate it and return to the form.</p>
-      <textarea id="source" aria-label="Markdown source" spellcheck="false"></textarea>
-    </div>
-    <footer>Markdown is the source of truth. Only fields you change are rewritten. Save does not update referenced requirements.</footer>
-  </main>
-</div>
+  </div>
+  <div id="trace" hidden>
+    <div class="source-bar" id="source-bar"></div>
+    <div id="req-list"></div>
+  </div>
+  <div id="raw" hidden>
+    <p class="note">Markdown edits the whole file. Choose Form, or an item or requirement in the side bar, to validate it and go back.</p>
+    <textarea id="source" aria-label="Markdown source" spellcheck="false"></textarea>
+  </div>
+  <footer>Markdown is the source of truth. Only fields you change are rewritten. Save does not update referenced requirements.</footer>
+</main>
   <script nonce="${nonce}" src="${resourceUris.scriptUri}"></script>
 </body>
 </html>`;
