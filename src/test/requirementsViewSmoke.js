@@ -51,7 +51,9 @@ const fakeVscode = {
   window: {
     tabGroups: { get activeTabGroup() { return { activeTab: tabs.activeTab }; }, onDidChangeTabs: listener => { tabs.listeners.push(listener); return { dispose() {} }; } },
     createTreeView: (id, { treeDataProvider }) => {
-      views[id] = { provider: treeDataProvider, visible: true, revealed: [], redrawn: [], reveal(node, options) { this.revealed.push([node, options]); return Promise.resolve(); }, dispose() {} };
+      const visibility = new EventEmitter();
+      views[id] = { provider: treeDataProvider, visible: true, revealed: [], redrawn: [], reveal(node, options) { this.revealed.push([node, options]); return Promise.resolve(); },
+        onDidChangeVisibility: visibility.event, show() { this.visible = true; visibility.fire({ visible: true }); }, dispose() {} };
       treeDataProvider.onDidChangeTreeData(node => views[id].redrawn.push(node));
       return views[id];
     },
@@ -159,7 +161,12 @@ async function main() {
     source: { configured: true, root: 'requirements', kind: 'folder', syncing: false, error: '' }, skipped: 0, truncated: false,
   };
   tabs.activeTab = { input: new TabInputCustom(uri, 'repositoryManager.requirementEditor') };
+  // The side bar is hidden when the editor chooses: the selection is shown once it appears.
+  clar.visible = false;
   await listener({ type: 'outline', outline });
+  await tick();
+  assert.equal(clar.revealed.length, 0);
+  clar.show();
   await tick();
   const open = await labels(clar.provider);
   assert.equal(open[2].collapsibleState, 2, 'the open file is expanded');
@@ -168,6 +175,18 @@ async function main() {
   assert.deepEqual(live.map(i => [i.label, i.description]), [['Q01', '● Resend once after a timeout'], ['Q02', 'Duplicates after a day'], ['Q03', '● new · Describe the open question.']]);
   assert.equal(clar.revealed.at(-1)[0].item.id, 'CLR-003-Q03', 'what the editor shows is not selected in the side bar');
   assert.deepEqual(clar.revealed.at(-1)[1], { select: true, focus: false });
+  // A filter that hides what the editor shows: revealed once the filter lets it through.
+  prompts.pickLabel.push('Investigating');
+  await commands.get('repositoryManager.requirements.filterClarifications')();
+  await listener({ type: 'outline', outline: { ...outline, selected: { kind: 'item', id: 'CLR-003-Q02' } } });
+  await tick();
+  assert.notEqual(clar.revealed.at(-1)[0].item.id, 'CLR-003-Q02', 'an item hidden by the filter was revealed');
+  prompts.pickLabel.push('All statuses');
+  await commands.get('repositoryManager.requirements.filterClarifications')();
+  await tick();
+  assert.equal(clar.revealed.at(-1)[0].item.id, 'CLR-003-Q02', 'the selection was not revealed once the filter showed it');
+  await listener({ type: 'outline', outline });
+  await tick();
 
   const requirements = await labels(reqs.provider);
   assert.deepEqual(requirements.map(r => [r.label, r.description, r.iconPath.id]), [['REQ-012', 'Send messages · 2/6', 'circle-filled'], ['REQ-013', 'Manual retry · 1/6', 'circle-filled'], ['REQ_020', 'Read receipts · Ready', 'pass-filled']]);

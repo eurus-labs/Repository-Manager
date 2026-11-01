@@ -149,10 +149,10 @@ export class ClarificationsTreeProvider implements vscode.TreeDataProvider<Clari
     return element.kind === 'item' ? this.nodes.get(element.file.uri.toString()) : undefined;
   }
 
-  /** The node of an item, to reveal it. */
+  /** The node of an item, to reveal it; none while the filter hides it. */
   itemNode(uri: vscode.Uri, id: string): ItemNode | undefined {
     const node = this.nodes.get(uri.toString());
-    const item = node && this.itemsOf(node.file).find(x => x.id === id);
+    const item = node && this.shown(this.itemsOf(node.file)).find(x => x.id === id);
     return node && item ? { kind: 'item', file: node.file, item } : undefined;
   }
 
@@ -347,7 +347,8 @@ export function registerRequirements(context: vscode.ExtensionContext): void {
     status.tooltip = `${current.outline.id}: ${list.filter(r => r.ready).length} of ${list.length} requirements Ready${unsaved ? `, ${unsaved} unsaved field${unsaved === 1 ? '' : 's'}` : ''}. Click to show the Requirements side bar.`;
     status.show();
   };
-  // What the editor shows is selected in the side bar too (without taking the focus).
+  // What the editor shows is selected in the side bar too (without taking the focus). It counts
+  // as shown only once revealed: a hidden view or a filter that hides it is tried again later.
   let shown = '';
   const follow = () => {
     const current = requirements.outline;
@@ -355,13 +356,14 @@ export function registerRequirements(context: vscode.ExtensionContext): void {
     if (!current || !selected?.id) { return; }
     const key = `${current.uri.toString()}#${selected.kind}:${selected.id}`;
     if (key === shown) { return; }
-    shown = key;
-    if (selected.kind === 'item' && clarificationView.visible) {
-      const node = clarifications.itemNode(current.uri, selected.id);
-      if (node) { void Promise.resolve(clarificationView.reveal(node, { select: true, focus: false })).catch(() => undefined); }
-    } else if (selected.kind === 'req' && requirementView.visible) {
-      const node = requirements.getChildren().find(n => n.requirement.id === selected.id);
-      if (node) { void Promise.resolve(requirementView.reveal(node, { select: true, focus: false })).catch(() => undefined); }
+    const reveal = <T>(view: vscode.TreeView<T>, node: T | undefined) => {
+      if (!view.visible || !node) { return; }
+      void Promise.resolve(view.reveal(node, { select: true, focus: false })).then(() => { shown = key; }, () => undefined);
+    };
+    if (selected.kind === 'item') {
+      reveal(clarificationView, clarifications.itemNode(current.uri, selected.id));
+    } else {
+      reveal(requirementView, requirements.getChildren().find(n => n.requirement.id === selected.id));
     }
   };
   editors.onDidChangeOutline(() => { describe(); follow(); });
@@ -373,6 +375,8 @@ export function registerRequirements(context: vscode.ExtensionContext): void {
 
   context.subscriptions.push(
     clarificationView, requirementView, status, watcher,
+    clarificationView.onDidChangeVisibility(follow),
+    requirementView.onDidChangeVisibility(follow),
     vscode.window.tabGroups.onDidChangeTabs(describe),
     vscode.commands.registerCommand('repositoryManager.requirements.refresh', () => clarifications.refresh()),
     vscode.commands.registerCommand('repositoryManager.requirements.reveal', async (uri: vscode.Uri | string, kind: 'item' | 'req', id: string) => {
@@ -384,11 +388,11 @@ export function registerRequirements(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('repositoryManager.requirements.filterClarifications', async () => {
       const statuses: Array<[string, string]> = [['all', 'All statuses'], ['open', 'Open'], ['investigating', 'Investigating'], ['resolved', 'Resolved'], ['proposed', 'Proposed (schema v1)'], ['agreed', 'Agreed (schema v1)']];
       const value = await pick('Show clarifications', statuses, clarifications.filter);
-      if (value) { clarifications.filter = value; clarifications.redraw(); describe(); }
+      if (value) { clarifications.filter = value; clarifications.redraw(); describe(); follow(); }
     }),
     vscode.commands.registerCommand('repositoryManager.requirements.filterRequirements', async () => {
       const value = await pick('Show requirements', REQUIREMENT_FILTERS.map(([key, label]) => [key, label] as [string, string]), requirements.filter);
-      if (value) { requirements.filter = value; requirements.redraw(); describe(); }
+      if (value) { requirements.filter = value; requirements.redraw(); describe(); follow(); }
     }),
     vscode.commands.registerCommand('repositoryManager.requirements.newItem', async (node?: ClarificationNode) => {
       const uri = node?.file.uri ?? editors.currentDocument?.uri;
