@@ -2,7 +2,7 @@
   "name": "repository-manager",
   "displayName": "Repository Manager",
   "description": "Coordinate branches and Git workflows across a parent repository and its linked repositories from one VS Code dashboard",
-  "version": "2.14.1",
+  "version": "2.15.0",
   "publisher": "repository-manager",
   "engines": {
     "vscode": "^1.74.0"
@@ -209,9 +209,14 @@
     "menus": {
       "view/title": [
         {
+          "command": "repositoryManager.refresh",
+          "when": "view == repositoryManager.launcher",
+          "group": "navigation@1"
+        },
+        {
           "command": "repositoryManager.openPanel",
           "when": "view == repositoryManager.launcher",
-          "group": "navigation"
+          "group": "navigation@2"
         },
         {
           "command": "repositoryManager.requirements.newFile",

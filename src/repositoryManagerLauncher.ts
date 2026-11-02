@@ -23,6 +23,8 @@ export class RepositoryManagerLauncher implements vscode.WebviewViewProvider {
   private view?: vscode.WebviewView;
   /** The last copy the dashboard sent; a recreated view shows it at once. */
   private html?: string;
+  /** Uncommitted changes in the dashboard's repository: the Activity Bar icon's badge. */
+  private changes = 0;
 
   constructor(private readonly extensionUri: vscode.Uri, private readonly dashboard: SidebarDashboard) {
     RepositoryManagerLauncher.current = this;
@@ -44,6 +46,7 @@ export class RepositoryManagerLauncher implements vscode.WebviewViewProvider {
       }
     });
     view.onDidDispose(() => { if (this.view === view) { this.view = undefined; } });
+    this.showBadge();
     if (view.visible) { void this.ensureDashboard(); }
   }
 
@@ -58,9 +61,23 @@ export class RepositoryManagerLauncher implements vscode.WebviewViewProvider {
     void this.view?.webview.postMessage({ type: 'sidebarSnapshot', payload: { html } });
   }
 
+  /** The number of uncommitted changes the dashboard shows, as the Activity Bar icon's badge. */
+  setChangeCount(changes: number): void {
+    const count = Math.max(0, Math.floor(changes));
+    if (count === this.changes) { return; }
+    this.changes = count;
+    this.showBadge();
+  }
+
+  private showBadge(): void {
+    if (!this.view) { return; }
+    this.view.badge = this.changes ? { value: this.changes, tooltip: `${this.changes} uncommitted change${this.changes === 1 ? '' : 's'}` } : undefined;
+  }
+
   /** The dashboard closed: its list is no longer current, and clicks have nothing to act on. */
   dashboardClosed(): void {
     this.html = undefined;
+    this.setChangeCount(0);
     void this.view?.webview.postMessage({ type: 'sidebarClosed' });
   }
 

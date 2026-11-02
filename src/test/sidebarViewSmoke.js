@@ -64,6 +64,12 @@ async function main() {
   assert.deepEqual(toDashboard.at(-1), { type: 'publishSidebar' }, 'a new view did not ask for a fresh copy');
   assert.equal(opened, 1, 'an open dashboard was opened again');
 
+  // The repository's uncommitted changes are the Activity Bar icon's badge; none means no badge.
+  sidebar.setChangeCount(3);
+  assert.deepEqual(again.badge, { value: 3, tooltip: '3 uncommitted changes' });
+  sidebar.setChangeCount(1);
+  assert.equal(again.badge.tooltip, '1 uncommitted change');
+
   // Clicks go to the dashboard while it is open.
   await again.send({ type: 'sidebarAction', payload: { key: 'k', event: 'click' } });
   assert.deepEqual(toDashboard.at(-1), { type: 'sidebarAction', payload: { key: 'k', event: 'click' } });
@@ -72,6 +78,7 @@ async function main() {
   open = false;
   sidebar.dashboardClosed();
   assert.deepEqual(again.posted.at(-1), { type: 'sidebarClosed' });
+  assert.equal(again.badge, undefined, 'a closed dashboard left its count on the icon');
   const forwarded = toDashboard.length;
   await again.send({ type: 'sidebarAction', payload: { key: 'k', event: 'click' } });
   assert.equal(toDashboard.length, forwarded, 'a click from a closed dashboard was forwarded');
@@ -98,7 +105,10 @@ async function main() {
     .find(item => item.command === 'repositoryManager.openPanel');
   assert.ok(titleButton, 'the Side Bar has no button to open the dashboard');
   assert.equal(titleButton.when, `view == ${RepositoryManagerLauncher.viewType}`);
-  assert.equal(titleButton.group, 'navigation', 'the button is hidden in the ... menu');
+  assert.match(titleButton.group, /^navigation(@\d+)?$/, 'the button is hidden in the ... menu');
+  // Refresh sits next to it (it left the dashboard's toolbar).
+  const refreshButton = manifest.contributes.menus['view/title'].find(item => item.command === 'repositoryManager.refresh');
+  assert.ok(refreshButton && /^navigation/.test(refreshButton.group) && refreshButton.when === titleButton.when, 'the Side Bar title has no Refresh');
   const command = manifest.contributes.commands.find(item => item.command === 'repositoryManager.openPanel');
   assert.ok(command.icon, 'a title-bar button without an icon shows as text');
   console.log('Side Bar view smoke passed');
