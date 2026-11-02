@@ -111,6 +111,9 @@ async function main() {
   const clar = views['repositoryManager.requirements'];
   const reqs = views['repositoryManager.requirementsCatalog'];
   assert.ok(clar && reqs, 'the two views of the Requirements area are not created');
+  // Requirements come first in the area, Clarifications under it.
+  const manifest = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+  assert.deepEqual(manifest.contributes.views['repository-manager-requirements'].map(v => v.id), ['repositoryManager.requirementsCatalog', 'repositoryManager.requirements']);
 
   // Clarifications: one row per file, items under it; a broken file opens as text and says why.
   const files = await labels(clar.provider);
@@ -194,6 +197,39 @@ async function main() {
   assert.match(requirements[0].tooltip.value, /^REQ-012 · Send messages/);
   assert.deepEqual(requirements[1].command.arguments.map(String), [String(uri), 'req', 'REQ-013']);
   assert.equal(reqs.message, '3 requirements · 1 ready · 0 without a clarification · from requirements');
+  // Under each requirement, the items that clarify it; a requirement with none has no arrow.
+  assert.deepEqual(requirements.map(r => [r.collapsibleState, r.contextValue]), [[1, 'requirement'], [1, 'requirement'], [0, 'requirement']]);
+  const reqNodes = await reqs.provider.getChildren();
+  const under = await labels(reqs.provider, reqNodes[0]);
+  assert.deepEqual(under.map(i => [i.label, i.description]), [['Q01', '● Resend once after a timeout'], ['Q02', 'Duplicates after a day']]);
+  assert.deepEqual(under[1].command.arguments.map(String), [String(uri), 'item', 'CLR-003-Q02']);
+  assert.notEqual(under[0].id, (await labels(reqs.provider, reqNodes[1]))[0].id);
+  assert.deepEqual((await labels(reqs.provider, reqNodes[1])).map(i => i.label), ['Q03']);
+  const itemUnder = (await reqs.provider.getChildren(reqNodes[1]))[0];
+  assert.equal(reqs.provider.getParent(itemUnder), reqNodes[1]);
+  assert.deepEqual(await reqs.provider.getChildren(itemUnder), []);
+  // The item the editor shows is selected under its requirement as well as in Clarifications.
+  assert.equal(reqs.revealed.some(([node]) => node.item && node.item.id === 'CLR-003-Q03' && node.parent.requirement.id === 'REQ-013'), true,
+    'the selected item was not revealed under its requirement');
+  // A requirement's + adds an item that clarifies it, in that requirement's file.
+  await commands.get('repositoryManager.requirements.newItemFor')(reqNodes[2]);
+  assert.deepEqual(executed.at(-1).map(String), ['vscode.openWith', String(uri), 'repositoryManager.requirementEditor']);
+  assert.deepEqual(posted.at(-1), { type: 'command', name: 'addItem', requirement: 'REQ_020' });
+  // The editor's new item for it then appears under it.
+  const withNew = { ...outline, items: [...outline.items, { id: 'CLR-003-Q04', status: 'open', summary: 'Pending', requirements: ['REQ_020'], unsaved: true, new: true }],
+    selected: { kind: 'item', id: 'CLR-003-Q04' } };
+  await listener({ type: 'outline', outline: withNew });
+  await tick();
+  const after = await reqs.provider.getChildren();
+  assert.deepEqual((await labels(reqs.provider, after[2])).map(i => [i.label, i.description]), [['Q04', '● new · Pending']]);
+  assert.equal(reqs.revealed.at(-1)[0].item.id, 'CLR-003-Q04', 'the new item was not shown under its requirement');
+  // The same selection again (any edit sends the outline) is not revealed again in either view.
+  const counts = [reqs.revealed.length, clar.revealed.length];
+  await listener({ type: 'outline', outline: withNew });
+  await tick();
+  assert.deepEqual([reqs.revealed.length, clar.revealed.length], counts, 'an unchanged selection was revealed again');
+  await listener({ type: 'outline', outline });
+  await tick();
   assert.equal(reqs.description, 'CLR-003');
   // With documents known, the requirements are a tree of their folders (one per project): the
   // folders all share (src/change_requests) are left out, a folder with one folder in it is

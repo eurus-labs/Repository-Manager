@@ -111,12 +111,15 @@ export class RequirementEditorProvider implements vscode.CustomEditorProvider<Re
     }
   }
 
-  /** Ask the page of `uri` (else the current file) to start an action: add an item, or set the source. */
-  command(name: 'addItem' | 'sourceDialog', uri?: vscode.Uri): boolean {
+  /**
+   * Ask the page of `uri` (else the current file) to start an action: add an item (for
+   * `requirement`, when given: the item then clarifies it), or set the source.
+   */
+  command(name: 'addItem' | 'sourceDialog', uri?: vscode.Uri, requirement?: string): boolean {
     const document = uri ? this.documents.get(uri.toString()) : this.current;
     if (!document?.page?.ready) { return false; }
     document.page.panel.reveal(undefined, false);
-    this.post(document, { type: 'command', name });
+    this.post(document, requirement ? { type: 'command', name, requirement } : { type: 'command', name });
     return true;
   }
 
