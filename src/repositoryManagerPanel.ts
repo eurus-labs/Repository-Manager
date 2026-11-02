@@ -374,8 +374,25 @@ export class RepositoryManagerPanel {
     // must be told explicitly to drop the old folder's history, refs and selection.
     await this._panel.webview.postMessage({
       type: 'workspaceFolderChanged',
-      payload: { repositories: await this._listRepositories() }
+      payload: { repositories: await this._listRepositories(), folder: { name: targetFolder.name, path: folderPath } }
     });
+  }
+
+  /** The sidebar's folder button: choose another workspace folder in a Quick Pick. */
+  private async _pickWorkspaceFolder(): Promise<void> {
+    const folders = vscode.workspace.workspaceFolders || [];
+    if (folders.length < 2) {
+      return;
+    }
+    const chosen = await vscode.window.showQuickPick(folders.map(folder => ({
+      label: folder.name,
+      description: folder.uri.fsPath === this._workspaceRoot ? 'current' : undefined,
+      detail: folder.uri.fsPath,
+      path: folder.uri.fsPath
+    })), { title: 'Repository Manager: workspace folder', placeHolder: 'Show the repositories of…' });
+    if (chosen && chosen.path !== this._workspaceRoot) {
+      await this._switchWorkspaceFolder(chosen.path);
+    }
   }
 
   /** A message for the dashboard webview (the Side Bar forwards its clicks this way). */
@@ -575,8 +592,9 @@ export class RepositoryManagerPanel {
         return;
       }
       if (message.type === 'sidebarSnapshot') {
-        const html = (message.payload as { html?: unknown } | undefined)?.html;
-        if (typeof html === 'string') { RepositoryManagerLauncher.current?.update(html); }
+        const payload = message.payload as { html?: unknown; changes?: unknown } | undefined;
+        if (typeof payload?.html === 'string') { RepositoryManagerLauncher.current?.update(payload.html); }
+        if (typeof payload?.changes === 'number') { RepositoryManagerLauncher.current?.setChangeCount(payload.changes); }
         return;
       }
       if (message.type === 'cancelChangeSummary') {
@@ -623,6 +641,10 @@ export class RepositoryManagerPanel {
         return;
       }
 
+      if (message.type === 'pickWorkspaceFolder') {
+        await this._pickWorkspaceFolder();
+        return;
+      }
       // Handle workspace folder switch
       if (message.type === 'switchWorkspaceFolder') {
         const payload = message.payload as { folderPath: string };

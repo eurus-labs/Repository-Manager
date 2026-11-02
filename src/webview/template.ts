@@ -33,19 +33,6 @@ function escapeHtml(value: string | undefined): string {
     .replace(/'/g, '&#039;');
 }
 
-function renderRepositoryMark(className: string = 'repository-mark'): string {
-  return `<svg class="${className}" viewBox="0 0 128 128" fill="none" aria-hidden="true">
-    <rect width="128" height="128" rx="28" fill="#12161C"></rect>
-    <rect x="1.5" y="1.5" width="125" height="125" rx="26.5" stroke="#FFFFFF" stroke-opacity="0.08" stroke-width="3"></rect>
-    <path d="M20 99H108" stroke="#3CC7A6" stroke-width="3" stroke-linecap="round" stroke-opacity="0.55"></path>
-    <path d="M64 42V87M64 52C64 66 34 60 34 74V87M64 52C64 66 94 60 94 74V87" stroke="#E8ECF1" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"></path>
-    <circle cx="64" cy="31" r="12" fill="#3CC7A6"></circle>
-    <rect x="24" y="89" width="20" height="20" rx="5.5" fill="#12161C" stroke="#E8ECF1" stroke-width="6"></rect>
-    <rect x="54" y="89" width="20" height="20" rx="5.5" fill="#12161C" stroke="#E8ECF1" stroke-width="6"></rect>
-    <rect x="84" y="89" width="20" height="20" rx="5.5" fill="#12161C" stroke="#E8ECF1" stroke-width="6"></rect>
-  </svg>`;
-}
-
 /**
  * Render the modals
  */
@@ -259,37 +246,29 @@ function getNonce(): string {
 }
 
 /**
- * Render workspace folder selector (only shown if multiple folders exist)
+ * The workspace folder the dashboard shows, at the top of the sidebar. It is a button, not a
+ * <select>, so the Side Bar's copy works too: the host asks which folder in a Quick Pick.
  */
-function renderWorkspaceFolderSelector(folders: WorkspaceFolderInfo[]): string {
-  if (folders.length === 0) {
+function renderWorkspaceFolderButton(folders: WorkspaceFolderInfo[], repositoryCount: number): string {
+  const current = folders.find(f => f.isCurrent) || folders[0];
+  if (!current) {
     return '';
   }
-
-  const currentFolder = folders.find(f => f.isCurrent);
-
+  const many = folders.length > 1;
   return `
-    <div class="workspace-folder-bar">
-      <span class="workspace-folder-label">Workspace Folder:</span>
-      <div class="workspace-folder-selector">
-        <select class="workspace-folder-select" id="workspaceFolderSelect">
-          ${folders.map(f => `
-            <option value="${f.path}" ${f.isCurrent ? 'selected' : ''} title="${f.path}">
-              ${f.name}
-            </option>
-          `).join('')}
-        </select>
-      </div>
-      <span class="workspace-folder-path" title="${currentFolder?.path || ''}">${currentFolder?.path || ''}</span>
-    </div>
-  `;
+      <button type="button" class="workspace-folder-button" id="workspaceFolderButton" data-action="pickWorkspaceFolder" data-folder="${escapeHtml(current.path)}" title="${escapeHtml(current.path)}${many ? ' — choose another workspace folder' : ''}"${many ? '' : ' aria-disabled="true"'}>
+        <span class="workspace-folder-name" id="workspaceFolderName">${escapeHtml(current.name)}</span>
+        <span class="workspace-folder-count" id="workspaceFolderCount">${repositoryCount} ${repositoryCount === 1 ? 'repository' : 'repositories'}</span>
+        ${many ? '<span class="workspace-folder-caret" aria-hidden="true">▾</span>' : ''}
+      </button>`;
 }
 
-function renderDashboardSidebar(): string {
+function renderDashboardSidebar(workspaceFolders: WorkspaceFolderInfo[], repositoryCount: number): string {
   return `
     <aside class="dashboard-sidebar">
+      ${renderWorkspaceFolderButton(workspaceFolders, repositoryCount)}
       <section class="sidebar-section repositories-section">
-        <div class="sidebar-section-title"><span>Repositories</span><span id="repositoryAlignment" title="Linked repositories on the parent repository's branch and at the commit it records">—</span></div>
+        <div class="sidebar-section-title"><span>Repositories</span><span id="repositoryAlignment" title="Linked repositories on the parent repository's branch and at the commit it records">—</span><span class="sidebar-section-tools"><button type="button" class="sidebar-title-action" data-action="syncAll" title="Align linked repositories with the commits the parent records" aria-label="Align linked repositories with recorded commits"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7h-7M17 4l3 3-3 3M4 17h7M7 20l-3-3 3-3"></path></svg></button></span></div>
         <div class="sidebar-repository-list" id="dashboardRepositories" role="group" aria-label="Repositories"></div>
       </section>
       <section class="sidebar-section branches-section" data-sidebar-section="branches">
@@ -297,7 +276,7 @@ function renderDashboardSidebar(): string {
         <div class="sidebar-ref-list" id="dashboardBranches"><span class="sidebar-placeholder">Loading branches…</span></div>
       </section>
       <section class="sidebar-section changes-section" data-sidebar-section="changes">
-        <div class="sidebar-section-title"><button type="button" class="sidebar-section-toggle" data-action="toggleSidebarSection" data-section="changes" aria-expanded="true" aria-controls="dashboardChanges" title="The active repository's uncommitted changes. Click a file to open its diff in an editor tab"><span class="sidebar-section-chevron" aria-hidden="true">▾</span><span>Changes</span></button><span class="sidebar-section-tools" id="sidebarChangesTools"></span><span id="changesRefCount">—</span></div>
+        <div class="sidebar-section-title"><button type="button" class="sidebar-section-toggle" data-action="toggleSidebarSection" data-section="changes" aria-expanded="true" aria-controls="dashboardChanges" title="The active repository's uncommitted changes. Click a file to open its diff in an editor tab"><span class="sidebar-section-chevron" aria-hidden="true">▾</span><span>Changes</span></button><span class="sidebar-section-tools"><button type="button" class="sidebar-title-action" data-action="openCommitChangesModal" title="Commit selected files" aria-label="Commit selected files"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12h5M15 12h5"></path><circle cx="12" cy="12" r="3"></circle></svg></button></span><span class="sidebar-section-tools" id="sidebarChangesTools"></span><span id="changesRefCount">—</span></div>
         <div class="sidebar-selection-bar" id="sidebarSelectionBar" hidden></div>
         <div class="sidebar-changes-list" id="dashboardChanges" role="list" aria-label="Uncommitted changes"><span class="sidebar-placeholder">Loading changes…</span></div>
       </section>
@@ -318,29 +297,17 @@ function renderDashboard(repositories: RepositoryInfo[], workspaceFolders: Works
   return `
     <div class="dashboard-shell">
       <header class="dashboard-command-bar">
-        <div class="dashboard-brand">
-          ${renderRepositoryMark()}
-          <strong>Repository Manager</strong>
+        <div class="dashboard-heading">
+          <h2 class="dashboard-title" id="dashboardTitle">${escapeHtml(activeRepository?.name || 'Repository Manager')}</h2>
+          <div class="dashboard-subtitle" id="dashboardSubtitle">History of this repository, newest first.</div>
         </div>
-        ${renderWorkspaceFolderSelector(workspaceFolders)}
         ${renderDashboardToolbar(activeRepository)}
       </header>
       <div class="dashboard-body">
-        ${renderDashboardSidebar()}
+        ${renderDashboardSidebar(workspaceFolders, repositories.length)}
         <main class="dashboard-main">
           <div class="history-controls">
-            <label class="remote-toggle" title="Include remote branches in the graph"><input id="dashboardIncludeRemotes" type="checkbox" checked> <span class="remote-toggle-word">Include </span>remotes</label>
-            <button class="compare-branches-button" type="button" data-action="openBranchCompareModal">⇄ Compare branches</button>
-            <button class="compare-branches-button" type="button" data-action="naturalUndo" id="naturalUndoButton" title="Say what to undo (e.g. &quot;undo my last 2 commits but keep the changes&quot;). Copilot picks one of the dashboard's actions; you see it, and that action's own confirmation, before anything runs">↶ Undo…</button>
-            <div class="toolbar-model" title="The Copilot model for reviews, summaries, commit messages and fixes; the list loads when you open it. Pin models to list them first"><span id="summaryModelLabel">Model</span><button type="button" id="summaryModelButton" data-action="toggleSummaryModelMenu" aria-haspopup="menu" aria-expanded="false" aria-controls="summaryModelMenu" aria-labelledby="summaryModelLabel summaryModelName"><span id="summaryModelName">Default</span><span class="toolbar-model-caret" aria-hidden="true">▾</span></button></div>
-            <button type="button" class="toolbar-settings" data-action="toggleCopilotSettingsMenu" id="copilotSettingsButton" aria-haspopup="menu" aria-expanded="false" aria-controls="copilotSettingsMenu" aria-label="Copilot settings" title="Copilot settings: whether to ask before code is sent, and all Repository Manager settings">⚙</button>
-            <div class="review-entry review-current-group" role="group" aria-label="Review with Copilot">
-              <button type="button" data-action="reviewLocal" id="reviewLocalChangesButton" title="Review your local changes before committing: staged and unstaged changes and new files (not those .gitignore excludes), as they are now. Nothing is committed or staged"><span class="review-entry-word">Review </span>changes</button>
-              <button type="button" data-action="reviewSelection" id="reviewSelectionChangesButton" title="Review the selected commit against its parent, or the loaded comparison (Base/Target or a branch comparison). Committed changes only: use Review changes for uncommitted work"><span class="review-entry-word">Review </span>commit</button>
-              <button type="button" data-action="reviewRelease" data-scope="changes" title="Review the files the current branch changed since it left the default branch (main or master), as a pull request shows them. Committed changes only: use Review changes for uncommitted work"><span class="review-entry-word">Review </span>branch</button>
-              <button type="button" class="review-split-toggle" data-action="toggleReviewBranchMenu" id="reviewBranchMenuButton" aria-haspopup="menu" aria-expanded="false" aria-controls="reviewBranchMenu" aria-label="Choose what Review branch covers" title="Choose what Review branch covers: the changed files, or every file">▾</button>
-              <button type="button" class="review-open-tab" data-action="openReviewTab" id="openReviewTabButton" title="Open the Repository Review tab: progress, results, past reviews and review skills">Review<span class="review-open-badge" id="reviewTabBadge"></span> ↗</button>
-            </div>
+            <input id="dashboardIncludeRemotes" type="checkbox" checked hidden>
             <div class="commit-compare-status" id="commitCompareStatus" role="status" aria-live="polite" hidden></div>
             <div class="dashboard-search"><span>⌕</span><input id="dashboardSearch" type="text" placeholder="Search author, commit, message, or ref"></div>
           </div>
@@ -360,7 +327,7 @@ function renderDashboard(repositories: RepositoryInfo[], workspaceFolders: Works
               <div class="commit-summary" id="dashboardCommitSummary">
                 <div class="detail-placeholder">Select a commit to inspect its changed files and diff.</div>
               </div>
-              <div class="commit-header-actions" id="commitHeaderActions" role="group" aria-label="Actions on these changes" hidden><span class="working-tree-actions" id="workingTreeActions" hidden><button type="button" class="btn" data-action="reviewLocal">Review changes</button></span><span class="working-tree-actions" id="selectionReviewActions" hidden><button type="button" class="btn" data-action="reviewSelection" id="reviewSelectionHeaderButton" title="Review these committed changes: the commit against its parent, or the comparison from Base to Target">Review changes</button></span><span class="stash-actions" id="stashActions" hidden><button type="button" class="btn" data-action="stashAction" data-operation="apply" title="Apply this stash to the working tree and keep it">Apply</button><button type="button" class="btn" data-action="stashAction" data-operation="pop" title="Apply this stash to the working tree and remove it">Pop</button><button type="button" class="btn" data-action="stashAction" data-operation="drop" title="Delete this stash without applying it">Drop…</button></span><button type="button" class="btn" data-action="summarizeChanges" id="summarizeChangesButton" title="Summarize these changes with Copilot">Summarize changes</button><button type="button" class="btn" data-action="cancelChangeSummary" id="cancelChangeSummaryButton" hidden>Cancel</button></div>
+              <div class="commit-header-actions" id="commitHeaderActions" role="group" aria-label="Actions on these changes" hidden><span class="working-tree-actions" id="workingTreeActions" hidden><button type="button" class="btn" data-action="reviewLocal" id="reviewLocalChangesButton" title="Review your local changes before committing: staged and unstaged changes and new files (not those .gitignore excludes), as they are now. Nothing is committed or staged">Review changes</button></span><span class="working-tree-actions" id="selectionReviewActions" hidden><button type="button" class="btn" data-action="reviewSelection" id="reviewSelectionHeaderButton" title="Review these committed changes: the commit against its parent, or the comparison from Base to Target">Review changes</button></span><span class="stash-actions" id="stashActions" hidden><button type="button" class="btn" data-action="stashAction" data-operation="apply" title="Apply this stash to the working tree and keep it">Apply</button><button type="button" class="btn" data-action="stashAction" data-operation="pop" title="Apply this stash to the working tree and remove it">Pop</button><button type="button" class="btn" data-action="stashAction" data-operation="drop" title="Delete this stash without applying it">Drop…</button></span><button type="button" class="btn" data-action="summarizeChanges" id="summarizeChangesButton" title="Summarize these changes with Copilot">Summarize changes</button><button type="button" class="btn" data-action="cancelChangeSummary" id="cancelChangeSummaryButton" hidden>Cancel</button></div>
             </div>
             <div class="change-summary" id="changeSummary" hidden>
               <div class="change-summary-status" id="changeSummaryStatus" role="status"></div>
@@ -558,6 +525,21 @@ export function getHtmlForWebview(repositories: RepositoryInfo[], resourceUris: 
     <button type="button" role="menuitem" data-action="contextReviewFile" title="Review only this file's changes with Copilot; the model may still read other files for context">Review Changes in This File</button>
     <button type="button" role="menuitem" data-action="contextDiscardFile" title="Put this file back as it is at HEAD (staged and unstaged changes); a new file is deleted. A copy is kept first">Discard Changes…</button>
     <button type="button" role="menuitem" data-action="contextDiscardAll" title="Put every changed file back as it is at HEAD and delete new files (not ignored ones). A copy is kept first">Discard All Changes…</button>
+  </div>
+
+  <div class="history-context-menu dashboard-more-menu" id="dashboardMoreMenu" role="menu" aria-label="More actions" hidden>
+    <button type="button" role="menuitem" data-action="refresh" data-operation="refresh" title="Read every repository's status, branches and history again">Refresh</button>
+    <button type="button" role="menuitem" data-action="openBranchCompareModal" title="Show the changes from a base branch or tag to a target branch or tag">Compare branches…</button>
+    <button type="button" role="menuitem" data-action="naturalUndo" id="naturalUndoButton" title="Say what to undo (e.g. &quot;undo my last 2 commits but keep the changes&quot;). Copilot picks one of the dashboard's actions; you see it, and that action's own confirmation, before anything runs">Undo…</button>
+    <button type="button" role="menuitemcheckbox" data-action="toggleIncludeRemotes" id="includeRemotesItem" aria-checked="true" title="Include remote branches in the graph">Include remote branches</button>
+    <div class="menu-separator" role="separator"></div>
+    <div class="menu-heading" role="presentation">Review with Copilot</div>
+    <button type="button" role="menuitem" data-action="reviewRelease" data-scope="changes" title="Review the files the current branch changed since it left the default branch (main or master), as a pull request shows them. Committed changes only: use Review changes for uncommitted work">Review branch: changed files</button>
+    <button type="button" role="menuitem" data-action="reviewRelease" data-scope="branch" title="Every file as committed at the tip of the current branch. Sends far more code to Copilot">Review branch: every file</button>
+    <button type="button" role="menuitem" data-action="openReviewTab" id="openReviewTabButton" title="Open the Repository Review tab: progress, results, past reviews and review skills">Open Review tab<span class="review-open-badge" id="reviewTabBadge"></span></button>
+    <div class="menu-separator" role="separator"></div>
+    <button type="button" role="menuitem" data-action="toggleSummaryModelMenu" id="summaryModelButton" aria-haspopup="menu" aria-expanded="false" aria-controls="summaryModelMenu" title="The Copilot model for reviews, summaries, commit messages and fixes; the list loads when you open it. Pin models to list them first"><span id="summaryModelLabel">Copilot model:</span> <span id="summaryModelName">Default</span></button>
+    <button type="button" role="menuitem" data-action="toggleCopilotSettingsMenu" id="copilotSettingsButton" aria-haspopup="menu" aria-expanded="false" aria-controls="copilotSettingsMenu" title="Whether to ask before code is sent to Copilot, and all Repository Manager settings">Copilot settings…</button>
   </div>
 
   <div class="history-context-menu summary-model-menu" id="summaryModelMenu" role="menu" aria-label="Copilot model" hidden></div>

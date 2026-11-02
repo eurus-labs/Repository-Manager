@@ -131,6 +131,46 @@
     return true;
   }
 
+  // The Model and Copilot settings menus open from items of the ⋯ menu, which closes first: they
+  // are placed under the ⋯ button, and focus goes back to it.
+  function menuAnchor(toggle) {
+    if (toggle && toggle.offsetParent !== null) return toggle;
+    return document.getElementById('dashboardMoreButton') || toggle;
+  }
+
+  // The ⋯ menu: what is not used on every visit (Refresh, Compare branches, Undo, Include remote
+  // branches, Review branch, the Copilot model and settings).
+  function hideDashboardMoreMenu(restoreFocus) {
+    const menu = document.getElementById('dashboardMoreMenu');
+    const toggle = document.getElementById('dashboardMoreButton');
+    if (!menu || menu.hidden) return;
+    menu.hidden = true;
+    if (toggle) {
+      toggle.setAttribute('aria-expanded', 'false');
+      if (restoreFocus) toggle.focus();
+    }
+  }
+
+  function showDashboardMoreMenu() {
+    const menu = document.getElementById('dashboardMoreMenu');
+    const toggle = document.getElementById('dashboardMoreButton');
+    if (!menu || !toggle) return;
+    syncIncludeRemotesItem();
+    menu.hidden = false;
+    toggle.setAttribute('aria-expanded', 'true');
+    const anchor = toggle.getBoundingClientRect();
+    const width = window.innerWidth || document.documentElement.clientWidth;
+    menu.style.left = `${Math.max(0, Math.min(anchor.right - menu.offsetWidth, width - menu.offsetWidth - 8))}px`;
+    menu.style.top = `${anchor.bottom + 2}px`;
+    menu.querySelector('button:not([disabled])').focus();
+  }
+
+  function syncIncludeRemotesItem() {
+    const box = document.getElementById('dashboardIncludeRemotes');
+    const item = document.getElementById('includeRemotesItem');
+    if (box && item) item.setAttribute('aria-checked', String(box.checked));
+  }
+
   // Review branch's menu: the changed files (the button's own review) or every file. Nothing is
   // remembered, so All files, which sends far more code, is always chosen on purpose.
   function hideReviewBranchMenu(restoreFocus) {
@@ -166,7 +206,7 @@
     menu.hidden = true;
     if (toggle) {
       toggle.setAttribute('aria-expanded', 'false');
-      if (restoreFocus) toggle.focus();
+      if (restoreFocus) menuAnchor(toggle).focus();
     }
   }
 
@@ -176,9 +216,9 @@
     if (!menu || !toggle) return;
     menu.hidden = false;
     toggle.setAttribute('aria-expanded', 'true');
-    const anchor = toggle.getBoundingClientRect();
+    const anchor = menuAnchor(toggle).getBoundingClientRect();
     const width = window.innerWidth || document.documentElement.clientWidth;
-    menu.style.left = `${Math.max(0, Math.min(anchor.left, width - menu.offsetWidth - 8))}px`;
+    menu.style.left = `${Math.max(0, Math.min(anchor.right - menu.offsetWidth, width - menu.offsetWidth - 8))}px`;
     menu.style.top = `${anchor.bottom + 2}px`;
     (menu.querySelector('[aria-checked="true"]') || menu.querySelector('button')).focus();
   }
@@ -237,7 +277,7 @@
     menu.hidden = true;
     if (toggle) {
       toggle.setAttribute('aria-expanded', 'false');
-      if (restoreFocus) toggle.focus();
+      if (restoreFocus) menuAnchor(toggle).focus();
     }
   }
 
@@ -249,10 +289,10 @@
     renderSummaryModelMenu();
     menu.hidden = false;
     toggle.setAttribute('aria-expanded', 'true');
-    const anchor = toggle.getBoundingClientRect();
+    const anchor = menuAnchor(toggle).getBoundingClientRect();
     const width = window.innerWidth || document.documentElement.clientWidth;
     const height = window.innerHeight || document.documentElement.clientHeight;
-    menu.style.left = `${Math.max(0, Math.min(anchor.left, width - menu.offsetWidth - 8))}px`;
+    menu.style.left = `${Math.max(0, Math.min(anchor.right - menu.offsetWidth, width - menu.offsetWidth - 8))}px`;
     menu.style.top = `${anchor.bottom + 2}px`;
     menu.style.maxHeight = `${Math.max(120, height - anchor.bottom - 12)}px`;
     (menu.querySelector('[role="menuitemradio"][aria-checked="true"]') || menu.querySelector('button')).focus();
@@ -1113,6 +1153,24 @@
       hideReviewBranchMenu(false);
       startReview({ kind: 'release', scope: el.dataset.scope === 'changes' ? 'changes' : 'branch' });
     },
+    toggleDashboardMoreMenu: () => {
+      const menu = document.getElementById('dashboardMoreMenu');
+      if (!menu) return;
+      if (menu.hidden) showDashboardMoreMenu(); else hideDashboardMoreMenu(true);
+    },
+    // The menu stays open, so several choices can be made in a row.
+    toggleIncludeRemotes: () => {
+      const box = document.getElementById('dashboardIncludeRemotes');
+      if (!box) return;
+      box.checked = !box.checked;
+      syncIncludeRemotesItem();
+      box.dispatchEvent(new Event('change'));
+    },
+    // The host asks which folder (a Quick Pick); the Side Bar's copy of this button works the same.
+    pickWorkspaceFolder: (el) => {
+      if (el.getAttribute('aria-disabled') === 'true') return;
+      postMessage('pickWorkspaceFolder', { current: el.dataset.folder || '' });
+    },
     toggleCopilotSettingsMenu: () => {
       const menu = document.getElementById('copilotSettingsMenu');
       if (!menu) return;
@@ -1419,6 +1477,37 @@
     return targetBranch && repository.currentBranch !== targetBranch ? 'drifted' : 'aligned';
   }
 
+  // The heading names what the history shows: the repository and its branch, and how many linked
+  // repositories are aligned with the parent.
+  function renderDashboardHeading(linkedCount, aligned, targetBranch) {
+    const title = document.getElementById('dashboardTitle');
+    const subtitle = document.getElementById('dashboardSubtitle');
+    const repository = getRepository(activeDashboardRepository);
+    if (title) {
+      const text = repository ? `${repository.name} · ${repository.currentBranch || `detached at ${(repository.currentCommit || '').slice(0, 7) || 'HEAD'}`}` : 'Repository Manager';
+      if (title.textContent !== text) title.textContent = text;
+    }
+    if (subtitle) {
+      const text = 'History of this repository, newest first.' + (linkedCount
+        ? ` Linked repositories: ${aligned} of ${linkedCount} on the parent's branch${targetBranch ? ` (${targetBranch})` : ''} and recorded commit.` : '');
+      if (subtitle.textContent !== text) subtitle.textContent = text;
+    }
+    const count = document.getElementById('workspaceFolderCount');
+    if (count) {
+      const text = `${repositoryData.length} ${repositoryData.length === 1 ? 'repository' : 'repositories'}`;
+      if (count.textContent !== text) count.textContent = text;
+    }
+  }
+
+  function showWorkspaceFolder(folder) {
+    const button = document.getElementById('workspaceFolderButton');
+    const name = document.getElementById('workspaceFolderName');
+    if (!button || !folder || typeof folder.path !== 'string') return;
+    button.dataset.folder = folder.path;
+    button.title = `${folder.path} — choose another workspace folder`;
+    if (name) name.textContent = folder.name || folder.path;
+  }
+
   function renderRepositorySwitcher() {
     const list = document.getElementById('dashboardRepositories');
     const summary = document.getElementById('repositoryAlignment');
@@ -1434,6 +1523,7 @@
       summary.title = `${aligned} of ${linked.length} linked repositories are at the commit the parent records, on ${targetBranch || 'the parent branch'} or pinned there (detached)`;
       summary.classList.toggle('drifted', aligned < linked.length);
     }
+    renderDashboardHeading(linked.length, aligned, targetBranch);
 
     list.innerHTML = repositoryData.map(repository => {
       const alignment = getRepositoryAlignment(repository, targetBranch);
@@ -1732,6 +1822,7 @@
     const includeRemotes = document.getElementById('dashboardIncludeRemotes');
     const search = document.getElementById('dashboardSearch');
     if (includeRemotes) includeRemotes.checked = filters.includeRemotes;
+    syncIncludeRemotesItem();
     if (search) search.value = filters.search;
   }
 
@@ -2601,6 +2692,9 @@
     if (!e.target.closest('#reviewBranchMenu, #reviewBranchMenuButton')) hideReviewBranchMenu(false);
     if (!e.target.closest('#copilotSettingsMenu, #copilotSettingsButton')) hideCopilotSettingsMenu(false);
     if (!e.target.closest('#summaryModelMenu, #summaryModelButton')) hideSummaryModelMenu(false);
+    const moreItem = e.target.closest('#dashboardMoreMenu [data-action]');
+    if (!e.target.closest('#dashboardMoreMenu, #dashboardMoreButton')) hideDashboardMoreMenu(false);
+    else if (moreItem && moreItem.dataset.action !== 'toggleIncludeRemotes') hideDashboardMoreMenu(false);
     let el = e.target;
 
     // Walk up the DOM tree to find element with data-action
@@ -2635,16 +2729,17 @@
   // The menu is placed under its button once: scrolling or resizing would leave it behind.
   // Scrolling inside the Model menu (a long list) keeps it open.
   window.addEventListener('scroll', (e) => {
-    hideReviewBranchMenu(false); hideCopilotSettingsMenu(false);
+    hideReviewBranchMenu(false); hideCopilotSettingsMenu(false); hideDashboardMoreMenu(false);
     if (!(e.target && e.target.id === 'summaryModelMenu')) hideSummaryModelMenu(false);
   }, true);
-  window.addEventListener('resize', () => { hideReviewBranchMenu(false); hideCopilotSettingsMenu(false); hideSummaryModelMenu(false); });
+  window.addEventListener('resize', () => { hideReviewBranchMenu(false); hideCopilotSettingsMenu(false); hideSummaryModelMenu(false); hideDashboardMoreMenu(false); });
   document.body.addEventListener('keydown', function (e) {
     if (e.key === 'Escape') {
       hideHistoryContextMenu();
       hideReviewBranchMenu(true);
       hideCopilotSettingsMenu(true);
       hideSummaryModelMenu(true);
+      hideDashboardMoreMenu(true);
     }
     moveInSummaryModelMenu(e);
     const changesKeyTarget = (e.key === 'ContextMenu' || (e.shiftKey && e.key === 'F10')) &&
@@ -2690,17 +2785,6 @@
     toggleCommitCompareNode(graphNode.dataset.commit);
   });
 
-  // Handle workspace folder switching
-  const workspaceFolderSelect = document.getElementById('workspaceFolderSelect');
-  if (workspaceFolderSelect) {
-    workspaceFolderSelect.addEventListener('change', function (e) {
-      const folderPath = e.target.value;
-      if (folderPath) {
-        postMessage('switchWorkspaceFolder', { folderPath });
-      }
-    });
-  }
-
   // The repository and branch list is shown in VS Code's Side Bar, not in this tab. The dashboard
   // still renders it (hidden here) and owns its state; it sends a copy to the Side Bar after every
   // change and runs the Side Bar's clicks on its own elements, through the same handlers.
@@ -2716,7 +2800,9 @@
       const key = mirrorKey(element);
       if (element.dataset.mirrorKey !== key) element.dataset.mirrorKey = key;
     });
-    postMessage('sidebarSnapshot', { html: dashboardSidebar.innerHTML });
+    // The number of uncommitted changes becomes the Activity Bar icon's badge.
+    const changes = workingTree.repositoryPath === activeDashboardRepository ? workingTree.changes.length : 0;
+    postMessage('sidebarSnapshot', { html: dashboardSidebar.innerHTML, changes });
   }
   // After the changes of the current task, not at the next frame: a dashboard behind another
   // editor tab is not painted, and the Side Bar must not wait for it to be.
@@ -2933,6 +3019,7 @@
           // Paths such as '.' now point into a different folder: forget everything tied to the old one.
           repositoryData = (message.payload && message.payload.repositories) || [];
           repositoryDataAt = Date.now();
+          showWorkspaceFolder(message.payload && message.payload.folder);
           dashboardHistoryState = {};
           Object.keys(pendingOperations).forEach(key => delete pendingOperations[key]);
           cancelPendingChangeSummary();
@@ -3668,8 +3755,8 @@
   // A review runs in the background: the rest of the dashboard stays usable (other repositories,
   // folders, tabs and commits). Only starting a second review waits, since it would replace this one.
   function currentWorkspaceFolder() {
-    const select = document.getElementById('workspaceFolderSelect');
-    return select ? select.value : '';
+    const button = document.getElementById('workspaceFolderButton');
+    return button ? button.dataset.folder || '' : '';
   }
 
   // What the review tab follows: the repository and folder shown here, and the selected model.
@@ -3700,6 +3787,13 @@
       badge.textContent = reviewStatus.state === 'running' ? `${reviewStatus.percent || 0}%`
         : reviewStatus.state === 'completed' && reviewStatus.blocking ? String(reviewStatus.blocking) : '';
       badge.classList.toggle('review-open-badge-blocking', reviewStatus.state === 'completed' && reviewStatus.blocking > 0);
+      // The Review tab is opened from the ⋯ menu: its button carries the same badge.
+      const more = document.getElementById('dashboardMoreBadge');
+      if (more) {
+        more.textContent = badge.textContent;
+        more.hidden = !badge.textContent;
+        more.classList.toggle('review-open-badge-blocking', reviewStatus.state === 'completed' && reviewStatus.blocking > 0);
+      }
     }
     if (locked) hideReviewBranchMenu(false);
     const lockable = '[data-action="reviewRelease"], [data-action="reviewSelection"], [data-action="reviewLocal"], #reviewBranchMenuButton, ' +

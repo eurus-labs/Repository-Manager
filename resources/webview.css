@@ -3077,3 +3077,65 @@ body.sidebar-view { overflow: hidden; background: var(--vscode-sideBar-backgroun
 .commit-change-row[hidden] { display: none; }
 #commitFilterEmpty { padding: 12px; }
 #commitFilterEmpty[hidden] { display: none; }
+
+/* One row of commands (2.15): the heading names the repository and branch, Fetch / Pull / Push,
+   New branch and Commit stay in view, the rest is in ⋯. Align and the workspace folder are in
+   the sidebar. */
+.dashboard-shell { grid-template-rows: 58px minmax(0, 1fr); }
+.dashboard-command-bar { gap: 16px; }
+.dashboard-heading { display: grid; flex: 1 1 auto; gap: 2px; min-width: 0; }
+.dashboard-title { overflow: hidden; margin: 0; color: var(--text-strong, var(--text-primary)); font-size: 15px; font-weight: 600; line-height: 1.25; text-overflow: ellipsis; white-space: nowrap; }
+.dashboard-subtitle { overflow: hidden; color: var(--text-muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.dashboard-remote-actions .dashboard-command[data-operation] { width: auto; min-width: 0; padding: 0 10px; }
+.dashboard-remote-actions .dashboard-command + .dashboard-command { border-left: 1px solid var(--border-strong); border-radius: 0; }
+.dashboard-remote-actions .dashboard-command:first-child { border-radius: 7px 0 0 7px; }
+.dashboard-remote-actions .dashboard-command:last-child { border-radius: 0 7px 7px 0; }
+.dashboard-more-button { overflow: visible; }
+.dashboard-more-button > svg { fill: currentColor; stroke: none; }
+.more-badge { position: absolute; top: -3px; right: -4px; min-width: 15px; padding: 0 4px; border-radius: 8px; color: var(--text-secondary);
+  background: var(--bg-tertiary); font-size: 10px; line-height: 15px; font-variant-numeric: tabular-nums; }
+.more-badge.review-open-badge-blocking { color: var(--accent-text, #fff); background: var(--tone-error, var(--error)); }
+.more-badge[hidden] { display: none; }
+/* The row above the history only filters it: search on the left, a comparison's status on the right. */
+.dashboard-main { grid-template-rows: 40px minmax(160px, 40%) 6px minmax(180px, 1fr); }
+.history-controls { justify-content: flex-start; padding: 6px 20px; border-bottom: 0; }
+.history-controls .dashboard-search { order: -1; flex: 0 1 420px; }
+.history-controls .commit-compare-status { margin-left: auto; }
+.dashboard-more-menu { min-width: 240px; }
+.dashboard-more-menu button { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.dashboard-more-menu button[role="menuitemcheckbox"] { position: relative; padding-left: 26px; }
+.dashboard-more-menu button[role="menuitemcheckbox"][aria-checked="true"]::before { content: "✓"; position: absolute; left: 9px; }
+.dashboard-more-menu .menu-separator { height: 1px; margin: 5px 0; background: var(--vscode-menu-separatorBackground, var(--border)); }
+.dashboard-more-menu #summaryModelName { color: var(--text-secondary); }
+.dashboard-more-menu #summaryModelButton { justify-content: flex-start; gap: 4px; }
+
+/* The workspace folder, first in the sidebar: a button that asks which folder. */
+.workspace-folder-button { display: flex; align-items: center; gap: 6px; width: calc(100% - 16px); min-width: 0; margin: 10px 8px 2px; padding: 5px 8px;
+  border: 1px solid var(--vscode-dropdown-border, var(--border-strong)); border-radius: 5px; color: var(--vscode-dropdown-foreground, var(--text-primary));
+  background: var(--vscode-dropdown-background, var(--bg-tertiary)); font: inherit; font-size: 12px; text-align: left; cursor: pointer; }
+.workspace-folder-button[aria-disabled="true"] { cursor: default; }
+.workspace-folder-name { overflow: hidden; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.workspace-folder-count { flex: 1 1 auto; overflow: hidden; color: var(--text-muted); text-overflow: ellipsis; white-space: nowrap; }
+.workspace-folder-caret { color: var(--text-muted); font-size: 10px; }
+.workspace-folder-button:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 1px; }
+
+/* Actions on a sidebar section's title: Align on Repositories, Commit on Changes. */
+.sidebar-title-action { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; padding: 0; border: 0; border-radius: 4px;
+  color: var(--text-secondary); background: transparent; cursor: pointer; }
+.sidebar-title-action:hover { color: var(--text-primary); background: var(--vscode-toolbar-hoverBackground, var(--bg-tertiary)); }
+.sidebar-title-action:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 1px; }
+.sidebar-title-action > svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; }
+
+@media (max-width: 760px) {
+  .dashboard-main { grid-template-rows: 40px minmax(140px, 40%) 6px minmax(160px, 1fr); }
+  .history-controls { padding: 6px 12px; }
+}
+@media (max-width: 900px) {
+  .dashboard-subtitle { display: none; }
+  .dashboard-remote-actions .command-label { display: none; }
+}
+@media (max-width: 650px) {
+  .command-cluster-right { display: flex; gap: 6px; }
+  .dashboard-command-secondary .command-label { display: none; }
+}
+.sidebar-section-tools + .sidebar-section-tools { margin-left: 0; }

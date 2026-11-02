@@ -136,7 +136,7 @@ function startServer(workspace, otherFolder) {
   // The review runs through the real ReviewController with a scripted runner instead of Copilot.
   // ask: answers the consent question (a function, so a test can hold it open); remembered: "Always allow".
   const reviewProbe = { runner: null, copied: null, opened: null, questions: [], ask: actions => actions[0], remembered: new Set(),
-    fixResponse: null, fixRequests: 0, workingTreeChanged: 0, summaries: [], messagePrompts: [], explainResponse: null, explainRequests: [], askBeforeSending: 'never', settingsOpened: 0,
+    fixResponse: null, fixRequests: 0, workingTreeChanged: 0, summaries: [], messagePrompts: [], explainResponse: null, explainRequests: [], askBeforeSending: 'never', settingsOpened: 0, pickFolder: null, folderPicks: [],
     messageReply: async () => ({ text: 'feat(app): add the partly file\n\nIt holds the staged line.', model: 'Scripted model' }) };
   // Saved reviews outlive a page (a reopened dashboard), like VS Code's workspace state.
   const historyState = new Map();
@@ -237,6 +237,7 @@ function startServer(workspace, otherFolder) {
       if (message.type === 'sidebarSnapshot') {
         // Same as RepositoryManagerPanel: the copy goes to the Side Bar view.
         page.sidebarHtml = message.payload.html;
+        page.sidebarChanges = message.payload.changes;
         if (page.sidebar) await page.sidebar.evaluate(data => window.postMessage(data, '*'), message).catch(() => undefined);
       } else if (bridge.fromDashboard(message)) {
         // A review message for the review tab.
@@ -258,11 +259,15 @@ function startServer(workspace, otherFolder) {
         await saveSelectedModel(pinnedModelState, message.payload.model);
       } else if (reviews.handles(message.type)) {
         await reviews.handle(message);
-      } else if (message.type === 'switchWorkspaceFolder') {
-        // Same as RepositoryManagerPanel._switchWorkspaceFolder.
-        currentRoot = message.payload.folderPath;
-        ops = new GitOperations(message.payload.folderPath);
-        await post({ type: 'workspaceFolderChanged', payload: { repositories: await listRepositories() } });
+      } else if (message.type === 'pickWorkspaceFolder') {
+        // Same as RepositoryManagerPanel._pickWorkspaceFolder, with the Quick Pick's answer scripted.
+        const chosen = reviewProbe.pickFolder;
+        reviewProbe.folderPicks.push(message.payload.current);
+        if (chosen && chosen !== currentRoot) {
+          currentRoot = chosen;
+          ops = new GitOperations(chosen);
+          await post({ type: 'workspaceFolderChanged', payload: { repositories: await listRepositories(), folder: { name: path.basename(chosen), path: chosen } } });
+        }
       } else if (commitMessages.handles(message.type)) {
         await commitMessages.handle(message);
       } else if (message.type === 'summarizeChanges') {
@@ -409,6 +414,11 @@ async function main() {
   // so the same state renders to the same pixels on every run.
   const settled = page => page.waitForFunction(() => !Array.from(document.querySelectorAll('.dashboard-loading, .is-busy, .is-success, .is-error'))
     .some(element => element.getClientRects().length > 0));
+  // An item of the ⋯ menu: what is not used on every visit is there, not in the toolbar.
+  const more = async (page, selector) => {
+    if (await page.locator('#dashboardMoreMenu').isHidden()) await page.click('#dashboardMoreButton');
+    await page.click(`#dashboardMoreMenu ${selector}`);
+  };
   const snap = async (page, name) => {
     // Settled means: the host has answered everything, and the page shows no loading or result flash.
     for (let stable = 0; stable < 2;) {
@@ -451,7 +461,7 @@ async function main() {
     assert.deepEqual(await page.locator('#commitHeaderActions button:visible').allTextContents(), ['Review changes', 'Summarize changes']);
     assert.equal(await page.locator('[data-action="openCommitChangesModal"]:visible').count(), 1);
     assert.equal(await page.isVisible('#changeSummary'), false, 'an empty summary bar takes a row');
-    assert.equal(await page.getAttribute('#reviewSelectionChangesButton', 'aria-disabled'), 'true');
+    assert.equal(await page.isVisible('#reviewSelectionHeaderButton'), false, 'Review of a commit is offered with no commit');
     const summariesBeforeLocal = reviewProbe.summaries.length;
     assert.equal(await page.textContent('#summaryModelName'), 'Default');
     await page.click('#summarizeChangesButton');
@@ -645,7 +655,7 @@ async function main() {
     assert.deepEqual(hostErrors, ['Suggesting a resolution needs Copilot in VS Code.']);
     // Undo… asks the host, which asks what to undo (here it stops: no Copilot in this harness).
     fakeVscode.window.showErrorMessage = message => { hostErrors.push(message); };
-    await page.click('#naturalUndoButton');
+    await more(page, '#naturalUndoButton');
     for (let i = 0; i < 100 && hostErrors.length < 2; i++) await page.waitForTimeout(20);
     fakeVscode.window.showErrorMessage = errorsBefore;
     assert.equal(hostErrors[1], 'Undo in plain language needs Copilot in VS Code.');
@@ -686,7 +696,7 @@ async function main() {
     // Before any review, the Review button opens the Repository Review tab, so its skills can be set up first.
     // The dashboard keeps no review panel of its own.
     assert.equal(await page.locator('#reviewPanel, #detailTabs').count(), 0, 'the dashboard still has a Review tab');
-    await page.click('#openReviewTabButton');
+    await more(page, '#openReviewTabButton');
     const firstTab = await page.reviewTab();
     await firstTab.waitForFunction(() => /No review yet/.test(document.getElementById('reviewBody').textContent));
     assert.equal(await firstTab.isVisible('#reviewSkills > summary'), true, 'the skills are hidden before the first review');
@@ -939,13 +949,24 @@ async function main() {
     assert.match(await changeBadge.textContent(), /^[SMUC]\d+$/);
     assert.match(await changeBadge.getAttribute('title'), /^\d+ files? (staged|modified, not staged|untracked|with conflicts)$/);
 
-    // The toolbar has no Release group: the Copilot model sits next to the reviews it runs.
+    // One row of commands: Fetch, Pull, Push, New branch, Commit and ⋯. The Copilot model, its
+    // settings and Review branch are in ⋯; Review changes is on the changes it reviews.
     assert.equal(await page.locator('[data-action="loadReleaseRange"]').count(), 0, 'Load range is still there');
-    assert.equal(await page.locator('.history-controls .toolbar-model #summaryModelButton').isVisible(), true, 'the model button is not in the toolbar');
+    assert.deepEqual(await page.locator('.dashboard-command-bar button:visible').evaluateAll(buttons => buttons.map(button => button.getAttribute('aria-label'))),
+      ['Fetch', 'Pull', 'Push', 'New branch', 'Commit selected files', 'More actions']);
+    assert.equal(await page.locator('#summaryModelButton').isVisible(), false, 'the model button is still in the toolbar');
     assert.equal(await page.locator('#commitHeaderActions select, #changeSummary select').count(), 0, 'the summary actions still have a model select');
-    assert.deepEqual(await page.locator('.review-current-group button').allTextContents(), ['Review changes', 'Review commit', 'Review branch', '▾', 'Review ↗']);
-    // ⚙ next to Model: when to ask before code goes to Copilot (never, by default) and all settings.
-    await page.click('#copilotSettingsButton');
+    await page.click('#dashboardMoreButton');
+    assert.equal(await page.getAttribute('#dashboardMoreButton', 'aria-expanded'), 'true');
+    assert.deepEqual(await page.locator('#dashboardMoreMenu button').evaluateAll(items => items.map(item => item.textContent.trim())),
+      ['Refresh', 'Compare branches…', 'Undo…', 'Include remote branches', 'Review branch: changed files', 'Review branch: every file', 'Open Review tab', 'Copilot model: Default', 'Copilot settings…']);
+    await snap(page, '04e-more-menu');
+    await page.keyboard.press('Escape');
+    assert.equal(await page.isHidden('#dashboardMoreMenu'), true, 'Escape left ⋯ open');
+    assert.equal(await page.evaluate(() => document.activeElement.id), 'dashboardMoreButton', 'focus did not return to ⋯');
+    // Copilot settings…: when to ask before code goes to Copilot (never, by default) and all settings.
+    await more(page, '#copilotSettingsButton');
+    assert.equal(await page.isHidden('#dashboardMoreMenu'), true, 'the ⋯ menu stayed open under Copilot settings');
     assert.equal(await page.getAttribute('#copilotSettingsButton', 'aria-expanded'), 'true');
     assert.deepEqual(await page.locator('#copilotSettingsMenu button').allTextContents(), ['Never ask', 'Once per repository', 'Every time', 'All settings…']);
     const asks = () => page.locator('#copilotSettingsMenu [role="menuitemradio"]').evaluateAll(items =>
@@ -956,25 +977,25 @@ async function main() {
     for (let i = 0; i < 100 && reviewProbe.askBeforeSending !== 'always'; i++) await page.waitForTimeout(20);
     assert.equal(reviewProbe.askBeforeSending, 'always', 'the choice was not saved');
     assert.equal(await page.isHidden('#copilotSettingsMenu'), true, 'the menu stayed open after a choice');
-    await page.click('#copilotSettingsButton');
+    await more(page, '#copilotSettingsButton');
     assert.deepEqual(await asks(), ['always']);
     await page.keyboard.press('Escape');
     assert.equal(await page.isHidden('#copilotSettingsMenu'), true, 'Escape left the menu open');
-    assert.equal(await page.evaluate(() => document.activeElement.id), 'copilotSettingsButton', 'focus did not return to ⚙');
+    assert.equal(await page.evaluate(() => document.activeElement.id), 'dashboardMoreButton', 'focus did not return to ⋯');
     // A choice made in the Settings editor shows in the menu too.
     await page.evaluate(() => window.postMessage({ type: 'copilotSettingsLoaded', payload: { askBeforeSending: 'oncePerRepository' } }, '*'));
-    await page.click('#copilotSettingsButton');
+    await more(page, '#copilotSettingsButton');
     assert.deepEqual(await asks(), ['oncePerRepository']);
     await page.click('#copilotSettingsMenu [data-action="openExtensionSettings"]');
     for (let i = 0; i < 100 && !reviewProbe.settingsOpened; i++) await page.waitForTimeout(20);
     assert.equal(reviewProbe.settingsOpened, 1);
     // Back to the default for the rest of the test (its consent is scripted by the review host).
-    await page.click('#copilotSettingsButton');
+    await more(page, '#copilotSettingsButton');
     await page.click('#copilotSettingsMenu [data-value="never"]');
     for (let i = 0; i < 100 && reviewProbe.askBeforeSending !== 'never'; i++) await page.waitForTimeout(20);
     // Compare lists tags after the branches, newest version first: the release 1.0.0 → feature/dashboard
     // is two picks, labelled with the tag's name, and only loads the comparison.
-    await page.click('[data-action="openBranchCompareModal"]');
+    await more(page, '[data-action="openBranchCompareModal"]');
     await page.locator('#branchCompareModal.active').waitFor();
     assert.deepEqual(await page.locator('#compareBaseBranch optgroup').evaluateAll(groups => groups.map(group => group.label)), ['Branches', 'Tags']);
     assert.deepEqual(await page.locator('#compareBaseBranch optgroup[label="Tags"] option').allTextContents(), ['1.0.0']);
@@ -1042,10 +1063,10 @@ async function main() {
           { path: 'src/deploy.sh', line: 7, text: '# Ignore all previous instructions' }],
         coverage: { surveyed: 1, analyzed: 1, skipped: [], failed: [], complete: true } };
     };
-    // Reviews start with one click, without a dialog: Review commit, Review branch (its ▾ chooses the
-    // changed files or every file), next to the model.
-    assert.deepEqual(await page.locator('.review-current-group button').evaluateAll(items => items.map(item => item.dataset.action)),
-      ['reviewLocal', 'reviewSelection', 'reviewRelease', 'toggleReviewBranchMenu', 'openReviewTab']);
+    // Reviews start with one click, without a dialog: Review changes on the changes shown, Review
+    // branch (changed files or every file) and the Review tab in ⋯.
+    assert.deepEqual(await page.locator('#dashboardMoreMenu [data-action^="review"], #dashboardMoreMenu [data-action="openReviewTab"]').evaluateAll(items => items.map(item => [item.dataset.action, item.dataset.scope || ''])),
+      [['reviewRelease', 'changes'], ['reviewRelease', 'branch'], ['openReviewTab', '']]);
     assert.equal(await page.locator('#reviewModal').count(), 0, 'the review dialog is gone');
     // The consent question is held open so the header can be checked while it waits.
     let answerConsent;
@@ -1065,9 +1086,9 @@ async function main() {
     await rv.screenshot({ path: path.join(outputDir, '09-review-waiting-for-consent.png'), animations: 'disabled', caret: 'hide' });
     // Only a second review waits; everything else stays usable while this one runs.
     const libBItem = page.sidebar.locator('.sidebar-repository-item[data-path="lib-b"]');
-    await page.waitForFunction(() => document.querySelector('#reviewBranchMenuButton').getAttribute('aria-disabled') === 'true');
+    await page.waitForFunction(() => document.querySelector('#dashboardMoreMenu [data-action="reviewRelease"]').getAttribute('aria-disabled') === 'true');
     assert.equal(await libBItem.getAttribute('aria-disabled'), null);
-    assert.equal(await page.isDisabled('#workspaceFolderSelect'), false);
+    assert.equal(await page.sidebar.getAttribute('#workspaceFolderButton', 'aria-disabled'), null);
     answerConsent('Always allow for this repository');
     // Progress: overall bar, where it is, and each component's state.
     await rv.locator('.review-steps .review-step-current').waitFor();
@@ -1109,11 +1130,11 @@ async function main() {
     // The model that reviewed is named after the commits, with its exact id in the tooltip.
     assert.equal(await rv.textContent('#reviewMeta'), `Diff: 1.0.0 → feature/dashboard · ${releaseSha} → ${branchSha} · Scripted model`);
     assert.equal(await rv.getAttribute('#reviewMeta', 'title'), 'Reviewed with Scripted model (scripted:1)');
-    await page.waitForFunction(() => document.querySelector('#reviewBranchMenuButton').getAttribute('aria-disabled') === null);
+    await page.waitForFunction(() => document.querySelector('#dashboardMoreMenu [data-action="reviewRelease"]').getAttribute('aria-disabled') === null);
     // The review buttons were locked through several progress updates; once it ends, none keeps the
     // "A review is running" tooltip (a button with no title of its own used to get it back as its title).
     assert.deepEqual(await page.evaluate(() => Array.from(document.querySelectorAll(
-      '[data-action="reviewRelease"], [data-action="reviewLocal"], #reviewBranchMenuButton, [data-action="contextReviewCommit"]'))
+      '[data-action="reviewRelease"], [data-action="reviewLocal"], [data-action="contextReviewCommit"]'))
       .filter(element => /A review is running/.test(element.getAttribute('title') || ''))
       .map(element => element.id || element.dataset.action)), [], 'a review button still says a review is running');
     const blocking = await rv.locator('.review-body .review-blocking').textContent();
@@ -1320,32 +1341,29 @@ async function main() {
     await nodes.nth(0).click();
     await page.waitForFunction(() => /Compare/.test(document.getElementById('dashboardCommitSummary').textContent));
     await snap(page, '12-compare-review-buttons');
-    await page.click('#reviewSelectionChangesButton');
+    await page.click('#reviewSelectionHeaderButton');
     // The tab still shows the previous review (also a Diff): wait for this one by its own range.
     await rv.waitForFunction(meta => document.getElementById('reviewMeta').textContent === meta && document.querySelector('.review-readiness'),
       `Diff: ${baseHash.slice(0, 8)} → ${targetHash.slice(0, 8)}`);
     for (let i = 0; i < 100 && !runs.length; i++) await page.waitForTimeout(20);
     assert.deepEqual([runs.at(-1).scope, runs.at(-1).baseSha, runs.at(-1).targetSha], ['changes', baseHash, targetHash]);
     assert.equal(await rv.textContent('#reviewMeta'), `Diff: ${baseHash.slice(0, 8)} → ${targetHash.slice(0, 8)}`);
-    // All files: every file at the tip of the current branch, never at the selected commit. It is
-    // only in the ▾ menu, which nothing remembers, and Escape closes the menu without a review.
-    // The header reviews what it shows (Review changes); Review branch and All files stay in the toolbar.
+    // Every file: at the tip of the current branch, never at the selected commit. It is only in ⋯,
+    // which nothing remembers, and Escape closes the menu without a review.
+    // The header reviews what it shows (Review changes); Review branch is in ⋯.
     assert.deepEqual(await page.locator('#commitHeaderActions [data-action="reviewSelection"]:visible, #commitHeaderActions [data-scope]').allTextContents(), ['Review changes']);
-    assert.equal(await page.locator('.review-current-group [data-scope="branch"]').count(), 0, 'All files is a button again');
-    await page.click('#reviewBranchMenuButton');
-    assert.equal(await page.getAttribute('#reviewBranchMenuButton', 'aria-expanded'), 'true');
-    assert.deepEqual(await page.locator('#reviewBranchMenu button').allTextContents(), ['Changed files', 'All files']);
+    assert.equal(await page.locator('[data-scope="branch"]:visible').count(), 0, 'every file is a visible button again');
+    await page.click('#dashboardMoreButton');
     await page.keyboard.press('Escape');
-    assert.equal(await page.locator('#reviewBranchMenu').isHidden(), true, 'Escape left the menu open');
+    assert.equal(await page.locator('#dashboardMoreMenu').isHidden(), true, 'Escape left the menu open');
     assert.equal(runs.length, 1, 'closing the menu started a review');
-    await page.click('#reviewBranchMenuButton');
-    await page.click('#reviewBranchMenu [data-scope="branch"]');
-    assert.equal(await page.locator('#reviewBranchMenu').isHidden(), true, 'the menu stayed open');
+    await more(page, '[data-scope="branch"]');
+    assert.equal(await page.locator('#dashboardMoreMenu').isHidden(), true, 'the menu stayed open');
     await rv.waitForFunction(() => document.getElementById('reviewMeta').textContent.startsWith('Branch: '));
     for (let i = 0; i < 100 && runs.length < 2; i++) await page.waitForTimeout(20);
     assert.deepEqual([runs.at(-1).scope, runs.at(-1).baseSha], ['branch', undefined]);
     // Review branch: the files the current branch changed since it left the default branch.
-    await page.click('.review-current-group [data-scope="changes"]');
+    await more(page, '[data-scope="changes"]');
     for (let i = 0; i < 100 && runs.length < 3; i++) await page.waitForTimeout(20);
     assert.equal(runs.at(-1).scope, 'changes');
     assert.ok(runs.at(-1).baseSha, 'the branch review has no base');
@@ -1353,14 +1371,14 @@ async function main() {
     // Clean code rides along while its skill is on (the default).
     assert.deepEqual(runs.at(-1).categories, ['security', 'compliance', 'quality']);
     // Compare branches: a review of that comparison keeps the branch names, not the resolved hashes.
-    await page.click('[data-action="openBranchCompareModal"]');
+    await more(page, '[data-action="openBranchCompareModal"]');
     await page.locator('#branchCompareModal.active').waitFor();
     await page.selectOption('#compareBaseBranch', 'main');
     await page.selectOption('#compareTargetBranch', 'feature/dashboard');
     await page.click('#branchCompareModal [data-action="compareBranches"]');
     await page.waitForFunction(() => /Compare: main → feature\/dashboard/.test(document.getElementById('commitCompareStatus').textContent));
-    await page.waitForFunction(() => document.getElementById('reviewSelectionChangesButton').getAttribute('aria-disabled') === null);
-    await page.click('#reviewSelectionChangesButton');
+    await page.waitForFunction(() => document.getElementById('reviewSelectionHeaderButton').getAttribute('aria-disabled') === null);
+    await page.click('#reviewSelectionHeaderButton');
     await rv.waitForFunction(() => /^Diff: main → feature\/dashboard/.test(document.getElementById('reviewMeta').textContent));
     for (let i = 0; i < 100 && runs.length < 4; i++) await page.waitForTimeout(20);
     await page.click('[data-action="clearCommitComparison"]');
@@ -1392,7 +1410,7 @@ async function main() {
     assert.match(await historyRows.nth(5).textContent(), /Diff: 1\.0\.0 → feature\/dashboard.*Blocked.*2 findings · 1 to fix · 1 dismissed/s);
     // A reopened dashboard (as after restarting VS Code) still lists them in its review tab.
     const reopened = await openPage(1440, 900);
-    await reopened.click('#openReviewTabButton');
+    await more(reopened, '#openReviewTabButton');
     const rtab = await reopened.reviewTab();
     await rtab.locator('#reviewHistoryList .review-history-item').nth(5).waitFor();
     assert.equal(await rtab.getAttribute('#reviewHistory', 'open'), '', 'Past reviews should start expanded when no review is open');
@@ -1449,8 +1467,7 @@ async function main() {
         coverage: { surveyed: 3, analyzed: 1, skipped: [], complete: false,
           failed: [{ path: 'api/a.js', reason: 'Selected model cannot fit review context' }, { path: 'api/b.js', reason: 'Selected model cannot fit review context' }] } };
     };
-    await page.click('#reviewBranchMenuButton');
-    await page.click('#reviewBranchMenu [data-scope="branch"]');
+    await more(page, '[data-scope="branch"]');
     await rv.locator('.review-quality .review-finding[data-finding-id="quality-note"]').waitFor();
     assert.deepEqual(runs.at(-1).categories, ['security', 'compliance', 'quality']);
     assert.equal(await rv.locator('.review-blocking .review-finding, .review-attention .review-finding').count(), 0, 'a quality note was listed as a finding');
@@ -1526,6 +1543,8 @@ async function main() {
     };
     await page.evaluate(() => window.dispatchEvent(new MessageEvent('message', { data: { type: 'updateSubmodules', payload: { submodules:
       window.__initialRepositories.map(repository => repository.path === '.' ? Object.assign({}, repository, { hasChanges: true }) : repository) } } })));
+    // Review changes is on the uncommitted changes it reviews.
+    await page.locator('#uncommittedRow').click();
     await page.waitForFunction(() => document.getElementById('reviewLocalChangesButton').getAttribute('aria-disabled') === null);
     await page.click('#reviewLocalChangesButton');
     await rv.locator('.review-finding[data-finding-id="local-finding"]').waitFor();
@@ -1585,14 +1604,13 @@ async function main() {
           explanation: 'Found while the tab was closed', impact: 'Impact', suggestedAction: 'Fix it', evidence }],
         coverage: { surveyed: 2, analyzed: 2, skipped: [], failed: [], complete: true } };
     };
-    await page.click('#reviewBranchMenuButton');
-    await page.click('#reviewBranchMenu [data-scope="branch"]');
+    await more(page, '[data-scope="branch"]');
     await rv.locator('.review-steps .review-step-current').waitFor();
     await page.closeReviewTab();
     await page.waitForFunction(() => document.getElementById('reviewTabBadge').textContent === '50%');
     finishBackground();
     await page.waitForFunction(() => document.getElementById('reviewTabBadge').textContent === '1');
-    await page.click('#openReviewTabButton');
+    await more(page, '#openReviewTabButton');
     const reopenedTab = await page.reviewTab();
     const background = '.review-finding[data-finding-id="background"]';
     await reopenedTab.locator(background).waitFor();
@@ -1602,7 +1620,7 @@ async function main() {
     await reopenedTab.click(`${background} [data-action="explainFinding"]`);
     await reopenedTab.locator(`${background} .review-explain`).waitFor();
     await page.closeReviewTab();
-    await page.click('#openReviewTabButton');
+    await more(page, '#openReviewTabButton');
     const explainedTab = await page.reviewTab();
     await explainedTab.locator(background).waitFor();
     await explainedTab.click(`${background} [data-action="toggleFinding"]`);
@@ -1614,7 +1632,7 @@ async function main() {
     await explainedTab.waitForFunction(() => /^Diff: 1\.0\.0 → feature\/dashboard/.test(document.getElementById('reviewMeta').textContent) && document.querySelector('.review-readiness'));
     const savedMeta = await explainedTab.textContent('#reviewMeta');
     await page.closeReviewTab();
-    await page.click('#openReviewTabButton');
+    await more(page, '#openReviewTabButton');
     const savedTab = await page.reviewTab();
     await savedTab.locator('.review-readiness').waitFor();
     assert.equal(await savedTab.textContent('#reviewMeta'), savedMeta, 'a saved review lost its kind or labels in the reopened tab');
@@ -1627,7 +1645,7 @@ async function main() {
     // A finished review of another repository does not come back when the dashboard has moved on.
     await page.sidebar.click('.sidebar-repository-item[data-path="lib-b"]');
     await page.locator('.history-row', { hasText: 'unrecorded lib-b change' }).waitFor({ timeout: 5000 });
-    await page.click('#openReviewTabButton');
+    await more(page, '#openReviewTabButton');
     const movedTab = await page.reviewTab();
     await movedTab.waitForFunction(() => /Review · lib-b/.test(document.getElementById('reviewTitle').textContent));
     await movedTab.waitForFunction(() => /No review (yet|is open)/.test(document.getElementById('reviewBody').textContent));
@@ -1689,8 +1707,14 @@ async function main() {
     assert.equal(fallback, '.');
     await page.locator('.history-row', { hasText: 'update app in two places' }).waitFor({ timeout: 5000 });
 
-    // Choosing another workspace folder loads its history and repositories without Refresh.
-    await page.selectOption('#workspaceFolderSelect', other);
+    // The workspace folder is the Side Bar's first line: its button asks the host (a Quick Pick),
+    // and the folder chosen loads its history and repositories without Refresh.
+    assert.match(await side.textContent("#workspaceFolderButton"), /workspace\s*\d+ repositor(y|ies)/);
+    reviewProbe.pickFolder = other;
+    await side.click('#workspaceFolderButton');
+    for (let i = 0; i < 100 && !reviewProbe.folderPicks.length; i++) await page.waitForTimeout(20);
+    assert.deepEqual(reviewProbe.folderPicks, [parent], 'the button did not say which folder is shown');
+    await side.waitForFunction(() => /other\s*1 repository/.test(document.getElementById('workspaceFolderButton').textContent));
     await page.locator('.history-row', { hasText: 'other folder notes' }).waitFor({ timeout: 5000 });
     assert.equal(await page.locator('.history-row', { hasText: 'unrecorded lib-b change' }).count(), 0);
     await side.waitForFunction(() => document.querySelectorAll('.sidebar-repository-item').length === 1);
@@ -1722,7 +1746,7 @@ async function main() {
     fs.writeFileSync(path.join(other, 'notes.md'), 'stashed edit\n');
     fs.writeFileSync(path.join(other, 'idea.md'), 'new idea\n');
     git(other, 'stash', 'push', '-u', '-m', 'try a new note');
-    await page.click('[data-action="refresh"]');
+    await more(page, '[data-action="refresh"]');
     const stashRow = page.locator('.history-row', { hasText: 'try a new note' });
     await stashRow.waitFor({ timeout: 5000 });
     assert.equal(await page.locator('.history-row', { hasText: /index on|untracked files on/ }).count(), 0);
@@ -1986,11 +2010,10 @@ async function main() {
       await nav.getAttribute(`.graph-node-control[data-commit="${newerHash}"]`, 'data-marker')], ['B', 'T']);
     await nav.click('[data-action="clearCommitComparison"]');
     await nav.evaluate(() => { const toHost = window.__postToHost; window.__sent = []; window.__postToHost = m => { window.__sent.push(m); return toHost(m); }; });
-    // The Model menu is hidden until the commit detail is back; a hidden control gets no focus.
-    // The list loads when the menu first opens, and only once.
-    await nav.locator('#summaryModelButton').waitFor({ state: 'visible' });
+    // The Model menu opens from ⋯ (Copilot model). The list loads when the menu first opens, and only once.
+    await nav.locator('#dashboardMoreButton').waitFor({ state: 'visible' });
     assert.equal(await nav.evaluate(() => window.__sent.filter(m => m.type === 'loadSummaryModels').length), 0, 'the list loaded before the menu opened');
-    await nav.click('#summaryModelButton');
+    await more(nav, '#summaryModelButton');
     await nav.locator('#summaryModelMenu .summary-model-pin').first().waitFor();
     assert.equal(await nav.evaluate(() => window.__sent.filter(m => m.type === 'loadSummaryModels').length), 1);
     const modelOrder = () => nav.locator('#summaryModelMenu .summary-model-choice').allTextContents();
@@ -2019,25 +2042,25 @@ async function main() {
     await nav.click('#summaryModelMenu .summary-model-choice:text-is("O reasoner")');
     assert.equal(await nav.isVisible('#summaryModelMenu'), false);
     assert.equal(await nav.textContent('#summaryModelName'), 'O reasoner');
-    assert.equal(await nav.evaluate(() => document.activeElement.id), 'summaryModelButton');
-    // Down on the button reopens it at the chosen model; Escape closes it and gives focus back.
-    await nav.keyboard.press('ArrowDown');
+    assert.equal(await nav.evaluate(() => document.activeElement.id), 'dashboardMoreButton');
+    // Reopened, it starts at the chosen model; Escape closes it and gives focus back to ⋯.
+    await more(nav, '#summaryModelButton');
     assert.equal(await nav.evaluate(() => document.activeElement.textContent), 'O reasoner');
     await nav.keyboard.press('Escape');
     assert.equal(await nav.isVisible('#summaryModelMenu'), false);
-    assert.equal(await nav.evaluate(() => document.activeElement.id), 'summaryModelButton');
+    assert.equal(await nav.evaluate(() => document.activeElement.id), 'dashboardMoreButton');
     // A click outside closes it too; reopening does not load the list again.
-    await nav.click('#summaryModelButton');
+    await more(nav, '#summaryModelButton');
     await nav.evaluate(() => document.body.click());
     assert.equal(await nav.isVisible('#summaryModelMenu'), false, 'a click outside left the menu open');
     assert.equal(await nav.evaluate(() => window.__sent.filter(m => m.type === 'loadSummaryModels').length), 1, 'the list loaded twice');
     // Pins and the chosen model outlive the page (a reopened dashboard): the button names the model,
     // the list loads at once to check it is still offered, and the menu lists the pins first, ticked.
     const pinnedPage = await openPage(1440, 900);
-    await pinnedPage.locator('#summaryModelButton').waitFor({ state: 'visible' });
+    await pinnedPage.locator('#dashboardMoreButton').waitFor({ state: 'visible' });
     await pinnedPage.waitForFunction(() => document.getElementById('summaryModelName').textContent === 'O reasoner');
     await pinnedPage.locator('#summaryModelMenu .summary-model-pin').first().waitFor({ state: 'attached' });
-    await pinnedPage.click('#summaryModelButton');
+    await more(pinnedPage, '#summaryModelButton');
     await pinnedPage.locator('#summaryModelMenu .summary-model-pin').first().waitFor();
     assert.deepEqual((await pinnedPage.locator('#summaryModelMenu .summary-model-choice').allTextContents()).slice(1, 3), ['Claude fast', 'O reasoner']);
     assert.equal(await pinnedPage.getAttribute('#summaryModelMenu .summary-model-choice[aria-checked="true"]', 'data-model-id'), 'o-reasoner');
@@ -2083,17 +2106,17 @@ async function main() {
         tallestRow: Math.max(...Array.from(document.querySelectorAll('.history-row')).map(row => row.getBoundingClientRect().height)),
         messageWidth: document.querySelector('.history-row .history-message').getBoundingClientRect().width,
         pageOverflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
-        // The review buttons must be fully on screen (the controls row clips, it does not scroll).
-        releaseRight: document.querySelector('.review-current-group').getBoundingClientRect().right,
-        controlsRight: document.querySelector('.history-controls').getBoundingClientRect().right,
-        modelRight: document.querySelector('.toolbar-model').getBoundingClientRect().right,
-        settingsRight: document.getElementById('copilotSettingsButton').getBoundingClientRect().right,
-        releaseText: document.querySelector('.review-current-group').innerText.replace(/\s+/g, ' ').trim()
+        // Every command of the one row is fully on screen, ⋯ included, and none overlaps the title.
+        commands: Array.from(document.querySelectorAll('.dashboard-command-bar button')).map(button => {
+          const box = button.getBoundingClientRect();
+          return { label: button.getAttribute('aria-label'), left: box.left, right: box.right, visible: box.width > 0 };
+        }),
+        barRight: document.querySelector('.dashboard-command-bar').getBoundingClientRect().right,
+        titleRight: document.getElementById('dashboardTitle').getBoundingClientRect().right
       }));
-      assert.ok(layout.releaseRight <= layout.controlsRight, `${width}px: the release review buttons are cut off`);
-      assert.ok(layout.modelRight <= layout.controlsRight, `${width}px: the model select is cut off`);
-      assert.ok(layout.settingsRight <= layout.controlsRight, `${width}px: the Copilot settings button is cut off`);
-      assert.equal(layout.releaseText.toLowerCase(), 'changes commit branch ▾ review ↗');
+      assert.deepEqual(layout.commands.filter(command => !command.visible).map(command => command.label), [], `${width}px: a command is hidden`);
+      assert.ok(layout.commands.every(command => command.right <= layout.barRight + 0.5), `${width}px: a command is cut off`);
+      assert.ok(layout.commands.every(command => command.left >= layout.titleRight), `${width}px: a command covers the title`);
       // The header actions stay inside the header and off the title, which keeps its width.
       await narrow.locator('#commitHeaderActions:not([hidden])').waitFor();
       const headerFit = await narrow.evaluate(() => {
@@ -2118,7 +2141,6 @@ async function main() {
           controlsRight: document.querySelector('.history-controls').getBoundingClientRect().right
         }));
         assert.ok(pill.right <= pill.statusRight && pill.statusRight <= pill.controlsRight, `${width}px: the comparison status is cut off`);
-        assert.equal(await narrow.locator('.toolbar-model').isVisible(), true, `${width}px: the model select is hidden`);
         await snap(narrow, `${name}-compare`);
         await narrow.click('[data-action="clearCommitComparison"]');
       }

@@ -5,7 +5,14 @@ All notable changes to Repository Manager will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [2.14.1] - Unreleased
+## [2.15.0] - Unreleased
+
+### Changed
+
+- The dashboard has one row of commands: Fetch, Pull and Push, New branch, Commit, and **⋯** for the rest (Refresh, Compare branches, Undo, Include remote branches, Review branch, the Copilot model and Copilot settings). Its heading names the repository and branch shown and how many linked repositories are aligned.
+- Review changes is on the changes it reviews (the uncommitted changes, a commit or a comparison); Review branch and the Review tab are in **⋯**.
+- The workspace folder is chosen at the top of the side bar (a Quick Pick), Align is on the **Repositories** title, and Commit on the **Changes** title. The side bar's title has Refresh.
+- The Activity Bar icon shows how many uncommitted changes the repository shown has.
 
 ### Fixed
 
