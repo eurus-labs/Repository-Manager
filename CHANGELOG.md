@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **Fix with Copilot** works on a review of local changes: it edits your uncommitted files while each is still what was reviewed. For any review it now checks that each cited file is still what was reviewed, instead of requiring the reviewed commit to be checked out with no local changes.
+- Deleting a local branch is easier to find: in the Side Bar's **Branches**, each branch other than the current one shows its **×** without hovering, right-click on it offers **Delete Branch…**, and a commit's right-click menu in the history offers **Delete Branch '…'…** for the local branches on it. Each asks, as before, whether origin's branch goes too.
 
 ### Fixed
 

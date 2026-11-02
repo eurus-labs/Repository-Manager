@@ -191,6 +191,11 @@
         "title": "New Clarification for This Requirement",
         "category": "Repository Manager",
         "icon": "$(add)"
+      },
+      {
+        "command": "repositoryManager.deleteBranchFromMenu",
+        "title": "Delete Branch…",
+        "category": "Repository Manager"
       }
     ],
     "viewsContainers": {
@@ -312,6 +317,10 @@
         {
           "command": "repositoryManager.requirements.newItemFor",
           "when": "false"
+        },
+        {
+          "command": "repositoryManager.deleteBranchFromMenu",
+          "when": "false"
         }
       ],
       "view/item/context": [
@@ -339,6 +348,12 @@
           "command": "repositoryManager.requirements.newItemFor",
           "when": "view == repositoryManager.requirementsCatalog && viewItem == requirement",
           "group": "inline@1"
+        }
+      ],
+      "webview/context": [
+        {
+          "command": "repositoryManager.deleteBranchFromMenu",
+          "when": "webviewId == 'repositoryManager.launcher' && webviewSection == 'localBranch'"
         }
       ]
     },

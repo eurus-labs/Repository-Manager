@@ -112,6 +112,9 @@ function registerGit(context: vscode.ExtensionContext, workspaceRoot: string): v
   registerCreateBranchCommand(context, gitOps, repositoryTreeProvider);
   registerReviewCommands(context, workspaceRoot);
   registerDiscardCommands(context, gitOps);
+  // Right-click a local branch in the Side Bar: VS Code's menu passes the row's data-vscode-context.
+  context.subscriptions.push(vscode.commands.registerCommand('repositoryManager.deleteBranchFromMenu',
+    (branch: unknown) => RepositoryManagerPanel.currentPanel?.deleteBranchFromMenu(branch)));
   // The committed side of a changed file opened in the diff editor; registered here, not by the
   // dashboard, so tabs VS Code restores after a reload still show it.
   context.subscriptions.push(vscode.workspace.registerTextDocumentContentProvider(CHANGE_DOCUMENT_SCHEME,

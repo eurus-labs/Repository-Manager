@@ -396,6 +396,16 @@ export class RepositoryManagerPanel {
   }
 
   /** A message for the dashboard webview (the Side Bar forwards its clicks this way). */
+  /**
+   * Delete Branch… from the right-click menu of a branch in the Side Bar (webview/context): the
+   * same path as the row's ×, which asks whether origin's branch goes too.
+   */
+  public async deleteBranchFromMenu(context: unknown): Promise<void> {
+    const value = context && typeof context === 'object' ? context as { repository?: unknown; branch?: unknown; hasRemote?: unknown } : {};
+    if (typeof value.repository !== 'string' || typeof value.branch !== 'string' || !value.branch) { return; }
+    await this._handleMessage({ type: 'deleteBranch', payload: { submodule: value.repository, branch: value.branch, hasRemote: value.hasRemote === true } });
+  }
+
   public post(message: { type: string; payload?: unknown }): Thenable<boolean> {
     return this._panel.webview.postMessage(message);
   }
