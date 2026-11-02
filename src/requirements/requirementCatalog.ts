@@ -11,6 +11,7 @@ import { execFile } from 'child_process';
 import { createHash } from 'crypto';
 import { promises as fs } from 'fs';
 import * as path from 'path';
+import { documentName, documentPlaces, navDocument, NavDocument, PlaceStep } from './documentNav';
 import { DouError, EXPLICIT_ID, PY_SPACE, PY_WORD, codePoints, maskFences, nowIso, parse, pySplitLines, pyStrip } from './douDocument';
 
 // REQ-012, FR-7, REQ-AUTH-3; not CLR-001-Q01 (the last segment must be digits).
@@ -28,7 +29,11 @@ export const CONFIG_NAME = '.dou-editor.json';
 
 /** (id, title, line, excerpt) */
 export type RequirementEntry = [string, string, number, string];
-export interface Requirement { id: string; title: string; file: string; line: number; excerpt: string }
+export interface Requirement {
+  id: string; title: string; file: string; line: number; excerpt: string;
+  /** Where its document is in the documentation's navigation (toctrees), when a toctree reaches it. */
+  place?: PlaceStep[];
+}
 export interface Catalog { configured: boolean; root?: string; requirements: Requirement[]; skipped?: string[]; truncated?: boolean; web?: string | null }
 
 /** At most MAX_EXCERPT code points, as Python slices a str. */
@@ -174,6 +179,7 @@ export async function requirementCatalog(root: string, base = path.dirname(root)
   if (stat?.isFile()) { paths.push(root); }
   if (stat?.isDirectory()) { await walk(root, paths); }
   const requirements: Requirement[] = [], skipped: string[] = [];
+  const documents = new Map<string, NavDocument>();
   for (const candidate of paths.slice(0, MAX_REQUIREMENT_FILES)) {
     const name = posix(path.relative(base, candidate));
     let content: string;
@@ -195,9 +201,16 @@ export async function requirementCatalog(root: string, base = path.dirname(root)
         continue; // a clarification artifact, not a requirement
       } catch { /* a requirement file */ }
     }
+    documents.set(documentName(name), navDocument(content, suffix));
     for (const [id, title, line, text] of requirementsIn(content, suffix)) {
       requirements.push({ id, title, file: name, line, excerpt: text });
     }
+  }
+  // "/" in a toctree starts from the scanned folder (the documentation's source folder).
+  const places = documentPlaces(documents, posix(path.relative(base, stat?.isFile() ? path.dirname(root) : root)));
+  for (const requirement of requirements) {
+    const place = places.get(documentName(requirement.file));
+    if (place) { requirement.place = place; }
   }
   return { configured: true, root: path.basename(root), requirements, skipped, truncated: paths.length > MAX_REQUIREMENT_FILES };
 }

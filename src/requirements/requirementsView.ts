@@ -82,7 +82,8 @@ type ItemNode = { kind: 'item'; file: ClarificationFile; item: ClarificationItem
 export type ClarificationNode = FileNode | ItemNode;
 type RequirementNode = { uri: vscode.Uri; requirement: OutlineRequirement };
 /** A folder of the requirement documents (a project), holding requirements and folders. */
-type RequirementFolderNode = { uri: vscode.Uri; folder: string; label: string; folders: RequirementFolderNode[]; requirements: RequirementNode[]; parent?: RequirementFolderNode };
+/** A folder of the requirement documents, or a document of the navigation (with its order there): a project. */
+type RequirementFolderNode = { uri: vscode.Uri; folder: string; label: string; folders: RequirementFolderNode[]; requirements: RequirementNode[]; parent?: RequirementFolderNode; order?: number };
 /** An item of the current file that clarifies a requirement, under that requirement. */
 type RequirementItemNode = { uri: vscode.Uri; item: OutlineItem; parent: RequirementNode };
 type CatalogNode = RequirementNode | RequirementFolderNode | RequirementItemNode;
@@ -90,15 +91,19 @@ const isFolder = (node: CatalogNode): node is RequirementFolderNode => 'folder' 
 const isItem = (node: CatalogNode): node is RequirementItemNode => 'item' in node;
 
 /**
- * The requirements as a tree of the folders their documents are in, one folder per project: the
- * folders every document shares are left out, and a folder with only one folder in it is joined
- * to it ("sw_reqs/boschkms_usage"). A requirement no document defines stays at the top.
+ * The requirements as a tree of their projects. Where the documentation's navigation (Sphinx
+ * toctrees) reaches a requirement's document, the tree follows it, with the documents' titles in
+ * the navigation's order ("Reprog Indus - Requirements › Reprog Indus - HexOgen"). Otherwise it is
+ * the folders the documents are in: the folders every such document shares are left out, and a
+ * folder with only one folder in it is joined to it ("sw_reqs/boschkms_usage"). A requirement no
+ * document defines stays at the top.
  * The shared folders come from every requirement, before `keep` filters them, so a filter that
  * leaves one requirement still shows it under its project.
  */
 export function requirementTree(uri: vscode.Uri, requirements: OutlineRequirement[], keep: (r: OutlineRequirement) => boolean = () => true): { top: CatalogNode[]; parents: Map<string, RequirementFolderNode> } {
+  const placed = (r: OutlineRequirement) => Boolean(r.place?.length);
   const dirs = requirements.map(r => (r.file || '').split('/').slice(0, -1).filter(Boolean));
-  const located = dirs.filter((_, i) => requirements[i].file);
+  const located = dirs.filter((_, i) => requirements[i].file && !placed(requirements[i]));
   let shared = located.length ? located[0].length : 0;
   for (const dir of located) {
     let n = 0;
@@ -109,9 +114,20 @@ export function requirementTree(uri: vscode.Uri, requirements: OutlineRequiremen
   requirements.forEach((requirement, i) => {
     if (!keep(requirement)) { return; }
     let at = root;
-    if (requirement.file) {
+    if (placed(requirement)) {
+      // Keyed by the titles above it too: two documents may share a title in different places.
+      for (const [n, [title, order]] of requirement.place!.entries()) {
+        const key = `nav:${requirement.place!.slice(0, n + 1).map(step => step[0]).join('\u203a')}`;
+        let next = at.folders.find(f => f.folder === key);
+        if (!next) {
+          next = { uri, folder: key, label: title, folders: [], requirements: [], order };
+          at.folders.push(next);
+        }
+        at = next;
+      }
+    } else if (requirement.file) {
       for (const name of dirs[i].slice(shared)) {
-        let next = at.folders.find(f => f.label === name);
+        let next = at.folders.find(f => f.label === name && f.order === undefined);
         if (!next) {
           next = { uri, folder: at.folder ? `${at.folder}/${name}` : name, label: name, folders: [], requirements: [] };
           at.folders.push(next);
@@ -122,19 +138,23 @@ export function requirementTree(uri: vscode.Uri, requirements: OutlineRequiremen
     at.requirements.push({ uri, requirement });
   });
   const parents = new Map<string, RequirementFolderNode>();
+  // The navigation's order first, then folders by name.
+  const byPlace = (a: RequirementFolderNode, b: RequirementFolderNode) =>
+    a.order !== undefined && b.order !== undefined ? a.order - b.order : a.order !== undefined ? -1 : b.order !== undefined ? 1 : a.label.localeCompare(b.label);
   const join = (folder: RequirementFolderNode, parent?: RequirementFolderNode): RequirementFolderNode => {
-    while (folder.folders.length === 1 && !folder.requirements.length) {
+    // Titled documents keep their own level, as the navigation shows them.
+    while (folder.order === undefined && folder.folders.length === 1 && folder.folders[0].order === undefined && !folder.requirements.length) {
       const only = folder.folders[0];
       folder = { ...only, label: `${folder.label}/${only.label}` };
     }
     folder.parent = parent;
     folder.folders = folder.folders.map(child => join(child, folder));
-    folder.folders.sort((a, b) => a.label.localeCompare(b.label));
+    folder.folders.sort(byPlace);
     for (const node of folder.requirements) { parents.set(node.requirement.id, folder); }
     return folder;
   };
   root.folders = root.folders.map(child => join(child));
-  root.folders.sort((a, b) => a.label.localeCompare(b.label));
+  root.folders.sort(byPlace);
   return { top: [...root.folders, ...root.requirements], parents };
 }
 
@@ -357,8 +377,8 @@ export class RequirementsCatalogProvider implements vscode.TreeDataProvider<Cata
       const all = (f: RequirementFolderNode): OutlineRequirement[] => [...f.requirements.map(n => n.requirement), ...f.folders.flatMap(all)];
       const list = all(node);
       tree.description = `${list.filter(r => r.ready).length}/${list.length} Ready`;
-      tree.tooltip = node.folder;
-      tree.iconPath = new vscode.ThemeIcon('folder');
+      tree.tooltip = node.order === undefined ? node.folder : node.folder.slice(4).split('\u203a').join(' › ');
+      tree.iconPath = new vscode.ThemeIcon(node.order === undefined ? 'folder' : 'book');
       return tree;
     }
     const { uri, requirement: r } = node;

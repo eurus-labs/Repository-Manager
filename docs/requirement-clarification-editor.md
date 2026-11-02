@@ -15,6 +15,29 @@ requests and agents edit it as text.
 - **Requirements** has its own icon in the Activity Bar, beside Repository
   Manager, so opening it never opens the Git dashboard. Its side bar is where you
   choose what the editor shows:
+  - **Requirements** (first, since 2.16) lists the requirements the current
+    file's items clarify (the file last shown in a Requirement editor) by their
+    ID only (titles are long; the tooltip and the editor show them), each Ready
+    or with how many of the six conditions are met. Each requirement opens to
+    the items of that file that clarify it; ＋ on a requirement adds an item for
+    it, which then appears under it.
+    They are grouped by project. Where the documentation's navigation (Sphinx
+    `.. toctree::`, or a MyST `{toctree}` fence) reaches a requirement's
+    document, the tree follows it as the built site's side bar does: each
+    document is a level named by its title, in the toctrees' order; the start
+    page (a top document whose toctrees have captions) shows its captions
+    instead of its own title; a top document is one no toctree lists, or, in a
+    toctree that points back up, the shallowest one. `Title <doc>` entries,
+    `/`-rooted entries and `:glob:` are read; `self` and links are skipped.
+    Requirements whose document no toctree reaches are grouped by folder: the
+    folders all such documents share are left out, a folder holding only one
+    folder is joined to it (`sw_reqs/boschkms_usage`). Each project says how
+    many are Ready. (Folders were the only grouping in 2.15, decided then
+    because repositories have no common project field; the user then asked for
+    the projects as their documentation site shows them.) The line
+    above says how many are Ready and where they come from. The funnel filters (Not ready, Ready, without a
+    clarification, with unresolved clarifications, not found); ⚙ changes the
+    source.
   - **Clarifications** lists the workspace's clarification files (Markdown whose
     front matter has `schema_version: 1`, `2` or `3`), each with how many items
     are still open, and opens to their items. A file open in the editor lists its
@@ -23,19 +46,6 @@ requests and agents edit it as text.
     and opens as text. The funnel filters by status, and typing in the list
     filters it as in any VS Code tree. **New Clarification File** (in the title)
     writes the v3 template; ＋ on a file adds an item to it.
-  - **Requirements** lists the requirements the current file's items clarify
-    (the file last shown in a Requirement editor) by their ID only (titles are
-    long; the tooltip and the editor show them), each Ready or with how many
-    of the six conditions are met. They are grouped as a tree of the folders
-    their documents are in, one per project: the folders all documents share
-    are left out, a folder holding only one folder is joined to it
-    (`sw_reqs/boschkms_usage`), and each folder says how many are Ready.
-    Projects are read from the folders because requirement repositories have
-    no common layout or project field (decided with the user, 2.15); a fixed
-    project depth can be added as an option if a team needs one. The line
-    above says how many are Ready and where they come from. The funnel filters (Not ready, Ready, without a
-    clarification, with unresolved clarifications, not found); ⚙ changes the
-    source.
   - A click shows that item or requirement in the editor; what the editor shows
     (after a requirement chip, a Next action or a new item) is selected in the
     side bar too.
@@ -308,8 +318,15 @@ the source (where the requirements are read from) above it, its title and
   propose, with the PO's decision on each).
 
 **"+ Create clarification"** adds a new item to the open file with that
-requirement filled in; this is the usual way to start a v3 item. IDs in the form
-are chips that open this view.
+requirement filled in (in the field each schema reads: `Requirement` in v3,
+`Related requirements` in v2, `Requirement impact` in v1; before 2.16 the v1 and
+v2 items were left unlinked); this is the usual way to start a v3 item. IDs in
+the form are chips that open this view.
+
+**"+ Propose acceptance criterion"** (Acceptance tab, v3 files) puts the cursor
+in **Proposed acceptance criteria** of the requirement's open item in this file
+(else its first item), with the `Pending` placeholder selected; with no item in
+this file it makes one for the requirement first.
 
 The folder is scanned recursively for `.rst` and `.md` files (no
 symlinks, hidden folders or `node_modules`; at most 5,000 files of 2 MB each).

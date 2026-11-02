@@ -854,7 +854,7 @@ function outline() {
     const failed = new Set(reasons.map(r => r.rule));
     return { id, title: defs[0]?.title || '', ready: !reasons.length, empty: !linked.length, missing: catalog.configured && !defs.length,
       unresolved: linked.some(item => UNRESOLVED.has(item.values.Status)), met: READY_RULES.filter(([rule]) => !failed.has(rule)).length, rules: READY_RULES.length,
-      next: reasons[0]?.next || '', clarifications: linked.length, file: defs[0]?.file || '' };
+      next: reasons[0]?.next || '', clarifications: linked.length, file: defs[0]?.file || '', place: defs[0]?.place || [] };
   });
   const unsavedFields = sourceMode ? 0 : values.filter((v, i) => v.trim() !== baseline[i]).length;
   return {

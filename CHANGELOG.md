@@ -10,6 +10,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **Agent** in the Activity Bar: give the agent a task (a goal and its acceptance criteria) and it drafts a plan of steps with Copilot. Approving the plan freezes the goal and criteria and creates the task's own branch; each step runs only when you press Run, may change only the files it lists, and is checked by the repository's scripts (`npm run`), which you approve once per script, together with its command and its npm pre/post hooks (a step cannot change what a check runs). Accept keeps the step (when a check failed, **Accept anyway** keeps it and marks the failing checks), Retry undoes it and runs it again with what failed, Stop undoes a step waiting for review. The Tasks view's badge and the status bar show the tasks waiting for you; tasks and their run logs stay on this machine.
+- **Requirements** side bar: each requirement opens to the clarification items that clarify it, and its **＋** adds an item for that requirement, which then appears under it.
+- The **Acceptance** tab of a requirement has **+ Propose acceptance criterion**: it goes to the criteria field of the requirement's open item, or creates an item for the requirement first.
+
+### Changed
+
+- **Requirements** comes before **Clarifications** in the Requirements side bar.
+- Requirements are grouped by project as the documentation site shows them: where the Sphinx toctrees reach a requirement's document, the tree follows them, with the documents' titles in the navigation's order. Requirements outside the toctrees are still grouped by folder.
+
+### Fixed
+
+- **+ Create clarification** in a schema v1 or v2 file links the new item to the requirement.
 
 ## [2.15.0] - 2026-11-02
 

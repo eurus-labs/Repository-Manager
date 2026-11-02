@@ -251,6 +251,33 @@ async function main() {
   assert.equal(shownReq.requirement.id, 'SW_REQ_2');
   assert.equal(reqs.provider.getParent(shownReq), projects[0]);
   assert.equal(reqs.provider.getParent(projects[0]), undefined);
+  // Where the documentation's navigation reaches a document, the tree follows it: titles, in the
+  // navigation's order (not alphabetical), one level per document (never joined), beside folders.
+  const nav = (...steps) => steps.map(([t, o]) => [t, o]);
+  const inNav = { ...outline, selected: { kind: 'req', id: 'SW_REQ_9' }, requirements: [
+    { ...base, id: 'SW_REQ_7', ready: true, file: 'docs/reprog/zeta/sw_reqs.rst', place: nav(['Software Requirements', 0], ['Reprog Indus - Requirements', 1], ['Reprog Indus - HexOgen', 2], ['HexOgen software requirements', 5]) },
+    { ...base, id: 'SW_REQ_8', ready: false, file: 'docs/reprog/renault/index.rst', place: nav(['Software Requirements', 0], ['Reprog Indus - Requirements', 1], ['Reprog Indus - Renault KMS Middleware', 3]) },
+    { ...base, id: 'SW_REQ_9', ready: false, file: 'docs/reprog/tools/a.rst', place: nav(['Software Requirements', 0], ['Reprog Indus - Requirements', 1], ['Reprog Indus - HexUlp', 4]) },
+    { ...base, id: 'SW_REQ_10', ready: false, file: 'loose/x/y.rst' },
+    { ...base, id: 'SW_REQ_11', ready: false, file: 'loose/z/w.rst' }] };
+  await listener({ type: 'outline', outline: inNav });
+  await tick();
+  const navTop = await labels(reqs.provider);
+  assert.deepEqual(navTop.map(t => [t.label, t.iconPath.id]), [['Software Requirements', 'book'], ['x', 'folder'], ['z', 'folder']]);
+  const caption = reqs.provider.getChildren()[0];
+  const reprog = reqs.provider.getChildren(caption)[0];
+  assert.deepEqual((await labels(reqs.provider, caption)).map(t => [t.label, t.description]), [['Reprog Indus - Requirements', '1/3 Ready']]);
+  assert.deepEqual((await labels(reqs.provider, reprog)).map(t => t.label), ['Reprog Indus - HexOgen', 'Reprog Indus - Renault KMS Middleware', 'Reprog Indus - HexUlp']);
+  const hexogen = reqs.provider.getChildren(reprog)[0];
+  assert.deepEqual((await labels(reqs.provider, hexogen)).map(t => t.label), ['HexOgen software requirements']);
+  assert.equal((await labels(reqs.provider, reprog))[0].tooltip, 'Software Requirements › Reprog Indus - Requirements › Reprog Indus - HexOgen');
+  // What the editor shows is revealed inside its document, up to the top.
+  const shownNav = reqs.revealed.at(-1)[0];
+  assert.equal(shownNav.requirement.id, 'SW_REQ_9');
+  assert.equal(reqs.provider.getParent(reqs.provider.getParent(shownNav)), reprog);
+  await listener({ type: 'outline', outline: inFolders });
+  await tick();
+
   // A filter that leaves one requirement keeps it under its project.
   prompts.pickLabel.push('Ready');
   await commands.get('repositoryManager.requirements.filterRequirements')();

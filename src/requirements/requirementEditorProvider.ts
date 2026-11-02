@@ -30,6 +30,8 @@ export interface OutlineRequirement {
   met: number; rules: number; next: string; clarifications: number;
   /** The document that defines it, relative to the repository (empty when none does). */
   file?: string;
+  /** Where that document is in the documentation's navigation: titles, with their order there. */
+  place?: Array<[string, number]>;
 }
 export interface PageOutline {
   id: string; title: string; version: number; items: OutlineItem[]; requirements: OutlineRequirement[];
