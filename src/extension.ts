@@ -20,19 +20,73 @@ let repositoryTreeProvider: RepositoryTreeProvider;
 let gitOps: GitOperations;
 let prManager: PRManager;
 
-export function activate(context: vscode.ExtensionContext) {
-  console.log('Repository Manager extension is now active');
+/** Shown by a command that needs a folder when the window has none. */
+export const NO_FOLDER_MESSAGE = 'Repository Manager: open a folder to use this command.';
 
-  // Before the workspace check: a clarification file opens in the Requirement editor anywhere.
-  registerRequirements(context);
+export function activate(context: vscode.ExtensionContext) {
+  const log = vscode.window.createOutputChannel('Repository Manager');
+  context.subscriptions.push(log);
+  log.appendLine(`Activating Repository Manager ${context.extension?.packageJSON?.version ?? ''}`.trim());
+
+  // Each part registers on its own: one that throws is logged and reported, and the others
+  // (above all the Git commands) are still registered, so their commands are never "not found".
+  const failed: string[] = [];
+  const step = (name: string, register: () => void): void => {
+    try {
+      register();
+    } catch (error) {
+      failed.push(name);
+      const detail = error instanceof Error ? (error.stack || error.message) : String(error);
+      log.appendLine(`${name} failed to start: ${detail}`);
+      console.error(`Repository Manager: ${name} failed to start`, error);
+    }
+  };
 
   const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  log.appendLine(workspaceRoot ? `Workspace folder: ${workspaceRoot}` : 'No workspace folder open');
 
+  if (workspaceRoot) {
+    step('Git commands', () => registerGit(context, workspaceRoot));
+  } else {
+    // The commands are declared in package.json, so VS Code shows them (and the Activity Bar
+    // shows the launcher) with no folder too: register them to say why they cannot run.
+    step('Git commands', () => registerWithoutFolder(context));
+  }
+  // A clarification file opens in the Requirement editor with or without a folder.
+  step('Requirements', () => registerRequirements(context));
+
+  const declared: string[] = (context.extension?.packageJSON?.contributes?.commands ?? []).map((c: { command: string }) => c.command);
+  void Promise.resolve(vscode.commands.getCommands(true)).then(registered => {
+    const missing = declared.filter(id => !registered.includes(id));
+    log.appendLine(missing.length ? `Commands not registered: ${missing.join(', ')}` : `All ${declared.length} commands registered`);
+  }, () => undefined);
+
+  if (failed.length) {
+    void vscode.window.showErrorMessage(`Repository Manager: ${failed.join(' and ')} failed to start. See Output → Repository Manager.`, 'Show Output')
+      .then(choice => { if (choice) { log.show(); } });
+    return;
+  }
   if (!workspaceRoot) {
-    vscode.window.showWarningMessage('Repository Manager: No workspace folder open');
     return;
   }
 
+  // Show welcome message on first activation
+  const hasShownWelcome = context.globalState.get('repositoryManager.welcomeShown');
+  if (!hasShownWelcome) {
+    vscode.window.showInformationMessage(
+      'Repository Manager is ready! Open the panel with Ctrl+Shift+G M (Cmd+Shift+G M on Mac)',
+      'Open Panel'
+    ).then(selection => {
+      if (selection === 'Open Panel') {
+        vscode.commands.executeCommand('repositoryManager.openPanel');
+      }
+    });
+    context.globalState.update('repositoryManager.welcomeShown', true);
+  }
+}
+
+/** The Git dashboard, its commands and its side bar, for the window's first folder. */
+function registerGit(context: vscode.ExtensionContext, workspaceRoot: string): void {
   // Initialize services
   gitOps = new GitOperations(workspaceRoot);
   prManager = new PRManager(workspaceRoot);
@@ -78,19 +132,13 @@ export function activate(context: vscode.ExtensionContext) {
   watcher.onDidCreate(() => repositoryTreeProvider.refresh());
   watcher.onDidDelete(() => repositoryTreeProvider.refresh());
   context.subscriptions.push(watcher);
+}
 
-  // Show welcome message on first activation
-  const hasShownWelcome = context.globalState.get('repositoryManager.welcomeShown');
-  if (!hasShownWelcome) {
-    vscode.window.showInformationMessage(
-      'Repository Manager is ready! Open the panel with Ctrl+Shift+G M (Cmd+Shift+G M on Mac)',
-      'Open Panel'
-    ).then(selection => {
-      if (selection === 'Open Panel') {
-        vscode.commands.executeCommand('repositoryManager.openPanel');
-      }
-    });
-    context.globalState.update('repositoryManager.welcomeShown', true);
+/** With no folder open, every Git command shows an error instead of being "not found". */
+function registerWithoutFolder(context: vscode.ExtensionContext): void {
+  const declared: string[] = (context.extension?.packageJSON?.contributes?.commands ?? []).map((c: { command: string }) => c.command);
+  for (const id of declared.filter(id => !id.startsWith('repositoryManager.requirements.'))) {
+    context.subscriptions.push(vscode.commands.registerCommand(id, () => vscode.window.showErrorMessage(NO_FOLDER_MESSAGE)));
   }
 }
 

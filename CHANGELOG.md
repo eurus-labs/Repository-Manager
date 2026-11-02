@@ -5,6 +5,13 @@ All notable changes to Repository Manager will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.14.1] - Unreleased
+
+### Fixed
+
+- Repository Manager's commands are always registered: with no folder open, Open Panel and the Git commands show an error saying to open a folder instead of VS Code's "command not found".
+- If one part of the extension fails to start, its commands are the only ones lost: the error is shown and written to **Output → Repository Manager**, and the Git commands keep working when Requirements fails (and the other way round).
+
 ## [2.14.0] - 2026-11-02
 
 ### Changed
