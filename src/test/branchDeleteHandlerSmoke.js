@@ -53,6 +53,21 @@ async function main() {
   await handleDeleteBranch(ctx, { submodule: '.', branch: 'old', deleteRemote: true });
   assert.equal(deleted.length, before + 1);
   assert.equal(deleted.at(-1).deleteRemote, false);
+  // Git, not the page, says whether origin has the branch: a page that did not know yet (a menu
+  // opened before its branch list arrived) still gets the choice to delete origin's too.
+  ctx.gitOps.getBranches = async () => [{ name: 'early', hasRemote: true }, { name: 'gone', hasRemote: undefined }];
+  answer = 'Delete Local and origin/early';
+  await handleDeleteBranch(ctx, { submodule: '.', branch: 'early', hasRemote: false });
+  assert.deepEqual(dialogs.at(-1).actions, ['Delete Local Branch', 'Delete Local and origin/early']);
+  assert.deepEqual(deleted.at(-1), { submodule: '.', branch: 'early', deleteRemote: true });
+  // And the other way: a stale page saying it has one does not offer to delete a remote that is gone.
+  answer = 'Delete Local Branch';
+  await handleDeleteBranch(ctx, { submodule: '.', branch: 'gone', hasRemote: true });
+  assert.deepEqual(dialogs.at(-1).actions, ['Delete Local Branch']);
+  // If Git cannot be asked, the page's word is kept.
+  ctx.gitOps.getBranches = async () => { throw new Error('git failed'); };
+  await handleDeleteBranch(ctx, { submodule: '.', branch: 'topic', hasRemote: true });
+  assert.deepEqual(dialogs.at(-1).actions, ['Delete Local Branch', 'Delete Local and origin/topic']);
   console.log('Branch delete handler smoke passed');
 }
 

@@ -786,6 +786,11 @@ async function main() {
       return label.right > button.left + 1;
     });
     assert.equal(overlap, false, 'the branch name runs under the ×');
+    // On touch there is no hover: Reset to origin stays shown, and the name leaves room for both.
+    const touchRules = await side.evaluate(() => [...document.styleSheets].flatMap(sheet => [...sheet.cssRules])
+      .filter(rule => rule.media && /pointer:\s*coarse/.test(rule.media.mediaText)).flatMap(rule => [...rule.cssRules].map(inner => inner.cssText)).join('\n'));
+    assert.match(touchRules, /\.sidebar-ref-row\.has-delete \.sidebar-ref-origin-action \{ visibility: visible; \}/);
+    assert.match(touchRules, /\.sidebar-ref-row\.has-delete \.sidebar-ref-item[^{]*\{ padding-right: 102px; \}/);
     await snap(side, '01k-sidebar-branch-delete');
 
     // Diff shows file line numbers and hides git's file headers.

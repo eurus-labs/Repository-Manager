@@ -1406,8 +1406,11 @@ body {
 }
 
 @media (pointer: coarse) {
-  .branches-section .sidebar-ref-item { padding-right: 102px; }
+  .branches-section .sidebar-ref-item,
+  .branches-section .sidebar-ref-row.has-delete .sidebar-ref-item { padding-right: 102px; }
   .sidebar-ref-actions { opacity: 1; pointer-events: auto; }
+  /* No hover on touch: Reset to origin stays shown beside the ×. */
+  .sidebar-ref-row.has-delete .sidebar-ref-origin-action { visibility: visible; }
 }
 
 .sidebar-reference-summary {
