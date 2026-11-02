@@ -533,6 +533,23 @@ async function main() {
       ? [command, JSON.parse(left.query).path, right.fsPath.endsWith(path.join('src', 'app.txt')), title] : [command, left.fsPath.endsWith('live-new.txt')]);
     assert.deepEqual(opened.sort(), [['vscode.diff', 'src/app.txt', true, 'app.txt (HEAD ↔ Working Tree)'], ['vscode.open', true]]);
     await snap(side, '01f-sidebar-changes');
+    // A short Side Bar (a low window, or other views in the same area): Changes keeps its rows
+    // instead of shrinking to nothing, and the view scrolls when Branches and Changes do not fit.
+    for (const height of [300, 420]) {
+      await side.setViewportSize({ width: 300, height });
+      const fit = await side.evaluate(() => {
+        const list = document.querySelector('#dashboardChanges');
+        const scroller = [...document.querySelectorAll('*')].find(el => el.scrollHeight > el.clientHeight + 1 && /(auto|scroll)/.test(getComputedStyle(el).overflowY))
+          || document.scrollingElement;
+        list.querySelector('.sidebar-change-item').scrollIntoView({ block: 'nearest' });
+        const row = list.querySelector('.sidebar-change-item').getBoundingClientRect();
+        return { listHeight: list.getBoundingClientRect().height, rowVisible: row.height > 0 && row.top >= 0 && row.bottom <= window.innerHeight + 1, scrolls: Boolean(scroller) };
+      });
+      assert.ok(fit.listHeight >= 60, `Changes is ${fit.listHeight}px tall in a ${height}px Side Bar`);
+      assert.ok(fit.rowVisible, `a change cannot be scrolled into view in a ${height}px Side Bar`);
+      if (height === 300) await snap(side, '01f-sidebar-changes-short');
+    }
+    await side.setViewportSize({ width: 300, height: 860 });
     // Several files at once, in the Side Bar only: a checkbox, or Ctrl+click (the keys reach the
     // dashboard). The dashboard's list has no checkboxes, and Ctrl+click there just shows the diff.
     await side.click('#dashboardChanges .sidebar-change-item[data-path="lib-b"]', { modifiers: ['Control'] });

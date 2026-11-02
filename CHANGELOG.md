@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **+ Create clarification** in a schema v1 or v2 file links the new item to the requirement.
+- In the Side Bar, **Changes** stays visible when the Side Bar is short: the list no longer shrinks to nothing, and the Side Bar scrolls when Branches and Changes do not both fit.
 
 ## [2.15.0] - 2026-11-02
 
