@@ -65,4 +65,4 @@ The proposed approach, its impact and risks, and how it will be verified.
 
 **Next action**
 
-Owner (name): the next step.
+The next step.

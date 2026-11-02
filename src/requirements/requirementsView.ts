@@ -89,8 +89,10 @@ const isFolder = (node: CatalogNode): node is RequirementFolderNode => 'folder' 
  * The requirements as a tree of the folders their documents are in, one folder per project: the
  * folders every document shares are left out, and a folder with only one folder in it is joined
  * to it ("sw_reqs/boschkms_usage"). A requirement no document defines stays at the top.
+ * The shared folders come from every requirement, before `keep` filters them, so a filter that
+ * leaves one requirement still shows it under its project.
  */
-export function requirementTree(uri: vscode.Uri, requirements: OutlineRequirement[]): { top: CatalogNode[]; parents: Map<string, RequirementFolderNode> } {
+export function requirementTree(uri: vscode.Uri, requirements: OutlineRequirement[], keep: (r: OutlineRequirement) => boolean = () => true): { top: CatalogNode[]; parents: Map<string, RequirementFolderNode> } {
   const dirs = requirements.map(r => (r.file || '').split('/').slice(0, -1).filter(Boolean));
   const located = dirs.filter((_, i) => requirements[i].file);
   let shared = located.length ? located[0].length : 0;
@@ -101,6 +103,7 @@ export function requirementTree(uri: vscode.Uri, requirements: OutlineRequiremen
   }
   const root: RequirementFolderNode = { uri, folder: '', label: '', folders: [], requirements: [] };
   requirements.forEach((requirement, i) => {
+    if (!keep(requirement)) { return; }
     let at = root;
     if (requirement.file) {
       for (const name of dirs[i].slice(shared)) {
@@ -282,7 +285,7 @@ export class RequirementsCatalogProvider implements vscode.TreeDataProvider<Cata
     if (!current) { return undefined; }
     if (!this.tree) {
       const keep = REQUIREMENT_FILTERS.find(([key]) => key === this.filter)?.[2] ?? (() => true);
-      this.tree = requirementTree(current.uri, current.outline.requirements.filter(keep));
+      this.tree = requirementTree(current.uri, current.outline.requirements, keep);
     }
     return this.tree;
   }

@@ -215,6 +215,13 @@ async function main() {
   assert.equal(shownReq.requirement.id, 'SW_REQ_2');
   assert.equal(reqs.provider.getParent(shownReq), projects[0]);
   assert.equal(reqs.provider.getParent(projects[0]), undefined);
+  // A filter that leaves one requirement keeps it under its project.
+  prompts.pickLabel.push('Ready');
+  await commands.get('repositoryManager.requirements.filterRequirements')();
+  assert.deepEqual((await labels(reqs.provider)).map(t => t.label), ['proj_a/sw_reqs/usage']);
+  assert.deepEqual((await labels(reqs.provider, reqs.provider.getChildren()[0])).map(t => t.label), ['SW_REQ_1']);
+  prompts.pickLabel.push('All requirements');
+  await commands.get('repositoryManager.requirements.filterRequirements')();
   await listener({ type: 'outline', outline });
   await tick();
 
