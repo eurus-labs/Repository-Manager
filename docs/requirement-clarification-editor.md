@@ -24,8 +24,12 @@ requests and agents edit it as text.
     filters it as in any VS Code tree. **New Clarification File** (in the title)
     writes the v3 template; ＋ on a file adds an item to it.
   - **Requirements** lists the requirements the current file's items clarify
-    (the file last shown in a Requirement editor), each Ready or with how many
-    of the six conditions are met; the line above says how many are Ready and
+    (the file last shown in a Requirement editor) by their ID only (titles are
+    long; the tooltip and the editor show them), each Ready or with how many
+    of the six conditions are met. They are grouped as a tree of the folders
+    their documents are in, one per project: the folders all documents share
+    are left out, a folder holding only one folder is joined to it
+    (`sw_reqs/boschkms_usage`), and each folder says how many are Ready; the line above says how many are Ready and
     where they come from. The funnel filters (Not ready, Ready, without a
     clarification, with unresolved clarifications, not found); ⚙ changes the
     source.
@@ -118,7 +122,7 @@ Artifact: ID, Context, Scope, and `## Discussions`. Each item keeps the stable
 Understanding may explicitly say what is unknown. Analysis / Proposal should
 cover approach, impact, risks and verification where known. Use Pending or
 Not applicable with a reason; never interpret unknown impact as no impact.
-Next action should include an owner when investigation remains open.
+Next action says the next step. Do not put names in it: the file is shared.
 
 Dates are ISO 8601 with timezone (`Z` is accepted). Creation date is immutable
 after first save. Updated at changes automatically on Save only for changed items.
@@ -175,7 +179,7 @@ Markdown reads in the same order as the form:
   - Visual aids: wireframes, mockups or prototypes (see below)
   - References
 - **3 · History**: the responses
-- **4 · Next action**: `Owner: next step`; the form warns when an open item has no owner
+- **4 · Next action**: the next step (no owner or names: the file is shared)
 
 **Status is the only state.** Responses have no type of their own. Resolved
 requires every question to be ticked; Save refuses it otherwise.
@@ -260,7 +264,8 @@ Requirements view, use **Set source… / Change source…**:
   extension's storage (VS Code's global storage for Repository Manager, under
   `requirements/`, one copy per URL, branch and folder) and fetches the branch
   when a file of the repository first
-  opens and on **Sync now**. You do not
+  opens and on **Sync now**. Long paths are allowed (`core.longpaths`), so deep
+  requirement folders also sync on Windows. You do not
   check the repository out yourself, and Ready is judged on that branch rather
   than on whatever happens to be checked out on your computer.
 - **Folder on this computer**: a path, absolute or relative to the root of this

@@ -28,6 +28,8 @@ export interface OutlineItem { id: string; status: string; summary: string; requ
 export interface OutlineRequirement {
   id: string; title: string; ready: boolean; empty: boolean; missing: boolean; unresolved: boolean;
   met: number; rules: number; next: string; clarifications: number;
+  /** The document that defines it, relative to the repository (empty when none does). */
+  file?: string;
 }
 export interface PageOutline {
   id: string; title: string; version: number; items: OutlineItem[]; requirements: OutlineRequirement[];

@@ -284,7 +284,9 @@ export function webBase(repo: string, commit?: string): string | null {
 export function git(args: string[], cwd?: string): Promise<string> {
   const env = { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_SSH_COMMAND: process.env.GIT_SSH_COMMAND || 'ssh -o BatchMode=yes' };
   return new Promise((resolve, reject) => {
-    execFile('git', args, { cwd, env, timeout: 180_000, maxBuffer: 16 * 1024 * 1024, windowsHide: true }, (error, stdout, stderr) => {
+    // core.longpaths: requirement folders nest deep, past Windows' 260-character limit
+    // ("Filename too long"); other systems ignore it.
+    execFile('git', ['-c', 'core.longpaths=true', ...args], { cwd, env, timeout: 180_000, maxBuffer: 16 * 1024 * 1024, windowsHide: true }, (error, stdout, stderr) => {
       if (!error) { resolve(stdout); return; }
       const code = (error as NodeJS.ErrnoException).code;
       if (code === 'ENOENT') { reject(new Error('git is not installed or not on PATH.')); return; }

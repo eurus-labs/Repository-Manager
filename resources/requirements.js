@@ -24,7 +24,7 @@ const HINTS = {
   'Desired outcome': 'The functionality, feature or result wanted, stated so it can be checked.',
   'Requirement': 'The one requirement this item clarifies, e.g. REQ-012; Pending until known; None when the item is not about a requirement.',
   'Questions': 'What is known, then each open question as "- [ ] …"; tick "- [x]" when answered. Unticked questions keep the requirement Not ready.',
-  'Next action': 'Owner: next step, e.g. "Dev (Minh): ask the API owner for the retry contract".',
+  'Next action': 'The next step, e.g. "Ask for the retry contract of the API".',
   'Approach': 'The proposed approach, with its impact, risks and how to verify it.',
   'Proposed acceptance criteria': 'Checkable conditions, one per line, proposed for the PO to decide. Record the PO decision as a History event.',
   'Visual aids': 'One per line: "Label: target". Target: an https link (previewed if it ends in .png/.jpg/.gif/.webp) or an image path relative to this file.',
@@ -150,8 +150,6 @@ function itemFacts(item) {
     let states = [];
     try { states = criteriaStates(value('Proposed acceptance criteria') || '', history || [], aidsOf(item)); } catch { /* reported on save */ }
     facts.criteria = { total: states.length, accepted: states.filter(s => s.state === 'accepted').length };
-    const next = (value('Next action') || '').trim().match(/^([^:\n]{2,60}):\s*\S/);
-    facts.owner = next ? next[1].trim() : '';
     facts.outcome = value('Desired outcome') || '';
   }
   facts.requirements = requirementsOf(doc.version, value(REQUIREMENT_FIELD[doc.version]) || '');
@@ -160,7 +158,7 @@ function itemFacts(item) {
   return facts;
 }
 
-// The strip under an item's title: what keeps it from being resolved, and who acts next.
+// The strip under an item's title: what keeps it from being resolved.
 function drawFacts(item) {
   const section = document.getElementById(item);
   if (!section) return;
@@ -171,11 +169,6 @@ function drawFacts(item) {
   if (facts.questions) cells.push(cell('Questions', `${facts.questions.done} / ${facts.questions.total} answered`, facts.questions));
   if (facts.criteria) cells.push(cell('Acceptance', `${facts.criteria.accepted} / ${facts.criteria.total} accepted`, { done: facts.criteria.accepted, total: facts.criteria.total }));
   if (facts.responses !== undefined) cells.push(cell('Responses', String(facts.responses)));
-  if (facts.owner !== undefined) {
-    const owner = cell('Owner', facts.owner || 'None');
-    if (!facts.owner && UNRESOLVED.has(facts.status)) owner.classList.add('missing');
-    cells.push(owner);
-  }
   section.querySelector('.facts').replaceChildren(...cells);
   section.querySelector('.facts').hidden = !cells.length;
   section.querySelector('.clarifies').replaceChildren(...(facts.requirements.length ? [el('span', { className: 'note', textContent: 'Clarifies' }),
@@ -302,17 +295,6 @@ function renderField(f, i) {
       refViews.push(draw);
       draw();
       area.before(list);  // the checklist is what people use; the text below edits it in full
-    }
-    if (f.inquiry && doc.version === 3 && f.label === 'Next action') {
-      const warning = el('div', { className: 'warn' });
-      const check = () => {
-        const status = values[fieldIndex(f.inquiry, 'Status')];
-        warning.textContent = UNRESOLVED.has(status) && !/^[^:\n]{2,60}:\s*\S/.test(values[i].trim()) ? 'Name an owner: “Owner: next step”.' : '';
-      };
-      area.addEventListener('input', check);
-      refViews.push(check);
-      check();
-      wrapper.append(warning);
     }
     if (f.inquiry && doc.version === 3 && f.label === 'Proposed acceptance criteria') {
       const draw = criteriaView(f.inquiry, i, area);
@@ -872,7 +854,7 @@ function outline() {
     const failed = new Set(reasons.map(r => r.rule));
     return { id, title: defs[0]?.title || '', ready: !reasons.length, empty: !linked.length, missing: catalog.configured && !defs.length,
       unresolved: linked.some(item => UNRESOLVED.has(item.values.Status)), met: READY_RULES.filter(([rule]) => !failed.has(rule)).length, rules: READY_RULES.length,
-      next: reasons[0]?.next || '', clarifications: linked.length };
+      next: reasons[0]?.next || '', clarifications: linked.length, file: defs[0]?.file || '' };
   });
   const unsavedFields = sourceMode ? 0 : values.filter((v, i) => v.trim() !== baseline[i]).length;
   return {
