@@ -5,6 +5,12 @@ All notable changes to Repository Manager will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- In the Side Bar, **Changes** stays visible when the Side Bar is short: the list no longer shrinks to nothing, and the Side Bar scrolls when Branches and Changes do not both fit.
+
 ## [2.16.0] - 2026-11-02
 
 ### Added
