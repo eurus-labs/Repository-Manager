@@ -122,7 +122,7 @@ async function main() {
 
   /** Opens `target` the way VS Code opens a custom editor: openCustomDocument, then resolve. */
   let pageCount = 0;
-  const open = async (target, { theme = 'dark', width = 1280, height = 900, backupId } = {}) => {
+  const open = async (target, { theme = 'dark', width = 1280, height = 900, backupId, onReady } = {}) => {
     const document = await provider.openCustomDocument(fileUri(target), { backupId });
     let listener;
     const page = await browser.newPage({ viewport: { width, height } });
@@ -130,6 +130,7 @@ async function main() {
       active: true,
       reveal() {},
       onDidDispose() {},
+      onDidChangeViewState() {},
       webview: {
         options: {}, html: '', cspSource: origin,
         asWebviewUri: uri => `${origin}/resources/${path.basename(uri.fsPath)}`,
@@ -142,7 +143,10 @@ async function main() {
     host.editors.push(editor);
     page.on('pageerror', error => problems.push(`page: ${error.message}`));
     page.on('console', message => { if (/Content Security Policy|Refused/.test(message.text())) { problems.push(`csp: ${message.text()}`); } });
-    await page.exposeFunction('__postToHost', message => listener(message));
+    await page.exposeFunction('__postToHost', async message => {
+      await listener(message);
+      if (message.type === 'ready' && onReady) { onReady(document); }
+    });
     await page.addInitScript(() => { window.acquireVsCodeApi = () => ({ getState() { return null; }, setState() {}, postMessage(message) { window.__postToHost(message); } }); });
     await provider.resolveCustomEditor(document, panel);
     const route = `/editor-${++pageCount}`;
@@ -150,6 +154,16 @@ async function main() {
     await page.goto(origin + route);
     await page.waitForFunction(() => document.getElementById('message').textContent !== ''); // loaded, or why not
     return editor;
+  };
+  // The side bar's click: the provider sends the page a selection; wait until the page shows it.
+  const select = async (editor, kind, id) => {
+    provider.select(editor.document.uri, { kind, id });
+    await editor.page.locator('#crumbs b', { hasText: id }).waitFor();
+  };
+  // What the page last told the side bar (items, requirements, selection), once it settles.
+  const outlineOf = async (editor, check = () => true, what = 'the outline') => {
+    await until(() => editor.document.outline && check(editor.document.outline), what);
+    return editor.document.outline;
   };
   const snap = (page, name) => page.screenshot({ path: path.join(outputDir, `${name}.png`), animations: 'disabled', caret: 'hide' });
   const read = () => fs.readFileSync(file, 'utf8');
@@ -163,12 +177,16 @@ async function main() {
     const editor = await open(file);
     const page = editor.page;
     assert.equal(await page.textContent('#filename'), 'CLR-003 · CLR-003.md · schema v3');
-    // The header: the file's title, and the views as tabs with their counts.
+    // The header: the file's title, where you are, and Form / Markdown. No list or tabs: the side bar chooses.
     assert.equal(await page.textContent('#doc-title'), 'API integration discussion (schema v3)');
-    assert.deepEqual(await page.$$eval('nav.tabs [role=tab]', tabs => tabs.map(t => t.textContent.replace(/\s+/g, ' ').trim())), ['Clarifications 2', 'Requirements 1', 'Markdown']);
+    assert.equal((await page.textContent('#crumbs')).replace(/\s+/g, ' '), 'CLR-003.md › Clarifications › CLR-003-Q01');
+    assert.deepEqual(await page.$$eval('.seg-switch button', b => b.map(x => [x.textContent, x.getAttribute('aria-pressed')])), [['Form', 'true'], ['Markdown', 'false']]);
+    assert.equal(await page.locator('.list-pane, nav.tabs, #outline').count(), 0, 'the editor still has its own list or tabs');
     assert.equal(await page.locator('section[data-item]').count(), 2);
-    // List and detail: every item is listed, and only the chosen one (the first) is shown.
-    assert.deepEqual(await page.$$eval('#outline li[data-item]', items => items.map(i => i.dataset.item)), ['CLR-003-Q01', 'CLR-003-Q02']);
+    // The side bar gets the items; only the chosen one (the first) is shown.
+    let outline = await outlineOf(editor);
+    assert.deepEqual(outline.items.map(i => [i.id, i.status, i.unsaved, i.new]), [['CLR-003-Q01', 'investigating', false, false], ['CLR-003-Q02', 'open', false, false]]);
+    assert.deepEqual(outline.selected, { kind: 'item', id: 'CLR-003-Q01' });
     assert.equal(await page.isVisible('#CLR-003-Q01'), true);
     assert.equal(await page.isVisible('#CLR-003-Q02'), false);
     assert.match(await page.textContent('#CLR-003-Q01 .facts'), /Questions0 \/ 2 answeredAcceptance0 \/ 2 accepted/);
@@ -183,6 +201,8 @@ async function main() {
     await until(() => editor.dirty, 'the unsaved state');
     assert.equal(await page.textContent('#state'), '● 1 unsaved field');
     assert.equal(await page.locator('#CLR-003-Q01 .field.edited').count(), 1);
+    outline = await outlineOf(editor, o => o.items[0].unsaved, 'the edited item to show as unsaved in the side bar');
+    assert.deepEqual([outline.items[1].unsaved, outline.unsavedFields, outline.dirty], [false, 1, true]);
     // Every edit reaches VS Code, not only the first, so a hot-exit backup follows the latest text.
     const changes = editor.changes;
     await page.locator('#CLR-003-Q01 .field', { has: page.locator('label', { hasText: /^Approach$/ }) }).locator('textarea').type(' ok');
@@ -232,7 +252,11 @@ async function main() {
     await page.locator('#state', { hasText: 'All changes saved' }).waitFor();
 
     // Requirements: set a folder source, see Ready reasons, open a requirement's file at its line.
-    await page.click('#tab-reqs');
+    // A requirement chip in the item opens it, and the side bar hears which one is shown.
+    await page.click('#CLR-003-Q01 .clarifies button.chip');
+    outline = await outlineOf(editor, o => o.selected.kind === 'req', 'the chip to select the requirement');
+    assert.deepEqual(outline.selected, { kind: 'req', id: 'REQ-012' });
+    assert.equal((await page.textContent('#crumbs')).replace(/\s+/g, ' '), 'CLR-003.md › Requirements › REQ-012');
     await page.click('#source-bar button:has-text("Set source…")');
     await page.click('dialog input[value=folder]');
     await page.fill('dialog .field:has-text("Folder") input >> nth=-1', 'requirements');
@@ -241,8 +265,12 @@ async function main() {
     assert.equal(JSON.parse(fs.readFileSync(path.join(repo, '.dou-editor.json'), 'utf8')).requirements.folder, 'requirements');
     assert.equal(await page.textContent('#req-REQ-012 .badge.ready'), 'Not ready');
     assert.equal((await page.innerText('#source-bar .source-text')).replace(/\s+/g, ' ').trim(), 'Source: requirements/ · Local folder · Read-only requirements');
-    assert.equal(await page.textContent('#tab-reqs .count'), '3');
+    outline = await outlineOf(editor, o => o.requirements.length === 3, 'the requirements in the side bar');
+    assert.deepEqual(outline.requirements.map(r => [r.id, r.title, r.ready, r.empty]), [['REQ-012', 'Send messages with a visible delivery status', false, false], ['REQ-013', 'Manual retry', false, true], ['REQ_020', 'Read receipts', false, true]]);
+    assert.deepEqual([outline.source.configured, outline.source.root], [true, 'requirements']);
     // A requirement without a clarification: why it is not ready, and the one next step.
+    await select(editor, 'req', 'REQ-013');
+    assert.equal(await page.locator('.req-card').count(), 1, 'only the chosen requirement is shown');
     const manual = page.locator('#req-REQ-013');
     assert.equal(await manual.locator('.req-name').textContent(), 'Manual retry');
     assert.match(await manual.locator('.req-meta').textContent(), /^requirements\/messaging\.rst:\d+ · Source document$/);
@@ -252,21 +280,17 @@ async function main() {
     assert.ok((await manual.locator('blockquote.req-text').textContent()).length > 0, 'the requirement text is not shown');
     // REQ-012's tabs: its clarifications and the criteria they propose, with the PO's state.
     const send = page.locator('#req-REQ-012');
-    await page.click('#outline li[data-req="REQ-012"] button');
+    await select(editor, 'req', 'REQ-012');
     assert.match(await send.locator('.next-action p').textContent(), /^Settle CLR-001-Q01|^Settle CLR-003-Q0/);
     await send.locator('.subtabs [role=tab]', { hasText: 'Clarifications' }).click();
     assert.equal(await send.locator('.linked li').count(), 3);
     await send.locator('.subtabs [role=tab]', { hasText: 'Acceptance' }).click();
     assert.deepEqual(await send.locator('.criteria li strong').allTextContents(), ['AC1', 'AC2']);
     assert.deepEqual(await send.locator('.criteria li .badge').allTextContents(), ['proposed', 'proposed']);
-    await page.locator('#CLR-003-Q01').count(); // the tab survives a redraw
-    await page.fill('#req-search', 'retry');
+    // The card keeps its tab when you come back to it.
+    await select(editor, 'req', 'REQ-013');
+    await select(editor, 'req', 'REQ-012');
     assert.equal(await send.locator('.subtabs [aria-selected=true]').textContent(), 'Acceptance · 2');
-    await page.fill('#req-search', '');
-    await page.click('#req-filter button[data-value=empty]');
-    assert.deepEqual(await page.$$eval('#req-list .req-card', cards => cards.map(c => c.id)), ['req-REQ-013', 'req-REQ_020']);
-    await page.click('#req-filter button[data-value=all]');
-    await page.click('#outline li[data-req="REQ-012"] button');
     await send.locator('.subtabs [role=tab]', { hasText: 'Requirement' }).click();
     await page.click('#req-REQ-012 .req-meta button.link');
     await until(() => host.opened.length, 'the requirement file');
@@ -274,18 +298,25 @@ async function main() {
     await snap(page, '21-requirement-editor-requirements');
 
     // + Create dou item: a new item for the requirement, saved like any edit.
-    await page.click('#outline li[data-req="REQ-013"] button');
+    await select(editor, 'req', 'REQ-013');
     await page.click('#req-REQ-013 .next-action button.create');
     await page.locator('#CLR-003-Q03').waitFor();
     await until(() => editor.dirty, 'the new item to mark the editor unsaved');
+    // The new item is in the side bar before it is saved, marked new, and is what is shown.
+    outline = await outlineOf(editor, o => o.items.length === 3, 'the new item in the side bar');
+    assert.deepEqual([outline.items[2].id, outline.items[2].new, outline.items[2].unsaved], ['CLR-003-Q03', true, true]);
+    assert.deepEqual(outline.selected, { kind: 'item', id: 'CLR-003-Q03' });
+    assert.equal(outline.requirements.find(r => r.id === 'REQ-013').empty, false);
     await page.keyboard.press('Control+s'); // VS Code's keybinding, not the page's
     await fakeVscode.commands.executeCommand('workbench.action.files.save');
     await until(() => read().includes('### CLR-003-Q03'), 'the new item');
     assert.equal(parse(read()).items[2].values.Requirement, 'REQ-013');
     await page.locator('#state', { hasText: 'All changes saved' }).waitFor(); // the reload after saving
+    outline = await outlineOf(editor, o => !o.dirty && o.items.length === 3 && !o.items[2].new, 'the saved item to stop counting as new');
+    assert.deepEqual(outline.items.map(i => i.unsaved), [false, false, false]);
 
     // PO decision: one Accept / Reject / Later choice per criterion, a running tally, then a saved decision.
-    await page.click('#outline li[data-item="CLR-003-Q01"] button');
+    await select(editor, 'item', 'CLR-003-Q01');
     await page.click('#CLR-003-Q01 button:has-text("PO decision…")');
     await page.fill('dialog input[aria-label="PO name"]', 'Lan');
     await page.click('dialog [aria-label="Decision for AC1"] .opt:has-text("Accept")');
@@ -303,14 +334,18 @@ async function main() {
     await page.locator('#raw:not([hidden])').waitFor();
     await page.fill('#source', (await page.inputValue('#source')).replace('**Status**', '**Statue**'));
     await page.keyboard.press('Alt+1');
-    await page.locator('#message.error', { hasText: 'Fix the Markdown before leaving source mode' }).waitFor();
+    await page.locator('#message.error', { hasText: 'Fix the Markdown before leaving it' }).waitFor();
+    // The side bar cannot take you out of invalid Markdown either.
+    provider.select(editor.document.uri, { kind: 'item', id: 'CLR-003-Q02' });
+    await page.waitForTimeout(100);
+    assert.equal(await page.isVisible('#raw'), true);
     assert.equal(await page.isVisible('#raw'), true);
     await page.fill('#source', (await page.inputValue('#source')).replace('**Statue**', '**Status**'));
     await page.keyboard.press('Alt+1');
     await page.locator('#form:not([hidden])').waitFor();
 
     // Someone else changes the file while there are unsaved edits: Save is refused, edits stay.
-    await page.click('#outline li[data-item="CLR-003-Q02"] button');
+    await select(editor, 'item', 'CLR-003-Q02');
     await page.locator('#CLR-003-Q02 .field', { has: page.locator('label', { hasText: /^Approach$/ }) }).locator('textarea').fill('My local edit');
     await until(() => editor.dirty, 'the unsaved state');
     fs.writeFileSync(file, read().replace('Minh', 'Minh (edited elsewhere)'));
@@ -334,12 +369,12 @@ async function main() {
     assert.ok((await page.locator('#CLR-003-Q01 .timeline').textContent()).includes('Minh (edited elsewhere)'));
 
     // A change on disk while there are no unsaved edits just reloads.
-    await page.click('#outline li[data-item="CLR-003-Q01"] button');
+    await select(editor, 'item', 'CLR-003-Q01');
     fs.writeFileSync(file, read().replace('Checked with the API owner.', 'Confirmed by the API owner.'));
     await page.locator('#CLR-003-Q01 .timeline', { hasText: 'Confirmed by the API owner.' }).waitFor();
 
     // Hot exit: VS Code backs up the unsaved text; a new window restores it over the file.
-    await page.click('#outline li[data-item="CLR-003-Q02"] button');
+    await select(editor, 'item', 'CLR-003-Q02');
     await page.locator('#CLR-003-Q02 .field', { has: page.locator('label', { hasText: /^Approach$/ }) }).locator('textarea').fill('Kept across a restart');
     await until(() => editor.dirty, 'the unsaved state');
     const destination = fileUri(path.join(base, 'backups', 'clr-003'));
@@ -371,14 +406,19 @@ async function main() {
     assert.equal(await narrow.page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth), 0, 'the page scrolls horizontally');
     await snap(narrow.page, '23-requirement-editor-narrow');
     // The Requirements view at phone width, as in the design.
-    await narrow.page.click('#tab-reqs');
-    await narrow.page.click('#outline li[data-req="REQ-013"] button');
+    await select(narrow, 'req', 'REQ-013');
     await narrow.page.locator('#req-REQ-013 .next-action').waitFor();
     assert.equal(await narrow.page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth), 0, 'the Requirements view scrolls horizontally');
     await snap(narrow.page, '24-requirement-editor-narrow-requirements');
     await narrow.page.setViewportSize({ width: 390, height: 1600 });
     await narrow.page.locator('#req-REQ-013').screenshot({ path: path.join(outputDir, '25-requirement-card-narrow.png'), animations: 'disabled' });
     await narrow.page.close();
+
+    // The side bar's ＋ on a file that is still loading: the page waits for the load, then adds the item.
+    const fresh = await open(path.join(repo, 'docs', 'CLR-001.md'), { onReady: document => assert.equal(provider.command('addItem', document.uri), true) });
+    await fresh.page.locator('#CLR-001-Q02').waitFor();
+    assert.equal((await fresh.page.textContent('#crumbs')).replace(/\s+/g, ' '), 'CLR-001.md › Clarifications › CLR-001-Q02');
+    await fresh.page.close();
 
     // A file that does not validate says why instead of showing a form.
     const broken = path.join(repo, 'docs', 'CLR-009.md');

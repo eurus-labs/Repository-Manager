@@ -12,18 +12,33 @@ discussion as an append-only History, and (schema v3) the acceptance criteria th
 PO accepts or rejects. Markdown stays the source of truth: people review it in pull
 requests and agents edit it as text.
 
-- **Requirements** in the Repository Manager Side Bar lists the workspace's
-  clarification files (Markdown whose front matter has `schema_version: 1`, `2`
-  or `3`), each with how many items are still open. A click opens the file in the
-  Requirement editor; a file that does not validate shows why and opens as text.
-  **New Clarification File** (＋ in the section title, or a row's menu) asks for
-  a folder, an ID and a title, and writes the v3 template.
+- **Requirements** has its own icon in the Activity Bar, beside Repository
+  Manager, so opening it never opens the Git dashboard. Its side bar is where you
+  choose what the editor shows:
+  - **Clarifications** lists the workspace's clarification files (Markdown whose
+    front matter has `schema_version: 1`, `2` or `3`), each with how many items
+    are still open, and opens to their items. A file open in the editor lists its
+    items as the editor has them: an edited item is marked ●, a new one
+    "● new", before anything is saved. A file that does not validate shows why
+    and opens as text. The funnel filters by status, and typing in the list
+    filters it as in any VS Code tree. **New Clarification File** (in the title)
+    writes the v3 template; ＋ on a file adds an item to it.
+  - **Requirements** lists the requirements the current file's items clarify
+    (the file last shown in a Requirement editor), each Ready or with how many
+    of the six conditions are met; the line above says how many are Ready and
+    where they come from. The funnel filters (Not ready, Ready, without a
+    clarification, with unresolved clarifications, not found); ⚙ changes the
+    source.
+  - A click shows that item or requirement in the editor; what the editor shows
+    (after a requirement chip, a Next action or a new item) is selected in the
+    side bar too.
 - **Requirement Editor** is a custom editor for `.md` files, chosen per file
   (**Open With… › Requirement Editor**), so other Markdown keeps opening as text.
-  Under the file's title, tabs switch between Clarifications (a list of items
-  beside the chosen item as a form), Requirements (a list of requirements beside
-  the chosen one), and Markdown (the whole file as text); Alt+1, Alt+2 and
-  Alt+3 do the same.
+  It shows one thing at a time, across its whole width: an item as a form, or a
+  requirement. A breadcrumb (`CLR-003.md › Clarifications › CLR-003-Q01`) says
+  which. **Form / Markdown** (Alt+1 / Alt+3) switches to the whole file as text.
+- While a Requirement editor is the active tab, the status bar shows how many of
+  its requirements are Ready and how many fields are unsaved.
 
 ## Saving
 
@@ -270,12 +285,9 @@ the host at the synced commit.
 
 ## Requirements view
 
-The Requirements view shows the source (where the requirements are read from),
-then a list of every requirement found there, plus any ID an item names that is
-not found; search by ID or text, or show only those Ready, Not ready, without a
-clarification, with unresolved clarifications, or not found. Each list entry shows
-the ID, Ready or Not ready with how many of the six conditions below are met, the
-title, and its clarifications. The chosen requirement shows its title and
+The side bar's Requirements lists every requirement found in the source, plus
+any ID an item names that is not found. A requirement shown in the editor has
+the source (where the requirements are read from) above it, its title and
 `file:line`, then:
 
 - the **Next action**, the step that removes the first reason it is Not ready
@@ -344,13 +356,18 @@ roles are remembered in VS Code's global state on this machine.
 
 Decisions (made with the user): port the Python server to TypeScript rather than
 spawn Python, so users need no Python; list files in a Side Bar section; open them
-through a custom editor.
+through a custom editor. Later (2.14): Requirements moved to its own Activity Bar
+icon, and its side bar took over the editor's lists, so that the rail picks the
+area, the side bar picks the object, and the editor shows it.
 
 - `src/requirements/douDocument.ts` (parse, save rules), `requirementCatalog.ts`
   (requirement scan, image rules, Git source) and `douService.ts` (what the
   Python HTTP endpoints did) have no `vscode` dependency, so Node tests run them.
   `requirementEditorProvider.ts` is the custom editor; `requirementsView.ts` the
-  Side Bar section and its commands.
+  Requirements side bar (two trees), the status bar item and their commands. The
+  page sends the side bar an outline (items with their unsaved state, and each
+  requirement's readiness, which only the page can work out) and receives the
+  selection.
 - The page is the Python editor's page (`resources/requirements.js`, `.css`) with
   its `fetch` calls answered by the extension, VS Code theme colors, and VS Code's
   save, confirmation and file dialogs in place of the browser's.

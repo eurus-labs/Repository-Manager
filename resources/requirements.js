@@ -1,6 +1,8 @@
-// The Requirement editor: a clarification file (dou) as a form, the requirements it clarifies, and
-// its Markdown. Ported from the Python dou-editor's page; the extension (RequirementEditorProvider)
+// The Requirement editor: one clarification item or one requirement at a time, or the whole
+// Markdown. Ported from the Python dou-editor's page; the extension (RequirementEditorProvider)
 // answers what the page used to ask its local server, and VS Code owns saving and unsaved state.
+// What to show is chosen in the Requirements side bar: the page sends it the items and
+// requirements (with unsaved edits) as an outline, and the side bar sends back a selection.
 'use strict';
 const vscode = acquireVsCodeApi();
 const DISCUSSION = ['open', 'investigating', 'resolved'];
@@ -48,7 +50,7 @@ let catalog = { configured: false, requirements: [] };  // from --requirements
 let dirty = false, sourceMode = false, view = 'items';
 let selected = null;     // the item (or file-level section) shown in the detail pane
 let selectedReq = null;  // the requirement shown in the Requirements view
-let statusFilter = 'all', reqFilter = 'all';
+let savedItems = new Map();  // field key -> value, as loaded from the file: what "unsaved" is measured against
 
 const $ = selector => document.querySelector(selector);
 function el(tag, props = {}, ...children) {
@@ -124,9 +126,7 @@ function setValue(i, value) {
     if (doc.version === 3 && value === 'resolved' && questions >= 0 && openQuestions(values[questions]))
       message(`${doc.fields[i].inquiry}: tick every question before resolving; Save will refuse ${openQuestions(values[questions])} open question(s).`, true);
   }
-  updateRailCounts();
-  drawOutline();
-  applyFilter();
+  publishOutline();
 }
 
 function updateStatus(item) {
@@ -214,10 +214,9 @@ function render() {
   for (const item of doc.items) { updateStatus(item.id); updateConclusion(item.id); drawFacts(item.id); }
   const ids = [...root.children].map(section => section.id);
   if (!ids.includes(selected)) selected = doc.items[0]?.id || ids[0] || null;
-  updateRailCounts();
-  drawOutline();
-  applyFilter();
   showSelected();
+  markRail();
+  publishOutline();
 }
 
 function itemSection(item) {
@@ -251,12 +250,13 @@ function groupCard(item, name) {
 function selectItem(id) {
   selected = id;
   showSelected();
-  drawOutline();
-  applyFilter();
+  markRail();
+  publishOutline();
 }
 
 function showSelected() {
   for (const section of $('#form').children) section.hidden = section.id !== selected;
+  $('#empty').hidden = $('#form').children.length > 0;
 }
 
 function renderField(f, i) {
@@ -747,8 +747,7 @@ function safeRefs(entry) {
 function openReference(id, matches) {
   const local = document.getElementById(id);
   if (local) {
-    statusFilter = 'all';
-    $('#search').value = '';
+    showView('items');
     selectItem(id);
     local.scrollIntoView({ behavior: 'smooth' });
   } else if (matches.length === 1) {
@@ -800,8 +799,8 @@ function openDialog(title, fields, submit) {
 
 function redrawViews() {
   refViews.forEach(draw => draw());
-  updateRailCounts();
   if (view === 'reqs') drawTrace();
+  publishOutline();
 }
 
 /* ---------- requirements view ---------- */
@@ -834,70 +833,54 @@ const reqTabs = new Map();  // requirement ID -> the tab its card shows; kept ac
 
 function drawTrace() {
   const byRequirement = groupByRequirement();
-  const query = $('#req-search').value.trim().toLowerCase();
-  // Document order of the requirement files; IDs that are not found come last.
-  const order = id => { const n = catalog.requirements.findIndex(r => r.id === id); return n < 0 ? Infinity : n; };
-  const ids = [...byRequirement.keys()].sort((a, b) => order(a) - order(b) || a.localeCompare(b, undefined, { numeric: true }));
-  const cards = [], outline = [];
-  const counts = { all: ids.length, notready: 0, ready: 0, empty: 0, unresolved: 0, missing: 0 };
-  for (const id of ids) {
-    const items = byRequirement.get(id), defs = definitions(id);
-    const unresolved = items.some(item => UNRESOLVED.has(item.values.Status));
-    const missing = catalog.configured && !defs.length;
-    const reasons = readiness(items, defs);
-    const matches = { all: true, ready: !reasons.length, notready: reasons.length > 0, empty: !items.length, unresolved, missing };
-    for (const key of Object.keys(counts)) if (key !== 'all' && matches[key]) counts[key]++;
-    const text = [id, ...defs.map(d => d.title + '\n' + d.excerpt), ...items.map(item => item.id + '\n' + Object.values(item.values).join('\n'))].join('\n').toLowerCase();
-    if (!matches[reqFilter] || (query && !text.includes(query))) continue;
-    cards.push(requirementCard(id, items, defs, reasons));
-    outline.push(requirementEntry(id, items, defs, reasons));
-  }
-  const unresolvedCount = counts.unresolved, missingCount = counts.missing, readyCount = counts.ready, emptyCount = counts.empty;
-  // The detail pane shows one requirement: the chosen one while it is listed, else the first.
-  if (!cards.some(card => card.id === 'req-' + selectedReq)) selectedReq = cards[0]?.id.slice(4) ?? null;
-  for (const card of cards) card.hidden = card.id !== 'req-' + selectedReq;
-  for (const entry of outline) entry.querySelector('button').setAttribute('aria-current', String(entry.dataset.req === selectedReq));
-  drawSegs($('#req-filter'), [['all', 'All'], ['notready', 'Not ready'], ['ready', 'Ready'], ['empty', 'No clarification'], ['unresolved', 'Unresolved'], ['missing', 'Not found']]
-    .filter(([key]) => key === 'all' || counts[key] || key === reqFilter).map(([key, label]) => [key, label, counts[key]]), reqFilter, value => { reqFilter = value; drawTrace(); });
-  $('#req-summary').textContent = `${ids.length} requirement${ids.length === 1 ? '' : 's'} · ${readyCount} ready · ${emptyCount} without a clarification · ${unresolvedCount} with unresolved clarifications`
-    + (missingCount ? ` · ${missingCount} not found` : '')
-    + (catalog.skipped?.length ? ` · ${catalog.skipped.length} file(s) skipped` : '')
-    + (catalog.truncated ? ' · scan limit reached' : '')
-    + '. This file includes unsaved edits; other files are shown as saved.';
-  const empty = ids.length ? (cards.length ? null : el('p', { className: 'empty', textContent: 'No requirement matches the filter.' }))
-    : el('p', { className: 'empty', textContent: catalog.configured ? `No requirement found in ${catalog.root}.` : catalog.sync?.state === 'syncing' ? 'Fetching requirements…' : 'No requirements yet: set a requirements source above.' });
+  const ids = sortedRequirementIds(byRequirement);
+  if (!ids.includes(selectedReq)) selectedReq = ids[0] ?? null;
+  const card = selectedReq ? requirementCard(selectedReq, byRequirement.get(selectedReq), definitions(selectedReq), readiness(byRequirement.get(selectedReq), definitions(selectedReq))) : null;
+  const empty = card ? null : el('p', { className: 'empty', textContent: catalog.configured ? `No requirement found in ${catalog.root}.`
+    : catalog.sync?.state === 'syncing' ? 'Fetching requirements…' : 'No requirements yet: set a requirements source above.' });
   $('#source-bar').replaceChildren(...sourceBar());
-  $('#req-list').replaceChildren(...[empty, ...cards].filter(Boolean));
-  $('#outline').replaceChildren(...outline);
+  $('#req-list').replaceChildren(...[empty, card].filter(Boolean));
+  markRail();
 }
 
-// Filter buttons with their counts; the pressed one is the current filter.
-function drawSegs(box, options, current, pick) {
-  box.replaceChildren(...options.map(([value, label, count]) => {
-    const button = el('button', { type: 'button', className: 'seg', textContent: count === undefined ? label : `${label} ${count}` });
-    button.dataset.value = value;
-    button.setAttribute('aria-pressed', String(value === current));
-    button.onclick = () => pick(value);
-    return button;
-  }));
+// Document order of the requirement files; IDs that are not found come last.
+function sortedRequirementIds(byRequirement) {
+  const order = id => { const n = catalog.requirements.findIndex(r => r.id === id); return n < 0 ? Infinity : n; };
+  return [...byRequirement.keys()].sort((a, b) => order(a) - order(b) || a.localeCompare(b, undefined, { numeric: true }));
 }
 
-// A requirement in the list: its ID, Ready state, title, and one bar segment per Ready condition.
-function requirementEntry(id, items, defs, reasons) {
-  const failed = new Set(reasons.map(r => r.rule));
-  const met = READY_RULES.filter(([rule]) => !failed.has(rule)).length;
-  const state = el('span', { className: 'pill', textContent: !reasons.length ? 'Ready' : !items.length ? 'No clarification' : `Not ready · ${met}/${READY_RULES.length}` });
-  state.dataset.status = !reasons.length ? 'resolved' : items.length ? 'investigating' : 'none';
-  const resolved = items.filter(item => !UNRESOLVED.has(item.values.Status)).length;
-  const button = el('button', { type: 'button', className: 'entry' },
-    el('span', { className: 'entry-top' }, el('span', { className: 'entry-id', textContent: id }), state),
-    el('span', { className: 'entry-text', textContent: defs[0]?.title || (catalog.configured ? 'Not found in the source' : '') }),
-    items.length ? el('span', { className: 'bars', ariaHidden: 'true' }, ...READY_RULES.map(([rule]) => el('span', { className: failed.has(rule) ? '' : 'met' }))) : null,
-    el('span', { className: 'entry-meta', textContent: items.length ? `${items.length} clarification${items.length === 1 ? '' : 's'} · ${resolved}/${items.length} resolved` : defs[0] ? `${defs[0].file}:${defs[0].line}` : '' }));
-  button.onclick = () => { selectedReq = id; drawTrace(); };
-  const li = el('li', {}, button);
-  li.dataset.req = id;
-  return li;
+/* ---------- the outline the side bar shows ---------- */
+
+// Items and requirements as the side bar lists them, from the current (unsaved) values, so a
+// new or edited item shows there before it is saved.
+let outlineTimer = null;
+function publishOutline() {
+  clearTimeout(outlineTimer);
+  outlineTimer = setTimeout(() => { if (doc) vscode.postMessage({ type: 'outline', outline: outline() }); }, 120);
+}
+
+function outline() {
+  const items = sourceMode ? [] : doc.items.map(item => {
+    const facts = itemFacts(item.id);
+    const fresh = !savedItems.has(item.id + '\nStatus');
+    const edited = fresh || doc.fields.some((f, i) => f.inquiry === item.id && values[i].trim() !== (savedItems.get(fieldKey(f)) ?? '').trim());
+    return { id: item.id, status: facts.status, summary: facts.summary, requirements: facts.requirements, unsaved: edited, new: fresh };
+  });
+  const byRequirement = sourceMode ? new Map() : groupByRequirement();
+  const requirements = sortedRequirementIds(byRequirement).map(id => {
+    const linked = byRequirement.get(id), defs = definitions(id), reasons = readiness(linked, defs);
+    const failed = new Set(reasons.map(r => r.rule));
+    return { id, title: defs[0]?.title || '', ready: !reasons.length, empty: !linked.length, missing: catalog.configured && !defs.length,
+      unresolved: linked.some(item => UNRESOLVED.has(item.values.Status)), met: READY_RULES.filter(([rule]) => !failed.has(rule)).length, rules: READY_RULES.length,
+      next: reasons[0]?.next || '', clarifications: linked.length };
+  });
+  const unsavedFields = sourceMode ? 0 : values.filter((v, i) => v.trim() !== baseline[i]).length;
+  return {
+    id: doc.id, title: documentTitle(doc.content), version: doc.version, items, requirements, dirty, unsavedFields, sourceMode,
+    selected: view === 'reqs' ? { kind: 'req', id: selectedReq } : { kind: 'item', id: selected },
+    source: { configured: catalog.configured, root: catalog.root || '', kind: catalog.source?.kind || 'none', syncing: catalog.sync?.state === 'syncing', error: catalog.sync?.error || '' },
+    skipped: catalog.skipped?.length || 0, truncated: Boolean(catalog.truncated),
+  };
 }
 
 // One requirement: its title and place, then Requirement / Clarifications / Acceptance tabs.
@@ -1021,7 +1004,7 @@ function createButton(id, def) {
 }
 
 function openItem(item) {
-  if (item.local) { showView('items'); openReference(item.id, []); }
+  if (item.local) openReference(item.id, []);
   else openReference(item.id, [item]);
 }
 
@@ -1031,15 +1014,15 @@ function openLocation(definition) {
   return link;
 }
 
+// The breadcrumb (file › view › what is shown) and the Form / Markdown switch.
 function markRail() {
-  $('#tab-items').setAttribute('aria-selected', String(!sourceMode && view === 'items'));
-  $('#tab-reqs').setAttribute('aria-selected', String(!sourceMode && view === 'reqs'));
-  $('#mode').setAttribute('aria-selected', String(sourceMode));
-  // The list pane belongs to the form views; the Markdown view takes the whole width.
+  if (!doc) return;
+  $('#mode-form').setAttribute('aria-pressed', String(!sourceMode));
+  $('#mode').setAttribute('aria-pressed', String(sourceMode));
   document.body.classList.toggle('raw', sourceMode);
-  $('#items-tools').hidden = $('#items-foot').hidden = view !== 'items';
-  $('#reqs-tools').hidden = view !== 'reqs';
-  $('.list-pane').setAttribute('aria-label', view === 'reqs' ? 'Requirements' : 'Clarification items');
+  const shown = sourceMode ? '' : view === 'reqs' ? selectedReq : selected?.replace(/^section-/, '');
+  $('#crumbs').replaceChildren(el('span', { textContent: doc.filename }), ' › ',
+    el('span', { textContent: sourceMode ? 'Markdown' : view === 'reqs' ? 'Requirements' : 'Clarifications' }), ...(shown ? [' › ', el('b', { textContent: shown })] : []));
 }
 
 // Tab target; leaving source mode validates the Markdown first and keeps you there if it is invalid.
@@ -1049,21 +1032,12 @@ async function goTo(name) {
     try {
       await reparse(content());
     } catch (e) {
-      message('Fix the Markdown before leaving source mode:\n' + e.message, true);
+      message('Fix the Markdown before leaving it:\n' + e.message, true);
       return;
     }
     message('Source validated.');
   }
   showView(name);
-}
-
-function updateRailCounts() {
-  if (!doc) return;
-  $('#count-items').textContent = String(doc.items.length);
-  const groups = groupByRequirement();
-  const ready = [...groups].filter(([id, items]) => !readiness(items, definitions(id)).length).length;
-  $('#count-reqs').textContent = groups.size ? String(groups.size) : '';
-  $('#tab-reqs').title = groups.size ? `Requirements: ${ready} of ${groups.size} ready (Alt+2)` : 'Requirements (Alt+2)';
 }
 
 function groupByRequirement() {
@@ -1079,64 +1053,30 @@ function groupByRequirement() {
 
 function showView(name, focus) {
   view = name;
-  markRail();
   $('#form-view').hidden = name !== 'items';
   $('#trace').hidden = name !== 'reqs';
-  if (focus) { reqFilter = 'all'; $('#req-search').value = ''; selectedReq = focus; }
+  if (focus) selectedReq = focus;
   if (name === 'reqs') drawTrace();
-  else { drawOutline(); applyFilter(); }
-  if (focus) window.scrollTo(0, 0);
+  markRail();
+  publishOutline();
+  window.scrollTo(0, 0);
 }
 
-// The list pane in Clarifications: file-level sections, then one entry per item with its progress.
-function drawOutline() {
-  if (view === 'reqs') return drawTrace();
-  const entry = (id, top, text, meta) => {
-    const button = el('button', { type: 'button', className: 'entry' }, el('span', { className: 'entry-top' }, ...top),
-      text ? el('span', { className: 'entry-text', textContent: text }) : null, meta?.length ? el('span', { className: 'entry-meta' }, ...meta) : null);
-    button.setAttribute('aria-current', String(id === selected));
-    button.onclick = () => selectItem(id);
-    const li = el('li', {}, button);
-    li.dataset.item = id;
-    return li;
-  };
-  const entries = doc.fields.filter(f => !f.inquiry && f.label).map(f => entry('section-' + f.label, [el('span', { className: 'entry-id', textContent: f.label })], 'About the whole file', null));
-  for (const item of doc.items) {
-    const facts = itemFacts(item.id);
-    const dot = el('span', { className: 'dot' });
-    const pill = el('span', { className: 'pill', textContent: facts.status });
-    dot.dataset.status = pill.dataset.status = facts.status;
-    const meta = [
-      ...facts.requirements.map(id => el('span', { className: 'entry-req', textContent: id })),
-      facts.questions?.total ? el('span', { textContent: `${facts.questions.done}/${facts.questions.total} questions` }) : null,
-      facts.criteria?.total ? el('span', { textContent: `${facts.criteria.accepted}/${facts.criteria.total} AC accepted` }) : null,
-      facts.responses ? el('span', { textContent: `${facts.responses} response${facts.responses === 1 ? '' : 's'}` }) : null,
-      facts.owner === '' && UNRESOLVED.has(facts.status) ? el('span', { className: 'warn', textContent: 'No owner' }) : null,
-    ].filter(Boolean);
-    const short = item.id.startsWith(doc.id + '-') ? item.id.slice(doc.id.length + 1) : item.id;
-    const li = entry(item.id, [dot, el('span', { className: 'entry-id', textContent: short, title: item.id }), pill], facts.summary, meta);
-    li.querySelector('button').setAttribute('aria-label', `${item.id}, ${facts.status}: ${facts.summary}`);
-    entries.push(li);
-  }
-  $('#outline').replaceChildren(...entries);
-}
-
-function applyFilter() {
+// The side bar (or a chip, or a Next action) chose what to show. Leaving the Markdown view
+// validates it first and stays there if it does not parse.
+async function select(kind, id) {
   if (!doc) return;
-  if (view === 'reqs') return drawTrace();
-  const query = $('#search').value.trim().toLowerCase();
-  const counts = { all: doc.items.length };
-  for (const s of STATUSES[doc.version]) counts[s] = 0;
-  for (const item of doc.items) {
-    const status = values[fieldIndex(item.id, 'Status')];
-    if (status in counts) counts[status]++;
-    const text = doc.fields.map((f, i) => (f.inquiry === item.id ? values[i] : '')).join('\n').toLowerCase();
-    const hidden = (statusFilter !== 'all' && status !== statusFilter) || (query && !text.includes(query) && !item.id.toLowerCase().includes(query));
-    const entry = document.querySelector(`#outline li[data-item="${item.id}"]`);
-    if (entry) entry.hidden = hidden;
+  if (sourceMode) {
+    try {
+      await reparse(content());
+    } catch (e) {
+      message('Fix the Markdown before leaving it:\n' + e.message, true);
+      return;
+    }
   }
-  drawSegs($('#filter'), [['all', 'All', counts.all], ...STATUSES[doc.version].map(s => [s, s[0].toUpperCase() + s.slice(1), counts[s]])],
-    statusFilter, value => { statusFilter = value; applyFilter(); });
+  if (kind === 'req') { showView('reqs', id); return; }
+  showView('items');
+  if (id && document.getElementById(id)) selectItem(id);
 }
 
 /* ---------- modes and actions ---------- */
@@ -1156,6 +1096,7 @@ function showSource(text) {
   $('#trace').hidden = true;
   $('#raw').hidden = false;
   markRail();
+  publishOutline();
 }
 
 // Re-parse unsaved text on the server (nothing is written) and show it as a form.
@@ -1166,10 +1107,6 @@ async function reparse(text) {
   showForm();
   render();
   setDirty(true);
-}
-
-function setupFilter() {
-  if (!STATUSES[doc.version].includes(statusFilter)) statusFilter = 'all';
 }
 
 // The `title:` of the front matter, shown as the editor's heading.
@@ -1185,8 +1122,8 @@ async function load(note = 'Loaded. Changes are written only when you save (Ctrl
     $('#doc-title').textContent = documentTitle(doc.content) || doc.id;
     $('#filename').textContent = `${doc.id} · ${doc.filename} · schema v${doc.version}`;
     showForm();
-    setupFilter();
     render();
+    savedItems = fieldValues();
     setDirty(false);
     message(note);
     loadIndex();
@@ -1325,6 +1262,10 @@ async function save() {
   }
 }
 
+// The side bar may ask for something while the file is still loading: it waits for the load.
+let loaded;
+const whenLoaded = new Promise(resolve => { loaded = resolve; });
+
 window.addEventListener('message', async event => {
   const msg = event.data || {};
   if (msg.type === 'response') {
@@ -1335,6 +1276,17 @@ window.addEventListener('message', async event => {
   } else if (msg.type === 'init') {
     memory = msg.memory || {};
     await load(undefined, msg.draft, msg.draftHash);
+    if (msg.select) await select(msg.select.kind, msg.select.id);
+    loaded();
+  } else if (msg.type === 'select') {
+    await whenLoaded;
+    await select(msg.kind, msg.id);
+  } else if (msg.type === 'command' && msg.name === 'addItem') {
+    await whenLoaded;
+    await addItem();
+  } else if (msg.type === 'command' && msg.name === 'sourceDialog') {
+    await whenLoaded;
+    sourceDialog(catalog.source || { kind: 'none' });
   } else if (msg.type === 'getContent') {
     // Saving or a backup: the text to write, and the version of the file it was edited from.
     const text = doc ? content() : null;
@@ -1384,7 +1336,6 @@ async function afterSave() {
 }
 
 async function createItemFor(id, definition) {
-  showView('items');
   await addItem({ 'Requirement': id, 'Scope': definition?.title ? `Requirement ${id}: ${definition.title}\nIn scope: Pending\nOut of scope: Pending` : 'Pending' });
 }
 
@@ -1407,8 +1358,7 @@ async function addItem(prefill = {}) {
   const text = content().trimEnd() + newline() + newline() + block.replace(/\n/g, newline());
   try {
     await reparse(text);
-    statusFilter = 'all';
-    $('#search').value = '';
+    showView('items');
     selectItem(id);
     const section = document.getElementById(id);
     section.scrollIntoView({ behavior: 'smooth' });
@@ -1427,17 +1377,14 @@ $('#download').onclick = () => {
   vscode.postMessage({ type: 'download', content: content(), filename: doc.filename.replace(/\.md$/, '.draft.md') });
 };
 $('#mode').onclick = () => { if (doc && !sourceMode) showSource(content()); };
+$('#mode-form').onclick = () => { if (sourceMode) goTo(view); };
 $('#add').onclick = () => addItem();
-$('#tab-items').onclick = () => goTo('items');
-$('#tab-reqs').onclick = () => goTo('reqs');
 $('#source').addEventListener('input', () => setDirty(true));
-$('#search').addEventListener('input', applyFilter);
-$('#req-search').addEventListener('input', drawTrace);
 // Ctrl+S is VS Code's own Save, which reaches the extension and comes back as getContent.
 document.addEventListener('keydown', e => {
-  // Alt+1/2/3 switch views like the tabs.
-  const rail = { '1': '#tab-items', '2': '#tab-reqs', '3': '#mode' }[e.key];
-  if (e.altKey && !e.ctrlKey && !e.metaKey && rail) { e.preventDefault(); $(rail).click(); }
+  // Alt+1 shows the form, Alt+3 the Markdown, like the switch in the header.
+  const target = { '1': '#mode-form', '3': '#mode' }[e.key];
+  if (e.altKey && !e.ctrlKey && !e.metaKey && target) { e.preventDefault(); $(target).click(); }
 });
 new ResizeObserver(() => document.documentElement.style.setProperty('--header-h', $('header').offsetHeight + 'px')).observe($('header'));
 vscode.postMessage({ type: 'ready' });

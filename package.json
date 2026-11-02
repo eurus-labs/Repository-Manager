@@ -2,7 +2,7 @@
   "name": "repository-manager",
   "displayName": "Repository Manager",
   "description": "Coordinate branches and Git workflows across a parent repository and its linked repositories from one VS Code dashboard",
-  "version": "2.13.0",
+  "version": "2.14.0",
   "publisher": "repository-manager",
   "engines": {
     "vscode": "^1.74.0"
@@ -139,6 +139,35 @@
         "title": "Open as Markdown Text",
         "category": "Repository Manager",
         "icon": "$(go-to-file)"
+      },
+      {
+        "command": "repositoryManager.requirements.filterClarifications",
+        "title": "Filter Clarifications…",
+        "category": "Repository Manager",
+        "icon": "$(filter)"
+      },
+      {
+        "command": "repositoryManager.requirements.filterRequirements",
+        "title": "Filter Requirements…",
+        "category": "Repository Manager",
+        "icon": "$(filter)"
+      },
+      {
+        "command": "repositoryManager.requirements.newItem",
+        "title": "New Clarification",
+        "category": "Repository Manager",
+        "icon": "$(add)"
+      },
+      {
+        "command": "repositoryManager.requirements.changeSource",
+        "title": "Change Requirements Source…",
+        "category": "Repository Manager",
+        "icon": "$(gear)"
+      },
+      {
+        "command": "repositoryManager.requirements.reveal",
+        "title": "Show in Requirement Editor",
+        "category": "Repository Manager"
       }
     ],
     "viewsContainers": {
@@ -147,6 +176,11 @@
           "id": "repository-manager",
           "title": "Repository Manager",
           "icon": "resources/activitybar-icon.svg"
+        },
+        {
+          "id": "repository-manager-requirements",
+          "title": "Requirements",
+          "icon": "resources/requirements-icon.svg"
         }
       ]
     },
@@ -157,11 +191,18 @@
           "id": "repositoryManager.launcher",
           "name": "Repository Manager",
           "contextualTitle": "Repository Manager"
-        },
+        }
+      ],
+      "repository-manager-requirements": [
         {
           "id": "repositoryManager.requirements",
+          "name": "Clarifications",
+          "contextualTitle": "Requirements"
+        },
+        {
+          "id": "repositoryManager.requirementsCatalog",
           "name": "Requirements",
-          "contextualTitle": "Repository Manager"
+          "contextualTitle": "Requirements"
         }
       ]
     },
@@ -178,8 +219,23 @@
           "group": "navigation@1"
         },
         {
+          "command": "repositoryManager.requirements.filterClarifications",
+          "when": "view == repositoryManager.requirements",
+          "group": "navigation@2"
+        },
+        {
           "command": "repositoryManager.requirements.refresh",
           "when": "view == repositoryManager.requirements",
+          "group": "navigation@3"
+        },
+        {
+          "command": "repositoryManager.requirements.filterRequirements",
+          "when": "view == repositoryManager.requirementsCatalog",
+          "group": "navigation@1"
+        },
+        {
+          "command": "repositoryManager.requirements.changeSource",
+          "when": "view == repositoryManager.requirementsCatalog",
           "group": "navigation@2"
         }
       ],
@@ -191,17 +247,26 @@
         {
           "command": "repositoryManager.requirements.openAsText",
           "when": "false"
+        },
+        {
+          "command": "repositoryManager.requirements.reveal",
+          "when": "false"
         }
       ],
       "view/item/context": [
         {
-          "command": "repositoryManager.requirements.openAsText",
+          "command": "repositoryManager.requirements.newItem",
           "when": "view == repositoryManager.requirements && viewItem == clarificationFile",
-          "group": "inline"
+          "group": "inline@1"
+        },
+        {
+          "command": "repositoryManager.requirements.openAsText",
+          "when": "view == repositoryManager.requirements && viewItem =~ /^clarificationFile/",
+          "group": "inline@2"
         },
         {
           "command": "repositoryManager.requirements.newFile",
-          "when": "view == repositoryManager.requirements && viewItem == clarificationFile",
+          "when": "view == repositoryManager.requirements && viewItem =~ /^clarificationFile/",
           "group": "1_new"
         }
       ]
@@ -289,6 +354,10 @@
       {
         "view": "repositoryManager.requirements",
         "contents": "No clarification files in this workspace yet. A clarification file records questions about requirements, with their answers and the acceptance criteria the PO decides.\n[New Clarification File](command:repositoryManager.requirements.newFile)"
+      },
+      {
+        "view": "repositoryManager.requirementsCatalog",
+        "contents": "Open a clarification file to see the requirements its items clarify, and which of them are Ready."
       }
     ],
     "customEditors": [

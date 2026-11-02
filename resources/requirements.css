@@ -36,44 +36,22 @@ h1 { font-size: 15px; margin: 0; overflow-wrap: anywhere; }
 .toolbar { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
 #state { font-size: 12px; color: var(--head-muted); margin-right: 4px; }
 #state.dirty { color: var(--wip); }
-nav.tabs { display: flex; gap: 24px; margin-top: 4px; overflow-x: auto; scrollbar-width: none; }
-nav.tabs button { border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: none; padding: 8px 0 9px; min-height: 0; color: var(--muted); white-space: nowrap; }
-nav.tabs button:hover { color: var(--text); }
-nav.tabs button[aria-selected=true] { color: var(--text); border-bottom-color: var(--accent); font-weight: 600; }
-nav.tabs .count, .count { font-size: 11px; font-weight: 600; padding: 0 7px; border-radius: 10px; background: var(--chip); color: var(--text); margin-left: 4px; }
-nav.tabs .count:empty { display: none; }
+.subhead { display: flex; align-items: center; gap: 12px; margin-top: 8px; padding-bottom: 8px; flex-wrap: wrap; }
+.crumbs { font-size: 12px; color: var(--muted); min-width: 0; overflow-wrap: anywhere; }
+.crumbs b { color: var(--text); font-weight: 600; }
+.seg-switch { margin-left: auto; display: inline-flex; border: 1px solid var(--input-line); border-radius: 6px; overflow: hidden; }
+.seg-switch button { border: 0; border-radius: 0; min-height: 26px; padding: 0 12px; background: transparent; color: var(--muted); }
+.seg-switch button + button { border-left: 1px solid var(--input-line); }
+.seg-switch button[aria-pressed=true] { background: var(--selected); color: var(--text); font-weight: 600; }
+.count { font-size: 11px; font-weight: 600; padding: 0 7px; border-radius: 10px; background: var(--chip); color: var(--text); margin-left: 4px; }
 #message { margin: 6px 0 8px; min-height: 1.5em; white-space: pre-wrap; color: var(--head-muted); font-size: 12px; }
 #message:empty { margin: 0; min-height: 0; }
 #message.error { color: var(--head-error); }
 
-/* Layout: a list pane beside the detail of what is chosen in it. */
-.layout { display: flex; flex-wrap: wrap; align-items: stretch; min-height: calc(100vh - var(--header-h, 100px)); }
-.list-pane { flex: 1 1 280px; max-width: 340px; min-width: 0; background: var(--list); border-right: 1px solid var(--line); display: flex; flex-direction: column; }
-body.raw .list-pane { display: none; }
-.pane-tools { display: grid; gap: 10px; padding: 14px 14px 12px; border-bottom: 1px solid var(--line); }
-.pane-tools[hidden], .pane-foot[hidden] { display: none; }
-.pane-tools input[type=search] { width: 100%; border: 1px solid var(--input-line); border-radius: 6px; padding: 6px 10px; background: var(--input); }
-.segs { display: flex; gap: 6px; flex-wrap: wrap; }
-button.seg { min-height: 26px; padding: 0 9px; font-size: 12px; background: transparent; }
-button.seg[aria-pressed=true] { background: var(--selected); border-color: var(--focus); font-weight: 600; }
-nav.outline { flex: 1; position: sticky; top: var(--header-h, 100px); align-self: stretch; max-height: calc(100vh - var(--header-h, 100px)); overflow: auto; }
-nav.outline ul { list-style: none; margin: 0; padding: 0; }
-nav.outline li[hidden] { display: none; }
-button.entry { display: grid; gap: 4px; width: 100%; text-align: left; padding: 10px 14px; border: 0; border-left: 2px solid transparent; border-radius: 0; background: none; min-height: 0; }
-button.entry:hover { background: var(--hover); }
-button.entry[aria-current=true] { background: var(--selected); border-left-color: var(--focus); }
-.entry-top { display: flex; align-items: center; gap: 8px; }
-.entry-top .pill { margin-left: auto; }
-.entry-id { font: 600 12px var(--mono); }
-.entry-text { line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-.entry-meta { display: flex; gap: 4px 10px; flex-wrap: wrap; font-size: 12px; color: var(--muted); }
-.entry-req { font-family: var(--mono); color: var(--open); }
-.bars { display: flex; gap: 3px; }
-.bars span { flex: 1; height: 3px; border-radius: 2px; background: var(--line); }
-.bars span.met { background: var(--done); }
-.pane-foot { display: grid; gap: 8px; padding: 12px 14px 16px; border-top: 1px solid var(--line); }
-.pane-foot .note { margin: 0; font-size: 12px; }
-main { flex: 999 1 520px; min-width: 0; padding: 20px 28px 40px; }
+/* Layout: one thing at a time; the Requirements side bar lists what there is to choose. */
+main { min-width: 0; padding: 20px 28px 40px; }
+.empty-state { display: grid; gap: 10px; justify-items: start; padding: 24px 0; color: var(--muted); }
+.empty-state[hidden] { display: none; }
 main > div, main > footer { max-width: 940px; margin-left: auto; margin-right: auto; }
 
 /* An item: its ID and status, what it clarifies, its progress, then its groups as cards. */
@@ -253,8 +231,6 @@ dialog .criterion strong { font: 600 12px var(--mono); }
 
 @media (max-width: 800px) {
   header { position: static; padding: 10px 14px 0; }
-  .list-pane { max-width: none; flex-basis: 100%; border-right: 0; border-bottom: 1px solid var(--line); }
-  nav.outline { position: static; max-height: 40vh; }
   main { padding: 16px 14px 32px; }
   .grid, .composer .row { grid-template-columns: 1fr; }
   .dates { margin-left: 0; }
