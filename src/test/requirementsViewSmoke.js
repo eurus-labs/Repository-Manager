@@ -111,6 +111,9 @@ async function main() {
   const clar = views['repositoryManager.requirements'];
   const reqs = views['repositoryManager.requirementsCatalog'];
   assert.ok(clar && reqs, 'the two views of the Requirements area are not created');
+  // Requirements come first in the area, Clarifications under it.
+  const manifest = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+  assert.deepEqual(manifest.contributes.views['repository-manager-requirements'].map(v => v.id), ['repositoryManager.requirementsCatalog', 'repositoryManager.requirements']);
 
   // Clarifications: one row per file, items under it; a broken file opens as text and says why.
   const files = await labels(clar.provider);
@@ -122,7 +125,7 @@ async function main() {
   const fileNodes = await clar.provider.getChildren();
   const items = await labels(clar.provider, fileNodes[2]);
   assert.deepEqual(items.map(i => [i.label, i.iconPath.color.id]), [['Q01', 'charts.yellow'], ['Q02', 'charts.blue']]);
-  assert.deepEqual(items[0].command.arguments.map(String), [`file://${path.join(docs, 'CLR-003.md')}`, 'item', 'CLR-003-Q01']);
+  assert.deepEqual(items[0].command.arguments.map(String), [`file://${path.join(docs, 'CLR-003.md')}`, 'item', 'CLR-003-Q01', 'repositoryManager.requirements']);
   assert.equal(clar.provider.getParent((await clar.provider.getChildren(fileNodes[2]))[0]), fileNodes[2]);
 
   // The status filter, picked from the funnel, hides other items and files without a match.
@@ -192,8 +195,53 @@ async function main() {
   // The ID only; the title is in the tooltip. No document is known here, so no folders.
   assert.deepEqual(requirements.map(r => [r.label, r.description, r.iconPath.id]), [['REQ-012', '2/6', 'circle-filled'], ['REQ-013', '1/6', 'circle-filled'], ['REQ_020', 'Ready', 'pass-filled']]);
   assert.match(requirements[0].tooltip.value, /^REQ-012 · Send messages/);
-  assert.deepEqual(requirements[1].command.arguments.map(String), [String(uri), 'req', 'REQ-013']);
+  assert.deepEqual(requirements[1].command.arguments.map(String), [String(uri), 'req', 'REQ-013', 'repositoryManager.requirementsCatalog']);
   assert.equal(reqs.message, '3 requirements · 1 ready · 0 without a clarification · from requirements');
+  // Under each requirement, the items that clarify it; a requirement with none has no arrow.
+  assert.deepEqual(requirements.map(r => [r.collapsibleState, r.contextValue]), [[1, 'requirement'], [1, 'requirement'], [0, 'requirement']]);
+  const reqNodes = await reqs.provider.getChildren();
+  const under = await labels(reqs.provider, reqNodes[0]);
+  assert.deepEqual(under.map(i => [i.label, i.description]), [['Q01', '● Resend once after a timeout'], ['Q02', 'Duplicates after a day']]);
+  assert.deepEqual(under[1].command.arguments.map(String), [String(uri), 'item', 'CLR-003-Q02', 'repositoryManager.requirementsCatalog']);
+  assert.notEqual(under[0].id, (await labels(reqs.provider, reqNodes[1]))[0].id);
+  assert.deepEqual((await labels(reqs.provider, reqNodes[1])).map(i => i.label), ['Q03']);
+  const itemUnder = (await reqs.provider.getChildren(reqNodes[1]))[0];
+  assert.equal(reqs.provider.getParent(itemUnder), reqNodes[1]);
+  assert.deepEqual(await reqs.provider.getChildren(itemUnder), []);
+  // The item the editor shows is selected under its requirement as well as in Clarifications.
+  assert.equal(reqs.revealed.some(([node]) => node.item && node.item.id === 'CLR-003-Q03' && node.parent.requirement.id === 'REQ-013'), true,
+    'the selected item was not revealed under its requirement');
+  // An item clicked in Clarifications is still selected under its requirement (and the other way round).
+  const clickedRow = (await labels(clar.provider, (await clar.provider.getChildren())[2]))[1];
+  assert.equal(clickedRow.command.arguments[3], 'repositoryManager.requirements');
+  const before = [reqs.revealed.length, clar.revealed.length];
+  await commands.get('repositoryManager.requirements.reveal')(...clickedRow.command.arguments);
+  await listener({ type: 'outline', outline: { ...outline, selected: { kind: 'item', id: 'CLR-003-Q02' } } });
+  await tick();
+  assert.equal(clar.revealed.length, before[1], 'the clicked view was revealed again');
+  assert.equal(reqs.revealed.length, before[0] + 1, 'the item clicked in Clarifications was not selected under its requirement');
+  assert.equal(reqs.revealed.at(-1)[0].item.id, 'CLR-003-Q02');
+  await listener({ type: 'outline', outline });
+  await tick();
+  // A requirement's + adds an item that clarifies it, in that requirement's file.
+  await commands.get('repositoryManager.requirements.newItemFor')(reqNodes[2]);
+  assert.deepEqual(executed.at(-1).map(String), ['vscode.openWith', String(uri), 'repositoryManager.requirementEditor']);
+  assert.deepEqual(posted.at(-1), { type: 'command', name: 'addItem', requirement: 'REQ_020' });
+  // The editor's new item for it then appears under it.
+  const withNew = { ...outline, items: [...outline.items, { id: 'CLR-003-Q04', status: 'open', summary: 'Pending', requirements: ['REQ_020'], unsaved: true, new: true }],
+    selected: { kind: 'item', id: 'CLR-003-Q04' } };
+  await listener({ type: 'outline', outline: withNew });
+  await tick();
+  const after = await reqs.provider.getChildren();
+  assert.deepEqual((await labels(reqs.provider, after[2])).map(i => [i.label, i.description]), [['Q04', '● new · Pending']]);
+  assert.equal(reqs.revealed.at(-1)[0].item.id, 'CLR-003-Q04', 'the new item was not shown under its requirement');
+  // The same selection again (any edit sends the outline) is not revealed again in either view.
+  const counts = [reqs.revealed.length, clar.revealed.length];
+  await listener({ type: 'outline', outline: withNew });
+  await tick();
+  assert.deepEqual([reqs.revealed.length, clar.revealed.length], counts, 'an unchanged selection was revealed again');
+  await listener({ type: 'outline', outline });
+  await tick();
   assert.equal(reqs.description, 'CLR-003');
   // With documents known, the requirements are a tree of their folders (one per project): the
   // folders all share (src/change_requests) are left out, a folder with one folder in it is
@@ -215,6 +263,33 @@ async function main() {
   assert.equal(shownReq.requirement.id, 'SW_REQ_2');
   assert.equal(reqs.provider.getParent(shownReq), projects[0]);
   assert.equal(reqs.provider.getParent(projects[0]), undefined);
+  // Where the documentation's navigation reaches a document, the tree follows it: titles, in the
+  // navigation's order (not alphabetical), one level per document (never joined), beside folders.
+  const nav = (...steps) => steps.map(([t, o]) => [t, o]);
+  const inNav = { ...outline, selected: { kind: 'req', id: 'SW_REQ_9' }, requirements: [
+    { ...base, id: 'SW_REQ_7', ready: true, file: 'docs/reprog/zeta/sw_reqs.rst', place: nav(['Software Requirements', 0], ['Reprog Indus - Requirements', 1], ['Reprog Indus - HexOgen', 2], ['HexOgen software requirements', 5]) },
+    { ...base, id: 'SW_REQ_8', ready: false, file: 'docs/reprog/renault/index.rst', place: nav(['Software Requirements', 0], ['Reprog Indus - Requirements', 1], ['Reprog Indus - Renault KMS Middleware', 3]) },
+    { ...base, id: 'SW_REQ_9', ready: false, file: 'docs/reprog/tools/a.rst', place: nav(['Software Requirements', 0], ['Reprog Indus - Requirements', 1], ['Reprog Indus - HexUlp', 4]) },
+    { ...base, id: 'SW_REQ_10', ready: false, file: 'loose/x/y.rst' },
+    { ...base, id: 'SW_REQ_11', ready: false, file: 'loose/z/w.rst' }] };
+  await listener({ type: 'outline', outline: inNav });
+  await tick();
+  const navTop = await labels(reqs.provider);
+  assert.deepEqual(navTop.map(t => [t.label, t.iconPath.id]), [['Software Requirements', 'book'], ['x', 'folder'], ['z', 'folder']]);
+  const caption = reqs.provider.getChildren()[0];
+  const reprog = reqs.provider.getChildren(caption)[0];
+  assert.deepEqual((await labels(reqs.provider, caption)).map(t => [t.label, t.description]), [['Reprog Indus - Requirements', '1/3 Ready']]);
+  assert.deepEqual((await labels(reqs.provider, reprog)).map(t => t.label), ['Reprog Indus - HexOgen', 'Reprog Indus - Renault KMS Middleware', 'Reprog Indus - HexUlp']);
+  const hexogen = reqs.provider.getChildren(reprog)[0];
+  assert.deepEqual((await labels(reqs.provider, hexogen)).map(t => t.label), ['HexOgen software requirements']);
+  assert.equal((await labels(reqs.provider, reprog))[0].tooltip, 'Software Requirements › Reprog Indus - Requirements › Reprog Indus - HexOgen');
+  // What the editor shows is revealed inside its document, up to the top.
+  const shownNav = reqs.revealed.at(-1)[0];
+  assert.equal(shownNav.requirement.id, 'SW_REQ_9');
+  assert.equal(reqs.provider.getParent(reqs.provider.getParent(shownNav)), reprog);
+  await listener({ type: 'outline', outline: inFolders });
+  await tick();
+
   // A filter that leaves one requirement keeps it under its project.
   prompts.pickLabel.push('Ready');
   await commands.get('repositoryManager.requirements.filterRequirements')();

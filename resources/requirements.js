@@ -854,7 +854,7 @@ function outline() {
     const failed = new Set(reasons.map(r => r.rule));
     return { id, title: defs[0]?.title || '', ready: !reasons.length, empty: !linked.length, missing: catalog.configured && !defs.length,
       unresolved: linked.some(item => UNRESOLVED.has(item.values.Status)), met: READY_RULES.filter(([rule]) => !failed.has(rule)).length, rules: READY_RULES.length,
-      next: reasons[0]?.next || '', clarifications: linked.length, file: defs[0]?.file || '' };
+      next: reasons[0]?.next || '', clarifications: linked.length, file: defs[0]?.file || '', place: defs[0]?.place || [] };
   });
   const unsavedFields = sourceMode ? 0 : values.filter((v, i) => v.trim() !== baseline[i]).length;
   return {
@@ -885,7 +885,7 @@ function requirementCard(id, items, defs, reasons) {
   const panels = {
     requirement: () => requirementPanel(id, def),
     clarifications: () => clarificationsPanel(id, def, items),
-    acceptance: () => acceptancePanel(criteria),
+    acceptance: () => acceptancePanel(criteria, id, def, items),
   };
   const tabs = [['requirement', 'Requirement'], ['clarifications', `Clarifications · ${items.length}`], ['acceptance', `Acceptance · ${criteria.length}`]];
   let panel = panels[reqTabs.get(id) || 'requirement']();
@@ -963,10 +963,13 @@ function acceptanceOf(items) {
     criteriaStates(item.values['Proposed acceptance criteria'] || '', safeHistory(item), item.values['Visual aids'] ?? null).map(c => ({ ...c, item })));
 }
 
-function acceptancePanel(criteria) {
+function acceptancePanel(criteria, id, def, items) {
   const box = el('div', { className: 'subpanel', role: 'tabpanel' });
+  // Criteria are proposed in a v3 item's field: the button goes to that field (making the item first if there is none).
+  const actions = doc.version === 3 ? el('div', { className: 'criteria-actions' }, proposeButton(id, def, items)) : null;
   if (!criteria.length) {
     box.append(el('p', { className: 'empty', textContent: 'No acceptance criteria proposed yet. A clarification proposes them in its Proposed acceptance criteria; the PO accepts or rejects each one.' }));
+    if (actions) box.append(actions);
     return box;
   }
   box.append(el('ul', { className: 'criteria' }, ...criteria.map(c => {
@@ -976,7 +979,36 @@ function acceptancePanel(criteria) {
     open.onclick = () => openItem(c.item);
     return el('li', {}, el('strong', { textContent: c.id }), badge, el('span', { textContent: c.text }), el('span', { className: 'note' }, open, c.by ? ` · ${c.by}` : ''));
   })));
+  if (actions) box.append(actions);
   return box;
+}
+
+// Proposes a criterion: in the requirement's open item of this file (else its first one), or in a
+// new item made for the requirement when this file has none.
+function proposeButton(id, def, items) {
+  const local = items.filter(item => item.local && item.version === 3);
+  const target = local.find(item => UNRESOLVED.has(item.values.Status)) || local[0];
+  const button = el('button', { type: 'button', className: 'create primary', textContent: '+ Propose acceptance criterion',
+    title: target ? `Write it in ${target.id}: Proposed acceptance criteria` : 'Creates a clarification for this requirement, where the criteria are proposed' });
+  button.onclick = async () => {
+    if (target) { focusCriteria(target.id); return; }
+    await createItemFor(id, def);
+    if (selected) focusCriteria(selected);
+  };
+  return button;
+}
+
+function focusCriteria(itemId) {
+  const n = doc.fields.findIndex(f => f.inquiry === itemId && f.label === 'Proposed acceptance criteria');
+  if (n < 0) return;
+  showView('items');
+  selectItem(itemId);
+  const area = document.getElementById('f' + n);
+  if (!area) return;
+  area.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  area.focus({ preventScroll: true });
+  // The template's placeholder is selected, so typing replaces it.
+  if (/^-\s*Pending\s*$/i.test(area.value)) area.setSelectionRange(area.value.indexOf('Pending'), area.value.length);
 }
 
 function createButton(id, def) {
@@ -1265,7 +1297,9 @@ window.addEventListener('message', async event => {
     await select(msg.kind, msg.id);
   } else if (msg.type === 'command' && msg.name === 'addItem') {
     await whenLoaded;
-    await addItem();
+    // From a requirement in the side bar: the item clarifies it, as the requirement card's button does.
+    if (typeof msg.requirement === 'string' && msg.requirement) await createItemFor(msg.requirement, definitions(msg.requirement)[0]);
+    else await addItem();
   } else if (msg.type === 'command' && msg.name === 'sourceDialog') {
     await whenLoaded;
     sourceDialog(catalog.source || { kind: 'none' });
@@ -1317,8 +1351,13 @@ async function afterSave() {
   message(later.length ? `Saved. ${later.length} field${later.length === 1 ? '' : 's'} edited while saving ${later.length === 1 ? 'is' : 'are'} kept and not saved yet.` : 'Saved to Markdown.');
 }
 
+// A new item that clarifies `id`, written in the field each schema reads requirements from.
 async function createItemFor(id, definition) {
-  await addItem({ 'Requirement': id, 'Scope': definition?.title ? `Requirement ${id}: ${definition.title}\nIn scope: Pending\nOut of scope: Pending` : 'Pending' });
+  if (doc?.version === 3) {
+    await addItem({ 'Requirement': id, 'Scope': definition?.title ? `Requirement ${id}: ${definition.title}\nIn scope: Pending\nOut of scope: Pending` : 'Pending' });
+  } else if (doc) {
+    await addItem({ [REQUIREMENT_FIELD[doc.version]]: doc.version === 1 ? `- Requirement: ${id}` : `- ${id}` });
+  }
 }
 
 async function addItem(prefill = {}) {
@@ -1334,8 +1373,8 @@ async function addItem(prefill = {}) {
     : doc.version === 2
     ? { 'Created at': now, 'Updated at': now, 'Status': 'open', 'Related requirements': 'Pending', 'Current understanding': 'Pending',
         'Questions': 'Describe the question.', 'Analysis / Proposal': 'Pending', 'References': json, 'History': json,
-        'Current conclusion': 'Pending', 'Next action': 'Pending' }
-    : { 'Question': 'Describe the question.', 'Status': 'open', 'Resolution': 'Pending', 'Confirmed by': 'Pending', 'Requirement impact': 'Pending' };
+        'Current conclusion': 'Pending', 'Next action': 'Pending', ...prefill }
+    : { 'Question': 'Describe the question.', 'Status': 'open', 'Resolution': 'Pending', 'Confirmed by': 'Pending', 'Requirement impact': 'Pending', ...prefill };
   const block = `### ${id}\n\n` + Object.entries(fields).map(([k, v]) => `**${k}**\n\n${v}\n`).join('\n');
   const text = content().trimEnd() + newline() + newline() + block.replace(/\n/g, newline());
   try {

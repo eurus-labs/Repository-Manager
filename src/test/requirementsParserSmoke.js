@@ -11,6 +11,7 @@ const { pathToFileURL } = require('node:url');
 const { parse, prepareSave, timestamp, nowIso } = require('../../out/requirements/douDocument.js');
 const { requirementCatalog, requirementsIn, visualAid, checkSource, webBase, RequirementSource } = require('../../out/requirements/requirementCatalog.js');
 const { DouService } = require('../../out/requirements/douService.js');
+const { navDocument } = require('../../out/requirements/documentNav.js');
 
 const FIXTURES = path.join(__dirname, 'fixtures', 'requirements');
 const read = name => fs.readFileSync(path.join(FIXTURES, name), 'utf8');
@@ -204,6 +205,53 @@ async function requirements() {
   assert.equal((await requirementCatalog(path.join(root, 'api', 'send.md'))).requirements[0].file, 'send.md');
 }
 
+// Projects as the documentation's navigation shows them: the toctrees and the documents' titles.
+async function navigation() {
+  const root = path.join(temp(), 'docs');
+  const write = (file, text) => { fs.mkdirSync(path.dirname(path.join(root, file)), { recursive: true }); fs.writeFileSync(path.join(root, file), text); };
+  const title = (text, mark = '=') => `${text}\n${mark.repeat([...text].length)}\n\n`;
+  // The start page: its title is not shown, its caption is (as in Sphinx's side bar).
+  write('index.rst', title('Welcome') + '.. toctree::\n   :maxdepth: 2\n   :caption: Software Requirements\n\n   reprog/index\n');
+  // Listed in this order, which is not the alphabetical one; a titled entry and a glob.
+  write('reprog/index.rst', title('Reprog Indus - Requirements') +
+    '.. toctree::\n   :hidden:\n\n   zeta/index\n   Renault <renault/index>\n   self\n   https://example.com\n   missing/doc\n\n' +
+    '.. toctree::\n   :glob:\n\n   tools/*\n');
+  write('reprog/zeta/index.rst', title('Reprog Indus - HexOgen') + '.. toctree::\n\n   sw_reqs\n   /reprog/index\n');
+  write('reprog/zeta/sw_reqs.rst', title('HexOgen software requirements') + title('REQ_101: Read the hex file', '-'));
+  write('reprog/renault/index.rst', title('Reprog Indus - Renault KMS Middleware') + title('REQ_102: Ask the KMS', '-'));
+  write('reprog/tools/b.rst', title('Reprog Indus - HexToOdx') + title('REQ_103: Write ODX', '-'));
+  write('reprog/tools/a.md', '# Reprog Indus - HexUlp\n\n## REQ_104: Upload\n\nText.\n');
+  // No toctree reaches it: no place, so the side bar groups it by folder.
+  write('orphan/x.rst', title('Loose') + title('REQ_105: Alone', '-'));
+  const catalog = await requirementCatalog(root);
+  const places = Object.fromEntries(catalog.requirements.map(r => [r.id, r.place && r.place.map(([t]) => t)]));
+  assert.deepEqual(places, {
+    REQ_101: ['Software Requirements', 'Reprog Indus - Requirements', 'Reprog Indus - HexOgen', 'HexOgen software requirements'],
+    // "Renault <renault/index>": the entry's own title is what the navigation shows, as in Sphinx.
+    REQ_102: ['Software Requirements', 'Reprog Indus - Requirements', 'Renault'],
+    REQ_103: ['Software Requirements', 'Reprog Indus - Requirements', 'Reprog Indus - HexToOdx'],
+    REQ_104: ['Software Requirements', 'Reprog Indus - Requirements', 'Reprog Indus - HexUlp'],
+    REQ_105: undefined
+  });
+  // The order is the navigation's: zeta (HexOgen) before renault, then the glob sorted (a, b).
+  const order = id => catalog.requirements.find(r => r.id === id).place.at(-1)[1];
+  assert.ok(order('REQ_102') > catalog.requirements.find(r => r.id === 'REQ_101').place[2][1]);
+  assert.ok(order('REQ_104') < order('REQ_103') && order('REQ_102') < order('REQ_104'));
+  // Without the start page, the top document's own title leads.
+  fs.rmSync(path.join(root, 'index.rst'));
+  assert.deepEqual((await requirementCatalog(root)).requirements.find(r => r.id === 'REQ_102').place.map(([t]) => t),
+    ['Reprog Indus - Requirements', 'Renault']);
+  // :reversed: lists the entries last to first, globbed ones included.
+  write('reprog/index.rst', title('Reprog Indus - Requirements') + '.. toctree::\n   :glob:\n   :reversed:\n\n   tools/*\n   renault/index\n');
+  const reversed = await requirementCatalog(root);
+  const at = id => reversed.requirements.find(r => r.id === id).place.at(-1)[1];
+  assert.ok(at('REQ_102') < at('REQ_103') && at('REQ_103') < at('REQ_104'), 'the reversed toctree kept its listed order');
+  // MyST toctrees and an overlined RST title.
+  assert.deepEqual(navDocument('# Guide\n\n```{toctree}\n:caption: Parts\n:glob:\n\npart-*\n```\n', '.md'),
+    { title: 'Guide', toctrees: [{ caption: 'Parts', glob: true, entries: ['part-*'] }] });
+  assert.equal(navDocument('=====\nTitle\n=====\n\nText\n', '.rst').title, 'Title');
+}
+
 async function visualAids() {
   const directory = temp();
   const repo = path.join(directory, 'repo');
@@ -349,7 +397,7 @@ async function service() {
 }
 
 (async () => {
-  for (const test of [schemaV1, schemaV2, schemaV3, portParity, requirements, visualAids, sources, service]) {
+  for (const test of [schemaV1, schemaV2, schemaV3, portParity, requirements, navigation, visualAids, sources, service]) {
     await test();
     console.log(`ok ${test.name}`);
   }

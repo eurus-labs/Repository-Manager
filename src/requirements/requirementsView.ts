@@ -2,11 +2,12 @@
  * The Requirements area of the Activity Bar, beside Repository Manager: one place to choose what
  * the Requirement editor shows.
  *
+ * - Requirements (first): the requirements the current file's items clarify, with whether each
+ *   is Ready, and under each the items that clarify it. The editor works out readiness (it needs
+ *   the unsaved items and the requirement text), so this view follows the file last shown in a
+ *   Requirement editor. A requirement's + adds an item for it, which then appears under it.
  * - Clarifications: the workspace's clarification ("dou") files, each opening to its items. A
  *   file open in the editor lists its items as they are in the editor, unsaved ones included.
- * - Requirements: the requirements the current file's items clarify, with whether each is Ready.
- *   The editor works out readiness (it needs the unsaved items and the requirement text), so this
- *   view follows the file last shown in a Requirement editor.
  *
  * A click opens the file and shows that item or requirement; the editor's own choice (a chip, a
  * Next action) is shown back here.
@@ -16,7 +17,7 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import { DouError, nowIso, parse } from './douDocument';
 import { decodeUtf8 } from './requirementCatalog';
-import { OutlineRequirement, PageOutline, REQUIREMENT_EDITOR_VIEW_TYPE, RequirementEditorProvider } from './requirementEditorProvider';
+import { OutlineItem, OutlineRequirement, PageOutline, REQUIREMENT_EDITOR_VIEW_TYPE, RequirementEditorProvider } from './requirementEditorProvider';
 
 export const REQUIREMENTS_VIEW_ID = 'repositoryManager.requirements';
 export const REQUIREMENTS_CATALOG_VIEW_ID = 'repositoryManager.requirementsCatalog';
@@ -81,20 +82,28 @@ type ItemNode = { kind: 'item'; file: ClarificationFile; item: ClarificationItem
 export type ClarificationNode = FileNode | ItemNode;
 type RequirementNode = { uri: vscode.Uri; requirement: OutlineRequirement };
 /** A folder of the requirement documents (a project), holding requirements and folders. */
-type RequirementFolderNode = { uri: vscode.Uri; folder: string; label: string; folders: RequirementFolderNode[]; requirements: RequirementNode[]; parent?: RequirementFolderNode };
-type CatalogNode = RequirementNode | RequirementFolderNode;
+/** A folder of the requirement documents, or a document of the navigation (with its order there): a project. */
+type RequirementFolderNode = { uri: vscode.Uri; folder: string; label: string; folders: RequirementFolderNode[]; requirements: RequirementNode[]; parent?: RequirementFolderNode; order?: number };
+/** An item of the current file that clarifies a requirement, under that requirement. */
+type RequirementItemNode = { uri: vscode.Uri; item: OutlineItem; parent: RequirementNode };
+type CatalogNode = RequirementNode | RequirementFolderNode | RequirementItemNode;
 const isFolder = (node: CatalogNode): node is RequirementFolderNode => 'folder' in node;
+const isItem = (node: CatalogNode): node is RequirementItemNode => 'item' in node;
 
 /**
- * The requirements as a tree of the folders their documents are in, one folder per project: the
- * folders every document shares are left out, and a folder with only one folder in it is joined
- * to it ("sw_reqs/boschkms_usage"). A requirement no document defines stays at the top.
+ * The requirements as a tree of their projects. Where the documentation's navigation (Sphinx
+ * toctrees) reaches a requirement's document, the tree follows it, with the documents' titles in
+ * the navigation's order ("Reprog Indus - Requirements › Reprog Indus - HexOgen"). Otherwise it is
+ * the folders the documents are in: the folders every such document shares are left out, and a
+ * folder with only one folder in it is joined to it ("sw_reqs/boschkms_usage"). A requirement no
+ * document defines stays at the top.
  * The shared folders come from every requirement, before `keep` filters them, so a filter that
  * leaves one requirement still shows it under its project.
  */
 export function requirementTree(uri: vscode.Uri, requirements: OutlineRequirement[], keep: (r: OutlineRequirement) => boolean = () => true): { top: CatalogNode[]; parents: Map<string, RequirementFolderNode> } {
+  const placed = (r: OutlineRequirement) => Boolean(r.place?.length);
   const dirs = requirements.map(r => (r.file || '').split('/').slice(0, -1).filter(Boolean));
-  const located = dirs.filter((_, i) => requirements[i].file);
+  const located = dirs.filter((_, i) => requirements[i].file && !placed(requirements[i]));
   let shared = located.length ? located[0].length : 0;
   for (const dir of located) {
     let n = 0;
@@ -105,9 +114,20 @@ export function requirementTree(uri: vscode.Uri, requirements: OutlineRequiremen
   requirements.forEach((requirement, i) => {
     if (!keep(requirement)) { return; }
     let at = root;
-    if (requirement.file) {
+    if (placed(requirement)) {
+      // Keyed by the titles above it too: two documents may share a title in different places.
+      for (const [n, [title, order]] of requirement.place!.entries()) {
+        const key = `nav:${requirement.place!.slice(0, n + 1).map(step => step[0]).join('\u203a')}`;
+        let next = at.folders.find(f => f.folder === key);
+        if (!next) {
+          next = { uri, folder: key, label: title, folders: [], requirements: [], order };
+          at.folders.push(next);
+        }
+        at = next;
+      }
+    } else if (requirement.file) {
       for (const name of dirs[i].slice(shared)) {
-        let next = at.folders.find(f => f.label === name);
+        let next = at.folders.find(f => f.label === name && f.order === undefined);
         if (!next) {
           next = { uri, folder: at.folder ? `${at.folder}/${name}` : name, label: name, folders: [], requirements: [] };
           at.folders.push(next);
@@ -118,19 +138,23 @@ export function requirementTree(uri: vscode.Uri, requirements: OutlineRequiremen
     at.requirements.push({ uri, requirement });
   });
   const parents = new Map<string, RequirementFolderNode>();
+  // The navigation's order first, then folders by name.
+  const byPlace = (a: RequirementFolderNode, b: RequirementFolderNode) =>
+    a.order !== undefined && b.order !== undefined ? a.order - b.order : a.order !== undefined ? -1 : b.order !== undefined ? 1 : a.label.localeCompare(b.label);
   const join = (folder: RequirementFolderNode, parent?: RequirementFolderNode): RequirementFolderNode => {
-    while (folder.folders.length === 1 && !folder.requirements.length) {
+    // Titled documents keep their own level, as the navigation shows them.
+    while (folder.order === undefined && folder.folders.length === 1 && folder.folders[0].order === undefined && !folder.requirements.length) {
       const only = folder.folders[0];
       folder = { ...only, label: `${folder.label}/${only.label}` };
     }
     folder.parent = parent;
     folder.folders = folder.folders.map(child => join(child, folder));
-    folder.folders.sort((a, b) => a.label.localeCompare(b.label));
+    folder.folders.sort(byPlace);
     for (const node of folder.requirements) { parents.set(node.requirement.id, folder); }
     return folder;
   };
   root.folders = root.folders.map(child => join(child));
-  root.folders.sort((a, b) => a.label.localeCompare(b.label));
+  root.folders.sort(byPlace);
   return { top: [...root.folders, ...root.requirements], parents };
 }
 
@@ -219,7 +243,7 @@ export class ClarificationsTreeProvider implements vscode.TreeDataProvider<Clari
       tree.iconPath = new vscode.ThemeIcon(item.unsaved ? 'circle-large-filled' : 'circle-filled', new vscode.ThemeColor(STATUS_COLORS[item.status] || 'descriptionForeground'));
       tree.tooltip = new vscode.MarkdownString().appendText(`${item.id} · ${item.status}${item.new ? ' · not saved yet' : item.unsaved ? ' · unsaved edits' : ''}\n\n${item.summary}`);
       tree.contextValue = 'clarificationItem';
-      tree.command = { command: 'repositoryManager.requirements.reveal', title: 'Show', arguments: [file.uri, 'item', item.id] };
+      tree.command = { command: 'repositoryManager.requirements.reveal', title: 'Show', arguments: [file.uri, 'item', item.id, REQUIREMENTS_VIEW_ID] };
       return tree;
     }
     const outline = this.editors.outlineFor(file.uri);
@@ -267,12 +291,14 @@ export class RequirementsCatalogProvider implements vscode.TreeDataProvider<Cata
   readonly onDidChangeTreeData = this.changed.event;
   filter = 'all';
   private tree: ReturnType<typeof requirementTree> | undefined;
+  /** The item nodes under each requirement, built with the tree so reveal finds the same nodes. */
+  private items = new Map<string, RequirementItemNode[]>();
 
   constructor(private readonly editors: RequirementEditorProvider) {
     editors.onDidChangeOutline(() => this.redraw());
   }
 
-  redraw(): void { this.tree = undefined; this.changed.fire(); }
+  redraw(): void { this.tree = undefined; this.items.clear(); this.changed.fire(); }
 
   get outline(): { uri: vscode.Uri; outline: PageOutline } | undefined {
     const current = this.editors.currentDocument;
@@ -290,13 +316,38 @@ export class RequirementsCatalogProvider implements vscode.TreeDataProvider<Cata
     return this.tree;
   }
 
+  /** The current file's items that clarify this requirement, in the file's order. */
+  private itemsOf(node: RequirementNode): RequirementItemNode[] {
+    const key = node.requirement.id;
+    let list = this.items.get(key);
+    if (!list) {
+      const items = this.outline?.outline.items ?? [];
+      list = items.filter(item => item.requirements.includes(key)).map(item => ({ uri: node.uri, item, parent: node }));
+      this.items.set(key, list);
+    }
+    return list;
+  }
+
   getChildren(element?: CatalogNode): CatalogNode[] {
     if (!element) { return this.current()?.top ?? []; }
-    return isFolder(element) ? [...element.folders, ...element.requirements] : [];
+    if (isFolder(element)) { return [...element.folders, ...element.requirements]; }
+    return isItem(element) ? [] : this.itemsOf(element);
   }
 
   getParent(element: CatalogNode): CatalogNode | undefined {
+    if (isItem(element)) { return element.parent; }
     return isFolder(element) ? element.parent : this.current()?.parents.get(element.requirement.id);
+  }
+
+  /** An item under the first requirement it clarifies that is shown now, to reveal it. */
+  itemNodeFor(id: string): RequirementItemNode | undefined {
+    const item = this.outline?.outline.items.find(x => x.id === id);
+    for (const requirement of item?.requirements ?? []) {
+      const node = this.nodeFor(requirement);
+      const found = node && this.itemsOf(node).find(x => x.item.id === id);
+      if (found) { return found; }
+    }
+    return undefined;
   }
 
   /** The node of a requirement shown now (not hidden by the filter), to reveal it. */
@@ -308,27 +359,40 @@ export class RequirementsCatalogProvider implements vscode.TreeDataProvider<Cata
   }
 
   getTreeItem(node: CatalogNode): vscode.TreeItem {
+    if (isItem(node)) {
+      const { item } = node;
+      const fileId = this.outline?.outline.id ?? '';
+      const tree = new vscode.TreeItem(fileId && item.id.startsWith(fileId + '-') ? item.id.slice(fileId.length + 1) : item.id, vscode.TreeItemCollapsibleState.None);
+      tree.id = `${node.uri.toString()}#req:${node.parent.requirement.id}#item:${item.id}`;
+      tree.description = (item.new ? '● new · ' : item.unsaved ? '● ' : '') + item.summary;
+      tree.iconPath = new vscode.ThemeIcon(item.unsaved ? 'circle-large-filled' : 'circle-filled', new vscode.ThemeColor(STATUS_COLORS[item.status] || 'descriptionForeground'));
+      tree.tooltip = new vscode.MarkdownString().appendText(`${item.id} · ${item.status}${item.new ? ' · not saved yet' : item.unsaved ? ' · unsaved edits' : ''}\n\n${item.summary}`);
+      tree.contextValue = 'requirementClarification';
+      tree.command = { command: 'repositoryManager.requirements.reveal', title: 'Show', arguments: [node.uri, 'item', item.id, REQUIREMENTS_CATALOG_VIEW_ID] };
+      return tree;
+    }
     if (isFolder(node)) {
       const tree = new vscode.TreeItem(node.label, vscode.TreeItemCollapsibleState.Expanded);
       tree.id = `${node.uri.toString()}#folder:${node.folder}`;
       const all = (f: RequirementFolderNode): OutlineRequirement[] => [...f.requirements.map(n => n.requirement), ...f.folders.flatMap(all)];
       const list = all(node);
       tree.description = `${list.filter(r => r.ready).length}/${list.length} Ready`;
-      tree.tooltip = node.folder;
-      tree.iconPath = new vscode.ThemeIcon('folder');
+      tree.tooltip = node.order === undefined ? node.folder : node.folder.slice(4).split('\u203a').join(' › ');
+      tree.iconPath = new vscode.ThemeIcon(node.order === undefined ? 'folder' : 'book');
       return tree;
     }
     const { uri, requirement: r } = node;
     // The ID only: titles are long; the tooltip and the editor show them.
-    const tree = new vscode.TreeItem(r.id, vscode.TreeItemCollapsibleState.None);
+    const tree = new vscode.TreeItem(r.id, this.itemsOf(node).length ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.None);
     tree.id = `${uri.toString()}#req:${r.id}`;
+    tree.contextValue = 'requirement';
     tree.description = r.ready ? 'Ready' : r.missing ? 'not found' : r.empty ? 'No clarification' : `${r.met}/${r.rules}`;
     tree.iconPath = r.ready ? new vscode.ThemeIcon('pass-filled', new vscode.ThemeColor('charts.green'))
       : r.missing ? new vscode.ThemeIcon('warning', new vscode.ThemeColor('problemsWarningIcon.foreground'))
       : r.empty ? new vscode.ThemeIcon('circle-large-outline')
       : new vscode.ThemeIcon('circle-filled', new vscode.ThemeColor('charts.yellow'));
     tree.tooltip = new vscode.MarkdownString().appendText(`${r.id}${r.title ? ' · ' + r.title : ''}${r.file ? `\n${r.file}` : ''}\n${r.ready ? 'Ready' : `Not ready: ${r.met} of ${r.rules} conditions met`} · ${r.clarifications} clarification${r.clarifications === 1 ? '' : 's'}${r.next ? `\nNext: ${r.next}` : ''}`);
-    tree.command = { command: 'repositoryManager.requirements.reveal', title: 'Show', arguments: [uri, 'req', r.id] };
+    tree.command = { command: 'repositoryManager.requirements.reveal', title: 'Show', arguments: [uri, 'req', r.id, REQUIREMENTS_CATALOG_VIEW_ID] };
     return tree;
   }
 
@@ -431,23 +495,25 @@ export function registerRequirements(context: vscode.ExtensionContext): void {
     status.tooltip = `${current.outline.id}: ${list.filter(r => r.ready).length} of ${list.length} requirements Ready${unsaved ? `, ${unsaved} unsaved field${unsaved === 1 ? '' : 's'}` : ''}. Click to show the Requirements side bar.`;
     status.show();
   };
-  // What the editor shows is selected in the side bar too (without taking the focus). It counts
-  // as shown only once revealed: a hidden view or a filter that hides it is tried again later.
-  let shown = '';
+  // What the editor shows is selected in the side bar too (without taking the focus), in each
+  // view that has it. It counts as shown in a view only once revealed there: a hidden view or a
+  // filter that hides it is tried again later.
+  const shown = new Map<string, string>();
   const follow = () => {
     const current = requirements.outline;
     const selected = current?.outline.selected;
     if (!current || !selected?.id) { return; }
     const key = `${current.uri.toString()}#${selected.kind}:${selected.id}`;
-    if (key === shown) { return; }
-    const reveal = <T>(view: vscode.TreeView<T>, node: T | undefined) => {
-      if (!view.visible || !node) { return; }
-      void Promise.resolve(view.reveal(node, { select: true, focus: false })).then(() => { shown = key; }, () => undefined);
+    const reveal = <T>(id: string, view: vscode.TreeView<T>, node: T | undefined) => {
+      if (shown.get(id) === key || !view.visible || !node) { return; }
+      void Promise.resolve(view.reveal(node, { select: true, focus: false })).then(() => { shown.set(id, key); }, () => undefined);
     };
     if (selected.kind === 'item') {
-      reveal(clarificationView, clarifications.itemNode(current.uri, selected.id));
+      // The item under its requirement too: a new item for a requirement shows where it belongs.
+      reveal(REQUIREMENTS_CATALOG_VIEW_ID, requirementView, requirements.itemNodeFor(selected.id));
+      reveal(REQUIREMENTS_VIEW_ID, clarificationView, clarifications.itemNode(current.uri, selected.id));
     } else {
-      reveal(requirementView, requirements.nodeFor(selected.id));
+      reveal(REQUIREMENTS_CATALOG_VIEW_ID, requirementView, requirements.nodeFor(selected.id));
     }
   };
   editors.onDidChangeOutline(() => { describe(); follow(); });
@@ -463,10 +529,12 @@ export function registerRequirements(context: vscode.ExtensionContext): void {
     requirementView.onDidChangeVisibility(follow),
     vscode.window.tabGroups.onDidChangeTabs(describe),
     vscode.commands.registerCommand('repositoryManager.requirements.refresh', () => clarifications.refresh()),
-    vscode.commands.registerCommand('repositoryManager.requirements.reveal', async (uri: vscode.Uri | string, kind: 'item' | 'req', id: string) => {
+    vscode.commands.registerCommand('repositoryManager.requirements.reveal', async (uri: vscode.Uri | string, kind: 'item' | 'req', id: string, from?: string) => {
       const target = typeof uri === 'string' ? vscode.Uri.parse(uri) : uri;
       await vscode.commands.executeCommand('vscode.openWith', target, REQUIREMENT_EDITOR_VIEW_TYPE);
-      shown = `${target.toString()}#${kind}:${id}`;
+      // Clicked in a view: already selected there, so not revealed again there. The other view
+      // still shows it (an item clicked in Clarifications is selected under its requirement).
+      if (from === REQUIREMENTS_VIEW_ID || from === REQUIREMENTS_CATALOG_VIEW_ID) { shown.set(from, `${target.toString()}#${kind}:${id}`); }
       editors.select(target, { kind, id });
     }),
     vscode.commands.registerCommand('repositoryManager.requirements.filterClarifications', async () => {
@@ -483,6 +551,11 @@ export function registerRequirements(context: vscode.ExtensionContext): void {
       if (!uri) { void vscode.window.showInformationMessage('Open a clarification file first, or use New Clarification File.'); return; }
       await vscode.commands.executeCommand('vscode.openWith', uri, REQUIREMENT_EDITOR_VIEW_TYPE);
       await whenReady(() => editors.command('addItem', uri));
+    }),
+    vscode.commands.registerCommand('repositoryManager.requirements.newItemFor', async (node?: CatalogNode) => {
+      if (!node || isFolder(node) || isItem(node)) { return; }
+      await vscode.commands.executeCommand('vscode.openWith', node.uri, REQUIREMENT_EDITOR_VIEW_TYPE);
+      await whenReady(() => editors.command('addItem', node.uri, node.requirement.id));
     }),
     vscode.commands.registerCommand('repositoryManager.requirements.changeSource', async () => {
       if (!editors.command('sourceDialog')) { void vscode.window.showInformationMessage('Open a clarification file first: the requirements source belongs to its repository.'); }

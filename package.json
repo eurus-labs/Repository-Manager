@@ -185,6 +185,12 @@
         "title": "Delete Agent Task",
         "category": "Repository Manager",
         "icon": "$(trash)"
+      },
+      {
+        "command": "repositoryManager.requirements.newItemFor",
+        "title": "New Clarification for This Requirement",
+        "category": "Repository Manager",
+        "icon": "$(add)"
       }
     ],
     "viewsContainers": {
@@ -217,13 +223,13 @@
       ],
       "repository-manager-requirements": [
         {
-          "id": "repositoryManager.requirements",
-          "name": "Clarifications",
+          "id": "repositoryManager.requirementsCatalog",
+          "name": "Requirements",
           "contextualTitle": "Requirements"
         },
         {
-          "id": "repositoryManager.requirementsCatalog",
-          "name": "Requirements",
+          "id": "repositoryManager.requirements",
+          "name": "Clarifications",
           "contextualTitle": "Requirements"
         }
       ],
@@ -302,6 +308,10 @@
         {
           "command": "repositoryManager.agent.deleteTask",
           "when": "false"
+        },
+        {
+          "command": "repositoryManager.requirements.newItemFor",
+          "when": "false"
         }
       ],
       "view/item/context": [
@@ -324,6 +334,11 @@
           "command": "repositoryManager.agent.deleteTask",
           "when": "view == repositoryManager.agent.tasks && viewItem == agentTask",
           "group": "9_delete"
+        },
+        {
+          "command": "repositoryManager.requirements.newItemFor",
+          "when": "view == repositoryManager.requirementsCatalog && viewItem == requirement",
+          "group": "inline@1"
         }
       ]
     },

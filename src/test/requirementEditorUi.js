@@ -297,6 +297,16 @@ async function main() {
     assert.deepEqual(host.opened[0], { file: path.join(repo, 'requirements', 'messaging.rst'), line: 3 }); // REQ-012 is on line 4; Range is 0-based
     await snap(page, '21-requirement-editor-requirements');
 
+    // + Propose acceptance criterion: goes to the criteria field of the requirement's open item.
+    await select(editor, 'req', 'REQ-012');
+    await send.locator('.subtabs [role=tab]', { hasText: 'Acceptance' }).click();
+    await send.locator('.criteria-actions button', { hasText: '+ Propose acceptance criterion' }).click();
+    await page.locator('#CLR-003-Q01').waitFor({ state: 'visible' });
+    assert.equal(await page.evaluate(() => document.activeElement.closest('.field')?.querySelector('label')?.textContent), 'Proposed acceptance criteria');
+    assert.equal(await page.evaluate(() => document.activeElement.closest('section')?.id), 'CLR-003-Q01');
+    await select(editor, 'req', 'REQ-012');
+    await send.locator('.subtabs [role=tab]', { hasText: 'Requirement' }).click();
+
     // + Create dou item: a new item for the requirement, saved like any edit.
     await select(editor, 'req', 'REQ-013');
     await page.click('#req-REQ-013 .next-action button.create');
@@ -419,6 +429,34 @@ async function main() {
     await fresh.page.locator('#CLR-001-Q02').waitFor();
     assert.equal((await fresh.page.textContent('#crumbs')).replace(/\s+/g, ' '), 'CLR-001.md › Clarifications › CLR-001-Q02');
     await fresh.page.close();
+    // The ＋ on a requirement in the side bar: the new item clarifies that requirement, so the
+    // outline lists it under it (the side bar then shows it in that requirement's tree).
+    const forReq = await open(path.join(repo, 'docs', 'CLR-001.md'), { onReady: document => assert.equal(provider.command('addItem', document.uri, 'REQ-013'), true) });
+    const linked = await outlineOf(forReq, o => o.items.length === 2 && o.selected.id === 'CLR-001-Q02', 'the item added for REQ-013');
+    assert.deepEqual(linked.items[1].requirements, ['REQ-013']);
+    assert.ok(linked.requirements.find(r => r.id === 'REQ-013').clarifications >= 1, 'REQ-013 does not count the new item');
+    await forReq.page.close();
+
+    // A requirement with no item in this file: + Propose acceptance criterion makes one for it
+    // and puts the cursor on the criteria placeholder, so typing replaces it.
+    const copy = path.join(repo, 'docs', 'CLR-007.md');
+    fs.copyFileSync(path.join(__dirname, 'fixtures', 'requirements', 'CLR-003.md'), copy);
+    fs.writeFileSync(copy, fs.readFileSync(copy, 'utf8').replaceAll('CLR-003', 'CLR-007'));
+    const proposing = await open(copy);
+    await outlineOf(proposing, o => o.requirements.length === 3, 'the requirements of the copy');
+    await select(proposing, 'req', 'REQ_020');
+    const receipts = proposing.page.locator('#req-REQ_020');
+    await receipts.locator('.subtabs [role=tab]', { hasText: 'Acceptance' }).click();
+    assert.equal(await receipts.locator('.criteria-actions button').getAttribute('title'), 'Creates a clarification for this requirement, where the criteria are proposed');
+    await receipts.locator('.criteria-actions button').click();
+    await proposing.page.locator('#CLR-007-Q03').waitFor({ state: 'visible' });
+    const focused = await proposing.page.evaluate(() => ({ section: document.activeElement.closest('section')?.id,
+      label: document.activeElement.closest('.field')?.querySelector('label')?.textContent,
+      selection: document.activeElement.value.slice(document.activeElement.selectionStart, document.activeElement.selectionEnd) }));
+    assert.deepEqual(focused, { section: 'CLR-007-Q03', label: 'Proposed acceptance criteria', selection: 'Pending' });
+    const made = await outlineOf(proposing, o => o.items.length === 3, 'the item made for REQ_020');
+    assert.deepEqual(made.items[2].requirements, ['REQ_020']);
+    await proposing.page.close();
 
     // A file that does not validate says why instead of showing a form.
     const broken = path.join(repo, 'docs', 'CLR-009.md');
