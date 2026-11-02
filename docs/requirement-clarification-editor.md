@@ -29,8 +29,11 @@ requests and agents edit it as text.
     of the six conditions are met. They are grouped as a tree of the folders
     their documents are in, one per project: the folders all documents share
     are left out, a folder holding only one folder is joined to it
-    (`sw_reqs/boschkms_usage`), and each folder says how many are Ready; the line above says how many are Ready and
-    where they come from. The funnel filters (Not ready, Ready, without a
+    (`sw_reqs/boschkms_usage`), and each folder says how many are Ready.
+    Projects are read from the folders because requirement repositories have
+    no common layout or project field (decided with the user, 2.15); a fixed
+    project depth can be added as an option if a team needs one. The line
+    above says how many are Ready and where they come from. The funnel filters (Not ready, Ready, without a
     clarification, with unresolved clarifications, not found); ⚙ changes the
     source.
   - A click shows that item or requirement in the editor; what the editor shows
@@ -190,7 +193,8 @@ and saves the whole file, including any other unsaved edits. On a resolved item
 the box offers "Reopen this item" (on by default), which sets Status to
 investigating: new input usually means another look. Roles are a free choice; the
 editor does not check who you are, and the approval of record is the pull request
-review.
+review. Each response keeps its author's name: it records who answered or, for
+the PO, who decided (kept on purpose in 2.15, when Owner was removed from items).
 
 ```json
 {"id": "EV-…", "at": "…", "author": "Lan", "role": "PO", "source": "Sprint 12 review", "content": "…"}
