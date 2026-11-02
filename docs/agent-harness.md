@@ -7,7 +7,7 @@ describes shipped behavior.
 ## Goal
 
 Turn the Review area into an agent that people give work to, not only a
-reviewer. A developer or a PO assigns a task; the agent proposes a plan as a
+reviewer. A developer gives it a task; the agent proposes a plan as a
 list of steps; each step runs only after a person approves it; the result is
 checked by deterministic code before the next step. The extension replaces
 Copilot Chat for this work *(decided)*: the agent lives in the extension and
@@ -20,15 +20,33 @@ accepted criteria, the review engine).
   front end for the Python Musubi harness *(decided)*. Musubi
   (`eurus-labs/Musubi`) is the reference for its concepts and its model
   configuration.
-- Who assigns: developers and POs *(decided)*.
+- Who gives work: POs at the requirement level, developers at the
+  implementation level (see Tasks have levels) *(decided)*.
 - Autonomy: the agent drafts a list of steps; a person approves each step
   before it runs *(decided)*.
 - Models: Copilot through `vscode.lm` first *(decided)*; external models later,
   configured the way Musubi does (below).
+- First task types *(decided)*: implement an accepted criterion of a
+  requirement; fix review findings; a free-form task typed by a developer.
+- Tasks have levels *(decided)*. A PO works at the requirement level: the
+  requirement and its accepted criteria, already shared as docs-as-code
+  clarification files, are what a PO hands over. Implementation tasks are
+  created by the developer who does them, not assigned by a PO, and are kept
+  on that developer's machine (extension storage), not in the repository. So
+  no shared task file is needed: the shared record stays the requirement.
+- Run logs are kept on the machine that ran the task *(decided)*, in the
+  extension's storage (they hold model output and tool results). A short
+  summary (outcome, checks, branch) may be written into the task when it is
+  done; it stays local like the task.
+- Commands a step may run *(decided)*: only the repository's own scripts (for
+  example `npm test`, `npm run lint`), approved once per repository, the way
+  the consent for sending code is asked once.
+- Rail *(proposed by the user, shape below awaits confirmation)*: the agent
+  and Review get their own Activity Bar icon.
 
 ## Concepts (from Musubi, adapted)
 
-- **Task**: a goal, who assigned it, the repository or repositories it may
+- **Task**: a goal, who created it, the repository or repositories it may
   touch, and its acceptance criteria.
 - **Frozen contract**: when the plan is approved, the goal and the acceptance
   criteria are fixed for the run. A step may not change them; changing them
@@ -80,10 +98,28 @@ accepted criteria, the review engine).
 
 ## Interface
 
-The rail's Review icon becomes **Agent**.
+Today the Activity Bar holds two icons from this extension, Repository Manager
+and Requirements; Review has no icon (it is an editor tab opened from the
+dashboard's ⋯ menu). The proposal adds **one** icon, not one for Review and
+another for the agent, because a review is a task type of the agent and two
+icons would show the same past reviews twice.
 
-- Side bar: **Tasks** grouped by state (Waiting for you, Running, To do, Done),
-  then **Past reviews** (a review is a task type), **Skills** and **Model**.
+- Container id `repository-manager-agent`, views `repositoryManager.agent.*`,
+  fixed from the first release. VS Code remembers where a user moved a view
+  by its id, so the ids must not change when the title does. The title is
+  **Review** while only reviews exist and becomes **Agent** in phase 1.
+- Why an icon of its own instead of a view inside Repository Manager: the
+  icon's badge. A step waiting for approval must be visible while the user is
+  in another area; the badge shows the number waiting for them. Before
+  phase 1 the badge counts blocking findings still to fix in the newest
+  review of each repository.
+- Phase 0 content: **Past reviews** from the existing review history
+  (`ReviewHistoryStore`, workspace state), grouped by repository, each row
+  with its target, readiness and finding counts; title buttons Review local
+  changes, Review branch and Open Review tab. Opening a row opens the Review
+  tab on that review.
+- Side bar from phase 1: **Tasks** grouped by state (Waiting for you, Running,
+  To do, Done), then **Past reviews**, **Skills** and **Model**.
 - Editor, one task: its goal and frozen criteria; the plan as a step list with
   each step's state; the current step's card with its intent, tools and
   expected paths and the Run / Edit / Skip / Stop buttons; after it runs, the
@@ -92,26 +128,19 @@ The rail's Review icon becomes **Agent**.
 
 ## Open questions (for the user)
 
-1. The first three task types. Proposed: implement an accepted acceptance
-   criterion of a requirement; fix review findings; a free-form task typed by a
-   developer.
-2. Where assigned tasks live so a PO and a developer share them. Proposed: as
-   files in the repository (docs-as-code), for example
-   `.repository-manager/tasks/TASK-012.md`, reviewed in pull requests like
-   clarification files. The alternative, local to one machine, cannot carry a
-   PO's assignment to a developer.
-3. Where run logs live. Proposed: the extension's storage on the machine that
-   ran the task (they hold model output and tool results), with a summary
-   written into the task file when it is done.
-4. Which commands a step may run. Proposed: the repository's own scripts,
-   approved once per repository, like the consent for sending code.
+1. The rail shape above: one icon titled Review now and Agent later, with
+   past reviews in phase 0. The alternative is to wait and add the icon only
+   with phase 1. (Earlier feedback said there are already too many side bars;
+   a third icon is the cost.)
 
 ## Phases
 
+0. The rail icon with Past reviews and the review commands (no agent yet).
 1. Harness core: `LmRouter` + `CopilotRouter`, the tool surface, plan and step
-   approval, the run log, free-form tasks, the Agent area UI.
+   approval, the run log, free-form tasks, the Agent area UI, local task storage.
 2. The review engine as the verifier; Fix review findings as a task type.
-3. Tasks assigned from Requirements (an accepted criterion becomes a task).
+3. Tasks from Requirements: the developer creates an implementation task
+   from an accepted criterion.
 4. External models from `.musubi/llm.json`.
 
 ## Risks
