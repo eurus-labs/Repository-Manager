@@ -9,9 +9,12 @@ const { execFileSync } = require('node:child_process');
 // limits, and a whole task on a real Git repository with scripted models: plan, approval (scripts,
 // clean tree, branch), a step whose check fails, Retry (undone, failure sent back), Accept, the
 // run log, recovery after a closed window, and the task page.
+// Only the approval question is used from VS Code here; the answer is scripted.
+const asked = [];
+const fakeVscode = { window: { showWarningMessage: async (message, options, ...choices) => { asked.push(options.detail); return asked.answer ?? choices[0]; } } };
 const originalLoad = Module._load;
 Module._load = function (request, parent, isMain) {
-  if (request === 'vscode') { return {}; }
+  if (request === 'vscode') { return fakeVscode; }
   return originalLoad.call(this, request, parent, isMain);
 };
 const out = path.resolve(__dirname, '../../out/agent');
@@ -21,7 +24,7 @@ const { AgentRunner, parsePlan, branchName, MAX_ATTEMPTS } = require(path.join(o
 const { TaskStore } = require(path.join(out, 'taskStore'));
 const { renderTaskBody } = require(path.join(out, 'agentPage'));
 const { taskGroup } = require(path.join(out, 'types'));
-const { ScriptApprovals, scriptCommand, describeScript } = require(path.join(out, 'agentView'));
+const { ScriptApprovals, scriptCommand, describeScript, AgentController } = require(path.join(out, 'agentView'));
 
 const token = { isCancellationRequested: false };
 const git = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
@@ -92,6 +95,16 @@ function toolLimits() {
     assert.match((await outcome('edit_file', { path: 'src/readme-link.md', oldText: '# Demo', newText: '# X' })).content, /leads to README\.md, which is not among the paths/);
     assert.equal(fs.readFileSync(path.join(root, 'README.md'), 'utf8').startsWith('# Demo'), true);
     fs.rmSync(path.join(root, 'src', 'meta')); fs.rmSync(path.join(root, 'src', 'readme-link.md'));
+    // Two links to one file: one record, by the file itself, whose undo restores the content from before.
+    fs.symlinkSync('retry.js', path.join(root, 'src', 'one.js'));
+    fs.symlinkSync('retry.js', path.join(root, 'src', 'two.js'));
+    const linked = new StepWorkspace(host, { tools: ['edit_file'], paths: ['src/'] });
+    assert.equal((await linked.invoke('edit_file', { path: 'src/one.js', oldText: 'attempts: 1', newText: 'attempts: 2' })).ok, true);
+    assert.equal((await linked.invoke('edit_file', { path: 'src/two.js', oldText: 'attempts: 2', newText: 'attempts: 3' })).ok, true);
+    assert.deepEqual([...linked.changes.values()].map(change => [change.path, change.before]), [['src/retry.js', 'module.exports = { attempts: 1 };\n']]);
+    assert.deepEqual(revertChanges(root, [...linked.changes.values()], () => false), []);
+    assert.equal(fs.readFileSync(path.join(root, 'src', 'retry.js'), 'utf8'), 'module.exports = { attempts: 1 };\n');
+    fs.rmSync(path.join(root, 'src', 'one.js')); fs.rmSync(path.join(root, 'src', 'two.js'));
     assert.match((await outcome('edit_file', { path: 'README.md', oldText: '#', newText: '##' })).content, /not among the paths/);
     dirty.add(path.join(root, 'src', 'retry.js'));
     assert.match((await outcome('edit_file', { path: 'src/retry.js', oldText: '1', newText: '3' })).content, /unsaved changes/);
@@ -403,6 +416,24 @@ async function failuresAndRecovery({ root, store, runner, turns, host, approve }
   assert.deepEqual(hooked.allowed('/r', { test: 'jest --all' }), []);
   assert.notEqual(scriptCommand({ test: 'a', posttest: 'b' }, 'test'), scriptCommand({ test: 'a' }, 'test'));
   assert.equal(describeScript({ test: 'jest', pretest: 'tsc' }, 'test'), 'npm run test  →  jest\n    with pretest: tsc');
+
+  // A check added after the plan was approved, or whose command changed, is asked about where it
+  // happens (Edit, Run): only the scripts not approved yet, and a refusal approves nothing.
+  const asking = { approvals: hooked };
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-approve-'));
+  fs.writeFileSync(path.join(repo, 'package.json'), JSON.stringify({ scripts: { lint: 'eslint .', test: 'jest', pretest: 'tsc' } }));
+  await hooked.approve(repo, { lint: 'eslint .' }, ['lint']);
+  asked.length = 0;
+  asked.answer = undefined;
+  assert.equal(await AgentController.prototype.approveScripts.call(asking, repo, ['lint']), true);
+  assert.equal(asked.length, 0, 'an approved script was asked about again');
+  asked.answer = 'no';
+  assert.equal(await AgentController.prototype.approveScripts.call(asking, repo, ['lint', 'test']), false);
+  assert.deepEqual(hooked.allowed(repo, { lint: 'eslint .', test: 'jest', pretest: 'tsc' }), ['lint']);
+  asked.answer = undefined;
+  assert.equal(await AgentController.prototype.approveScripts.call(asking, repo, ['lint', 'test']), true);
+  assert.equal(asked.at(-1), 'npm run test  →  jest\n    with pretest: tsc');
+  assert.deepEqual(hooked.allowed(repo, { lint: 'eslint .', test: 'jest', pretest: 'tsc' }), ['lint', 'test']);
 
   // A plan the model cannot give.
   const fourth = store.create({ title: 'Fourth', goal: 'g', criteria: ['c'], repositoryRoot: root });

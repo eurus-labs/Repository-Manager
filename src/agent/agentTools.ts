@@ -218,7 +218,8 @@ export class StepWorkspace {
     });
   }
 
-  private checkWritable(file: string): string {
+  /** The file a write really changes: its path (relative, links resolved) and its absolute path. */
+  private checkWritable(file: string): { absolute: string; target: string } {
     if (!pathAllowed(file, this.step.paths)) {
       throw new Error(`${file} is not among the paths this step may change (${this.step.paths.join(', ') || 'none'}). Finish and say which file is missing.`);
     }
@@ -228,18 +229,22 @@ export class StepWorkspace {
       throw new Error(`${file} leads to ${target}, which is not among the paths this step may change.`);
     }
     if (this.host.isDirty(absolute)) { throw new Error(`${file} has unsaved changes in an editor; it is not changed.`); }
-    return absolute;
+    return { absolute, target };
   }
 
-  private record(file: string, before: string | null, after: string): void {
-    const known = this.changes.get(file);
-    this.changes.set(file, { path: file, before: known ? known.before : before, after });
+  /**
+   * Keyed by the file really changed (links resolved), so two paths to one file keep one record
+   * whose "before" is the content from before the step, and undo puts that back.
+   */
+  private record(target: string, before: string | null, after: string): void {
+    const known = this.changes.get(target);
+    this.changes.set(target, { path: target, before: known ? known.before : before, after });
   }
 
   private editFile(input: Record<string, unknown>): ToolOutcome {
     const file = cleanPath(input.path);
     if (typeof input.oldText !== 'string' || !input.oldText || typeof input.newText !== 'string') { throw new Error('oldText and newText are required'); }
-    const absolute = this.checkWritable(file);
+    const { absolute, target } = this.checkWritable(file);
     const text = readText(absolute);
     const first = text.indexOf(input.oldText);
     if (first < 0) { throw new Error(`oldText was not found in ${file}; read the file again.`); }
@@ -247,7 +252,7 @@ export class StepWorkspace {
     const after = text.slice(0, first) + input.newText + text.slice(first + input.oldText.length);
     if (Buffer.byteLength(after) > MAX_FILE_BYTES) { throw new Error(`The result is larger than ${MAX_FILE_BYTES / 1024} KB`); }
     fs.writeFileSync(absolute, after);
-    this.record(file, text, after);
+    this.record(target, text, after);
     return { ok: true, content: `Edited ${file}.`, note: file };
   }
 
@@ -255,11 +260,11 @@ export class StepWorkspace {
     const file = cleanPath(input.path);
     if (typeof input.content !== 'string') { throw new Error('content is required'); }
     if (Buffer.byteLength(input.content) > MAX_FILE_BYTES) { throw new Error(`The content is larger than ${MAX_FILE_BYTES / 1024} KB`); }
-    const absolute = this.checkWritable(file);
+    const { absolute, target } = this.checkWritable(file);
     if (fs.existsSync(absolute)) { throw new Error(`${file} exists; use edit_file.`); }
     fs.mkdirSync(path.dirname(absolute), { recursive: true });
     fs.writeFileSync(absolute, input.content);
-    this.record(file, null, input.content);
+    this.record(target, null, input.content);
     return { ok: true, content: `Created ${file}.`, note: file };
   }
 

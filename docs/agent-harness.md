@@ -146,7 +146,9 @@ Code: `src/agent/` (`lmRouter.ts`, `agentTools.ts`, `agentRunner.ts`,
   and approving `test` never approves `deploy`. Only scripts a plan uses are
   asked about. Approval is checked again before every run, so a step that
   edits `package.json` cannot change what a check runs: that check is not run
-  and fails. Cancel stops a running script too. Other build systems are not
+  and fails. A check added by Edit after the plan was approved, or whose
+  command changed, is asked about when it is added or at Run. Cancel stops a
+  running script too. Other build systems are not
   supported yet.
 - A step's run: at most 25 tool calls; reading is always allowed; edits only
   to the paths the step lists (a folder covers what is under it), checked on
@@ -157,7 +159,8 @@ Code: `src/agent/` (`lmRouter.ts`, `agentTools.ts`, `agentRunner.ts`,
   anything else, so a second click does not start a second run.
 - Text that speaks to an AI is flagged wherever the model saw it: in
   `read_file` and in `search_code` results.
-- Every change keeps the content from before the step. A failed run, Retry,
+- Every change keeps the content from before the step, recorded by the file
+  really changed (two links to one file are one record). A failed run, Retry,
   and Stop on a step under review put it back; a file changed since the step
   is left as it is and named. The task is saved after every tool call, so a
   window closed mid-step is undone on the next start.

@@ -217,6 +217,8 @@ class TaskPage {
         case 'replan': runner.replan(this.id); break;
         case 'editStep': await this.agent.editStep(this.id, message.index ?? -1); break;
         case 'run': {
+          // A check whose command changed since it was approved is asked about again here.
+          if (!await this.agent.approveScriptsFor(this.id, true)) { return; }
           if (!await this.agent.confirmSending(this.id)) { return; }
           this.cancel = new vscode.CancellationTokenSource();
           await runner.runStep(this.id, this.cancel.token);
@@ -314,19 +316,27 @@ export class AgentController {
   }
 
   /** Asks once for the scripts the plan's checks use that are not approved yet (or changed since). */
-  async approveScriptsFor(id: string): Promise<boolean> {
+  async approveScriptsFor(id: string, onlyCurrentStep = false): Promise<boolean> {
     const task = this.store.get(id);
     if (!task) { return false; }
-    const scripts = readScripts(task.repositoryRoot);
-    const allowed = this.approvals.allowed(task.repositoryRoot, scripts);
-    const needed = [...new Set((task.plan ?? []).flatMap(step => step.checks))]
-      .filter(name => !allowed.includes(name) && scripts[name] !== undefined);
+    const steps = onlyCurrentStep ? (task.plan ?? []).slice(task.current, task.current + 1) : task.plan ?? [];
+    return this.approveScripts(task.repositoryRoot, steps.flatMap(step => step.checks));
+  }
+
+  /**
+   * Asks once for the scripts among `names` not approved yet (or whose command changed since), so
+   * every way a check gets into a step (plan approval, Edit, Run) can be approved where it happens.
+   */
+  async approveScripts(root: string, names: string[]): Promise<boolean> {
+    const scripts = readScripts(root);
+    const allowed = this.approvals.allowed(root, scripts);
+    const needed = [...new Set(names)].filter(name => !allowed.includes(name) && scripts[name] !== undefined);
     if (!needed.length) { return true; }
     const detail = needed.map(name => describeScript(scripts, name)).join('\n');
-    const choice = await vscode.window.showWarningMessage(`Allow the agent to run these scripts of ${path.basename(task.repositoryRoot)}? You are asked again only if a script's command changes.`,
+    const choice = await vscode.window.showWarningMessage(`Allow the agent to run these scripts of ${path.basename(root)}? You are asked again only if a script's command changes.`,
       { modal: true, detail }, 'Allow');
     if (choice !== 'Allow') { return false; }
-    await this.approvals.approve(task.repositoryRoot, scripts, needed);
+    await this.approvals.approve(root, scripts, needed);
     return true;
   }
 
@@ -352,7 +362,11 @@ export class AgentController {
       const scripts = Object.keys(readScripts(task.repositoryRoot));
       const picked = await vscode.window.showQuickPick(scripts.map(name => ({ label: name, picked: step.checks.includes(name) })),
         { canPickMany: true, title: 'Repository scripts that check this step' });
-      if (picked) { this.runner.editStep(id, index, { checks: picked.map(item => item.label) }); }
+      if (!picked) { return; }
+      // A check added after the plan was approved is approved here, not left to fail at Run.
+      const checks = picked.map(item => item.label);
+      if (task.frozenAt && !await this.approveScripts(task.repositoryRoot, checks.filter(name => !step.checks.includes(name)))) { return; }
+      this.runner.editStep(id, index, { checks });
       return;
     }
     const list = field.field === 'paths';
