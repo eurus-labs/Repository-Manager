@@ -217,6 +217,7 @@ async function wholeTask() {
   assert.match(page, /data-action="accept" disabled title="A check failed"/);
   assert.match(page, /Model &lt;b&gt;/);
   assert.match(page, /✗ test/);
+  assert.match(page, /data-action="acceptAnyway"/, 'a failed check offers Accept anyway');
 
   // Retry: the change is undone and the failure goes to the next run.
   runner.retry(task.id);
@@ -246,7 +247,7 @@ async function wholeTask() {
   return { root, store, runner, turns, host, approved, dirty, storage };
 }
 
-async function failuresAndRecovery({ root, store, runner, turns, host }) {
+async function failuresAndRecovery({ root, store, runner, turns, host, approved }) {
   git(root, 'commit', '-q', '-am', 'step 1');
   const task = store.create({ title: 'Second', goal: 'g', criteria: ['c'], repositoryRoot: root });
   turns.push({ final: { steps: [{ title: 'A', intent: 'a', tools: ['edit_file'], paths: ['src/'], checks: [] }, { title: 'B', intent: 'b', tools: [], paths: [], checks: [] }] } });
@@ -302,6 +303,29 @@ async function failuresAndRecovery({ root, store, runner, turns, host }) {
     if (run < MAX_ATTEMPTS - 1) { runner.retry(third.id); }
   }
   assert.throws(() => runner.retry(third.id), /already ran 3 times/);
+  assert.doesNotMatch(renderTaskBody(store.get(third.id), [], 'm'), /acceptAnyway/, 'no Accept anyway without a failed check');
+
+  // Accept anyway: a check that already failed before the task (this test always fails).
+  runner.accept(third.id);
+  git(root, 'switch', '-q', 'main');
+  fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({ scripts: { test: 'node -e "process.exit(1)"' } }));
+  git(root, 'commit', '-q', '-am', 'a failing test');
+  approved.length = 0; approved.push('test');
+  const fifth = store.create({ title: 'Fifth', goal: 'g', criteria: ['c'], repositoryRoot: root });
+  turns.push({ final: { steps: [{ title: 'A', intent: 'a', tools: ['edit_file'], paths: ['src/'], checks: ['test'] }] } });
+  await runner.plan(fifth.id, token);
+  await runner.approvePlan(fifth.id);
+  turns.push({ tool: 'edit_file', input: { path: 'src/retry.js', oldText: 'attempts: 1', newText: 'attempts: 4' } }, { final: { summary: 'x' } });
+  await runner.runStep(fifth.id, token);
+  assert.throws(() => runner.accept(fifth.id), /accept it anyway/);
+  runner.accept(fifth.id, { anyway: true });
+  const accepted = store.get(fifth.id);
+  assert.equal(accepted.status, 'done');
+  assert.deepEqual(accepted.plan[0].acceptedDespite, ['test']);
+  assert.equal(fs.readFileSync(path.join(root, 'src', 'retry.js'), 'utf8'), 'module.exports = { attempts: 4 };\n', 'the change is kept');
+  const anyway = store.readLog(fifth.id).find(entry => entry.action === 'acceptAnyway');
+  assert.equal(anyway.detail, 'failing: test');
+  assert.match(renderTaskBody(accepted, [], 'm'), /failing: test/);
 
   // A plan the model cannot give.
   const fourth = store.create({ title: 'Fourth', goal: 'g', criteria: ['c'], repositoryRoot: root });

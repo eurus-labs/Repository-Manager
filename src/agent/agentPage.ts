@@ -74,10 +74,11 @@ function stepCard(task: AgentTask, step: PlanStep, index: number): string {
   } else if (current && task.status === 'stepReview') {
     const failed = step.result?.checks.some(check => !check.passed) ? 'A check failed' : '';
     const spent = step.attempts >= MAX_ATTEMPTS ? `Ran ${MAX_ATTEMPTS} times` : '';
-    actions = button('accept', 'Accept', { primary: true, disabled: failed }) + button('retry', 'Retry', { disabled: spent }) + button('stop', 'Stop task');
+    actions = button('accept', 'Accept', { primary: true, disabled: failed }) +
+      (failed ? button('acceptAnyway', 'Accept anyway') : '') + button('retry', 'Retry', { disabled: spent }) + button('stop', 'Stop task');
   }
   return `<li class="step ${state}">
-    <div class="step-head"><span class="step-state">${escapeHtml(state)}</span> <strong>${index + 1}. ${escapeHtml(step.title)}</strong></div>
+    <div class="step-head"><span class="step-state">${escapeHtml(state)}</span> <strong>${index + 1}. ${escapeHtml(step.title)}</strong>${step.acceptedDespite?.length ? ` <span class="badge warning-badge" title="Accepted anyway">failing: ${escapeHtml(step.acceptedDespite.join(', '))}</span>` : ''}</div>
     <p>${escapeHtml(step.intent)}</p>
     ${task.status === 'planReview' || current ? stepDetails(step) : ''}
     ${current && task.status === 'stepReview' ? stepResult(task, step) : ''}

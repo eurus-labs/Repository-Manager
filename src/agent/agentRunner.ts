@@ -307,15 +307,22 @@ export class AgentRunner {
     this.setStatus(task, 'stepReady');
   }
 
-  /** Keeps the step's changes. Only when every check passed: the model's word is not enough. */
-  accept(id: string): AgentTask {
+  /**
+   * Keeps the step's changes. Only when every check passed (the model's word is not enough), unless
+   * the person chooses Accept anyway, for example for a check that failed before the task: then the
+   * failing checks are recorded on the step and in the run log.
+   */
+  accept(id: string, options: { anyway?: boolean } = {}): AgentTask {
     const task = this.load(id);
     this.expect(task, 'stepReview');
     const step = this.step(task);
     const failed = step.result?.checks.filter(check => !check.passed).map(check => check.script) ?? [];
-    if (failed.length) { throw new AgentError(`Checks failed: ${failed.join(', ')}. Retry the step, or stop the task.`); }
+    if (failed.length && !options.anyway) { throw new AgentError(`Checks failed: ${failed.join(', ')}. Retry the step, accept it anyway, or stop the task.`); }
     step.state = 'done';
-    this.store.log(id, { type: 'approval', action: 'accept', step: task.current });
+    if (failed.length) { step.acceptedDespite = failed; }
+    this.store.log(id, failed.length
+      ? { type: 'approval', action: 'acceptAnyway', step: task.current, detail: `failing: ${failed.join(', ')}` }
+      : { type: 'approval', action: 'accept', step: task.current });
     this.next(task);
     return task;
   }

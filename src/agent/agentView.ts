@@ -198,6 +198,14 @@ class TaskPage {
         }
         case 'cancel': this.cancel?.cancel(); break;
         case 'accept': runner.accept(this.id); break;
+        case 'acceptAnyway': {
+          const task = this.agent.store.get(this.id);
+          const checks = task?.plan?.[task.current]?.result?.checks.filter(check => !check.passed).map(check => check.script) ?? [];
+          const choice = await vscode.window.showWarningMessage(`Accept this step although ${checks.join(', ')} failed?`,
+            { modal: true, detail: 'Use this when the check failed before the task too. The step is marked as accepted with failing checks, here and in the run log.' }, 'Accept Anyway');
+          if (choice) { runner.accept(this.id, { anyway: true }); }
+          break;
+        }
         case 'retry': runner.retry(this.id); break;
         case 'skip': runner.skip(this.id); break;
         case 'stop': {

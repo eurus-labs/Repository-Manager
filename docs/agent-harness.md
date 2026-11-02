@@ -114,7 +114,8 @@ icon is the third. Container id `repository-manager-agent`, view
   may change, its tools and its checks, and Run / Edit / Skip / Stop; after
   it runs, its summary, changed files (Diff opens VS Code's diff against the
   content before the step), check results, text that speaks to an AI, its
-  tool calls, and Accept / Retry / Stop; the run log with tokens.
+  tool calls, and Accept / Retry / Stop (and Accept anyway when a check
+  failed); the run log with tokens.
 - Status bar: the task waiting for you, or how many, when any is.
 
 ## Phase 1 as built
@@ -153,20 +154,16 @@ Code: `src/agent/` (`lmRouter.ts`, `agentTools.ts`, `agentRunner.ts`,
   and Stop on a step under review put it back; a file changed since the step
   is left as it is and named. The task is saved after every tool call, so a
   window closed mid-step is undone on the next start.
-- Accept is refused while a check failed. A step runs at most 3 times. Retry
-  sends the failed checks' output with the next run.
-- The agent does not commit. Accepted steps stay as uncommitted changes on the
-  task's branch; the developer commits from the dashboard.
+- Accept is refused while a check failed. **Accept anyway** *(decided)*
+  keeps the step after a confirmation, for a check that failed before the
+  task too; the step is marked with its failing checks, on the page and in
+  the run log (`acceptAnyway`). A step runs at most 3 times. Retry sends the
+  failed checks' output with the next run.
+- The agent does not commit *(decided)*: accepted steps stay as uncommitted
+  changes on the task's branch, and the developer writes the commits from the
+  dashboard.
 - Tasks and run logs: JSON files and JSON Lines in the extension's workspace
   storage (`storageUri/agent`), never in the repository.
-
-## Open questions (for the user)
-
-1. Should the agent commit an accepted step on its branch (one commit per
-   step, as the person who accepted it), or keep leaving commits to the
-   developer as now?
-2. Accept is blocked while a check fails, including a check that already
-   failed before the task. Is an explicit "Accept anyway" wanted?
 
 ## Phases
 

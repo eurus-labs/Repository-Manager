@@ -71,6 +71,8 @@ export interface PlanStep {
   /** Runs so far (a Retry starts another). */
   attempts: number;
   result?: StepResult;
+  /** Checks that were failing when the person chose Accept anyway. */
+  acceptedDespite?: string[];
   /** Results of earlier attempts that were retried: what failed, sent with the next run. */
   feedback?: string;
 }

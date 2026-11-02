@@ -44,3 +44,4 @@ button:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-off
 .log { margin-top: 20px; }
 summary { cursor: pointer; color: var(--vscode-descriptionForeground); }
 @media (max-width: 520px) { body { padding: 0 12px 24px; } .step-facts { grid-template-columns: 1fr; } }
+.warning-badge { background: var(--vscode-editorWarning-foreground); color: var(--vscode-editor-background); }
