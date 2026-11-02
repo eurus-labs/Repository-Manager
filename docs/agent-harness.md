@@ -1,8 +1,9 @@
-# Agent harness (proposal)
+# Agent harness
 
-Status: **proposed, not implemented.** Decisions already made by the user are
-marked *(decided)*; the rest are proposals awaiting their review. Nothing here
-describes shipped behavior.
+Status: **phase 1 implemented (2.16.0)**; phases 2-4 are proposals. Decisions
+made by the user are marked *(decided)*. "Phase 1 as built" below records what
+the code does, including choices made while building it; the model paths have
+not been run against Copilot in VS Code yet.
 
 ## Goal
 
@@ -41,8 +42,9 @@ accepted criteria, the review engine).
 - Commands a step may run *(decided)*: only the repository's own scripts (for
   example `npm test`, `npm run lint`), approved once per repository, the way
   the consent for sending code is asked once.
-- Rail *(proposed by the user, shape below awaits confirmation)*: the agent
-  and Review get their own Activity Bar icon.
+- Rail *(decided)*: one Activity Bar icon, **Agent**, added with phase 1.
+  Review does not get an icon and is not listed in it; reviews stay in the
+  dashboard and the Review tab.
 
 ## Concepts (from Musubi, adapted)
 
@@ -93,50 +95,82 @@ accepted criteria, the review engine).
   unsaved changes in an editor (`reviewFixService`); flagging text in the
   repository that speaks to an AI (`aiDirectedText.ts`), shown on the step
   that read it.
-- **Where work happens**: each task runs on its own branch, created as the
-  first approved step, so the user's branch is never edited directly.
+- **Where work happens**: each task runs on its own branch, created when the
+  plan is approved, so the user's branch is never edited directly.
 
 ## Interface
 
-Today the Activity Bar holds two icons from this extension, Repository Manager
-and Requirements; Review has no icon (it is an editor tab opened from the
-dashboard's ⋯ menu). The proposal adds **one** icon, not one for Review and
-another for the agent, because a review is a task type of the agent and two
-icons would show the same past reviews twice.
+Today the Activity Bar holds Repository Manager and Requirements; the Agent
+icon is the third. Container id `repository-manager-agent`, view
+`repositoryManager.agent.tasks`.
 
-- Container id `repository-manager-agent`, views `repositoryManager.agent.*`,
-  fixed from the first release. VS Code remembers where a user moved a view
-  by its id, so the ids must not change when the title does. The title is
-  **Review** while only reviews exist and becomes **Agent** in phase 1.
-- Why an icon of its own instead of a view inside Repository Manager: the
-  icon's badge. A step waiting for approval must be visible while the user is
-  in another area; the badge shows the number waiting for them. Before
-  phase 1 the badge counts blocking findings still to fix in the newest
-  review of each repository.
-- Phase 0 content: **Past reviews** from the existing review history
-  (`ReviewHistoryStore`, workspace state), grouped by repository, each row
-  with its target, readiness and finding counts; title buttons Review local
-  changes, Review branch and Open Review tab. Opening a row opens the Review
-  tab on that review.
-- Side bar from phase 1: **Tasks** grouped by state (Waiting for you, Running,
-  To do, Done), then **Past reviews**, **Skills** and **Model**.
-- Editor, one task: its goal and frozen criteria; the plan as a step list with
-  each step's state; the current step's card with its intent, tools and
-  expected paths and the Run / Edit / Skip / Stop buttons; after it runs, the
-  diff, the checks and Accept / Retry / Stop; the run log.
-- Status bar: the task waiting for approval, if any.
+- Side bar: **Tasks** grouped by what each waits for (Waiting for you,
+  Running, To do, Done); New Agent Task in the view title; Delete in a task's
+  context menu. The view's badge counts the tasks waiting for you, which is
+  the reason for an icon of its own: a step waiting for approval is visible
+  from any other area.
+- Editor, one task: its goal and criteria (marked frozen once approved); the
+  plan as a step list with each step's state; the current step with what it
+  may change, its tools and its checks, and Run / Edit / Skip / Stop; after
+  it runs, its summary, changed files (Diff opens VS Code's diff against the
+  content before the step), check results, text that speaks to an AI, its
+  tool calls, and Accept / Retry / Stop; the run log with tokens.
+- Status bar: the task waiting for you, or how many, when any is.
+
+## Phase 1 as built
+
+Code: `src/agent/` (`lmRouter.ts`, `agentTools.ts`, `agentRunner.ts`,
+`taskStore.ts`, `agentPage.ts`, `agentView.ts`); tests:
+`src/test/agentHarnessSmoke.js` (scripted models on a real Git repository).
+
+- Router: `CopilotRouter` uses the JSON tool protocol only (`{"tool": …}` /
+  `{"final": …}`, one repair request for a malformed reply). Native tool
+  calling is not used yet; the minimum VS Code for it remains unverified.
+  The model is the one chosen in the dashboard's model menu.
+- Sending code asks according to `repositoryManager.copilot.askBeforeSending`,
+  sharing the per-repository "Always allow" with reviews.
+- A task's repository is a workspace folder's Git repository. Repositories
+  nested inside a folder (the dashboard's linked repositories) cannot be
+  chosen yet.
+- Planning may only read (`read_file`, `list_files`, `search_code`), with at
+  most 15 tool calls. The plan is checked: at most 10 steps; unknown tools,
+  paths leaving the repository and scripts the repository does not have are
+  dropped.
+- Approving the plan requires: every check script approved, and no
+  uncommitted changes to tracked files. It then creates `agent/<title>-<id>`
+  from the current branch and freezes the goal and criteria.
+- Scripts are the `package.json` scripts, run with `npm run`. They are approved
+  once per repository **per script, with its command**: a script whose command
+  changes asks again, and approving `test` never approves `deploy`. Only
+  scripts a plan uses are asked about. Other build systems are not supported
+  yet.
+- A step's run: at most 25 tool calls; reading is always allowed; edits only
+  to the paths the step lists (a folder covers what is under it), never into
+  `.git`, never through a link out of the repository, never to a file with
+  unsaved editor changes, at most 200 KB per file. The repository must be on
+  the task's branch.
+- Every change keeps the content from before the step. A failed run, Retry,
+  and Stop on a step under review put it back; a file changed since the step
+  is left as it is and named. The task is saved after every tool call, so a
+  window closed mid-step is undone on the next start.
+- Accept is refused while a check failed. A step runs at most 3 times. Retry
+  sends the failed checks' output with the next run.
+- The agent does not commit. Accepted steps stay as uncommitted changes on the
+  task's branch; the developer commits from the dashboard.
+- Tasks and run logs: JSON files and JSON Lines in the extension's workspace
+  storage (`storageUri/agent`), never in the repository.
 
 ## Open questions (for the user)
 
-1. The rail shape above: one icon titled Review now and Agent later, with
-   past reviews in phase 0. The alternative is to wait and add the icon only
-   with phase 1. (Earlier feedback said there are already too many side bars;
-   a third icon is the cost.)
+1. Should the agent commit an accepted step on its branch (one commit per
+   step, as the person who accepted it), or keep leaving commits to the
+   developer as now?
+2. Accept is blocked while a check fails, including a check that already
+   failed before the task. Is an explicit "Accept anyway" wanted?
 
 ## Phases
 
-0. The rail icon with Past reviews and the review commands (no agent yet).
-1. Harness core: `LmRouter` + `CopilotRouter`, the tool surface, plan and step
+1. *(Done in 2.16.0)* Harness core: `LmRouter` + `CopilotRouter`, the tool surface, plan and step
    approval, the run log, free-form tasks, the Agent area UI, local task storage.
 2. The review engine as the verifier; Fix review findings as a task type.
 3. Tasks from Requirements: the developer creates an implementation task
