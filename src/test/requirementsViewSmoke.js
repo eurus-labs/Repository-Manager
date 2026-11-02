@@ -189,10 +189,35 @@ async function main() {
   await tick();
 
   const requirements = await labels(reqs.provider);
-  assert.deepEqual(requirements.map(r => [r.label, r.description, r.iconPath.id]), [['REQ-012', 'Send messages · 2/6', 'circle-filled'], ['REQ-013', 'Manual retry · 1/6', 'circle-filled'], ['REQ_020', 'Read receipts · Ready', 'pass-filled']]);
+  // The ID only; the title is in the tooltip. No document is known here, so no folders.
+  assert.deepEqual(requirements.map(r => [r.label, r.description, r.iconPath.id]), [['REQ-012', '2/6', 'circle-filled'], ['REQ-013', '1/6', 'circle-filled'], ['REQ_020', 'Ready', 'pass-filled']]);
+  assert.match(requirements[0].tooltip.value, /^REQ-012 · Send messages/);
   assert.deepEqual(requirements[1].command.arguments.map(String), [String(uri), 'req', 'REQ-013']);
   assert.equal(reqs.message, '3 requirements · 1 ready · 0 without a clarification · from requirements');
   assert.equal(reqs.description, 'CLR-003');
+  // With documents known, the requirements are a tree of their folders (one per project): the
+  // folders all share (src/change_requests) are left out, a folder with one folder in it is
+  // joined to it, and a requirement no document defines stays at the top.
+  const base = outline.requirements[0];
+  const inFolders = { ...outline, selected: { kind: 'req', id: 'SW_REQ_2' }, requirements: [
+    { ...base, id: 'SW_REQ_1', ready: true, file: 'src/change_requests/proj_a/sw_reqs/usage/a.rst' },
+    { ...base, id: 'SW_REQ_2', ready: false, file: 'src/change_requests/proj_a/sw_reqs/usage/b.rst' },
+    { ...base, id: 'SW_REQ_3', ready: false, file: 'src/change_requests/proj_b/sw_reqs/c.rst' },
+    { ...base, id: 'SW_REQ_4', ready: false, missing: true, file: '' }] };
+  await listener({ type: 'outline', outline: inFolders });
+  await tick();
+  const top = await labels(reqs.provider);
+  assert.deepEqual(top.map(t => [t.label, t.description]), [['proj_a/sw_reqs/usage', '1/2 Ready'], ['proj_b/sw_reqs', '0/1 Ready'], ['SW_REQ_4', 'not found']]);
+  const projects = reqs.provider.getChildren();
+  assert.deepEqual((await labels(reqs.provider, projects[0])).map(t => t.label), ['SW_REQ_1', 'SW_REQ_2']);
+  // What the editor shows is revealed inside its folder: the tree knows each node's parent.
+  const shownReq = reqs.revealed.at(-1)[0];
+  assert.equal(shownReq.requirement.id, 'SW_REQ_2');
+  assert.equal(reqs.provider.getParent(shownReq), projects[0]);
+  assert.equal(reqs.provider.getParent(projects[0]), undefined);
+  await listener({ type: 'outline', outline });
+  await tick();
+
   prompts.pickLabel.push('Ready');
   await commands.get('repositoryManager.requirements.filterRequirements')();
   assert.deepEqual((await labels(reqs.provider)).map(r => r.label), ['REQ_020']);

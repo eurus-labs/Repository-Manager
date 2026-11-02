@@ -70,7 +70,6 @@ section[data-item] { background: none; border: 0; padding: 0; }
 .fact { display: grid; gap: 4px; align-content: start; }
 .fact .label { margin: 0; }
 .fact strong { font-size: 14px; }
-.fact.missing strong { color: var(--wip); }
 .meter { height: 4px; border-radius: 2px; background: var(--line); overflow: hidden; }
 .meter span { display: block; height: 100%; background: var(--done); }
 nav.jump { display: flex; gap: 4px; flex-wrap: wrap; padding-bottom: 8px; margin-bottom: 14px; border-bottom: 1px solid var(--line); }

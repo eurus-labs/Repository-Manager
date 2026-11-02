@@ -13,11 +13,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Review changes is on the changes it reviews (the uncommitted changes, a commit or a comparison); Review branch and the Review tab are in **⋯**.
 - The workspace folder is chosen at the top of the side bar (a Quick Pick), Align is on the **Repositories** title, and Commit on the **Changes** title. The side bar's title has Refresh.
 - The Activity Bar icon shows how many uncommitted changes the repository shown has.
+- The **Requirements** side bar groups the requirements by project, as a tree of the folders their documents are in, each folder saying how many are Ready. A requirement shows its ID only; its title is in the tooltip and the editor.
+- An item no longer shows an **Owner**, and Next action no longer asks for one or suggests a name: clarification files are shared, so they should not carry who does what.
 
 ### Fixed
 
 - Repository Manager's commands are always registered: with no folder open, Open Panel and the Git commands show an error saying to open a folder instead of VS Code's "command not found".
 - If one part of the extension fails to start, its commands are the only ones lost: the error is shown and written to **Output → Repository Manager**, and the Git commands keep working when Requirements fails (and the other way round).
+- A Git requirements source with deep folders syncs on Windows instead of failing with "Filename too long".
 
 ## [2.14.0] - 2026-11-02
 
