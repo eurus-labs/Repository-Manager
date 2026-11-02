@@ -5,6 +5,12 @@ All notable changes to Repository Manager will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Agent** in the Activity Bar: give the agent a task (a goal and its acceptance criteria) and it drafts a plan of steps with Copilot. Approving the plan freezes the goal and criteria and creates the task's own branch; each step runs only when you press Run, may change only the files it lists, and is checked by the repository's scripts (`npm run`), which you approve once per script, together with its command and its npm pre/post hooks (a step cannot change what a check runs). Accept keeps the step (when a check failed, **Accept anyway** keeps it and marks the failing checks), Retry undoes it and runs it again with what failed, Stop undoes a step waiting for review. The Tasks view's badge and the status bar show the tasks waiting for you; tasks and their run logs stay on this machine.
+
 ## [2.15.0] - 2026-11-02
 
 ### Changed

@@ -1,6 +1,8 @@
 const assert = require('node:assert/strict');
 const Module = require('node:module');
 const path = require('node:path');
+const fs = require('node:fs');
+const os = require('node:os');
 
 // Activating the extension: every command declared in package.json is registered with or without
 // a folder, a command run without a folder shows an error, and a part that throws while starting
@@ -50,7 +52,7 @@ const vscode = withStubs('vscode', {
     showErrorMessage: async message => { errors.push(message); return undefined; },
     showWarningMessage: async () => undefined,
     showInformationMessage: async () => undefined,
-    createTreeView() { if (failIn === 'requirements') { throw new Error('tree view broke'); } return stub('treeView'); },
+    createTreeView(id) { if (failIn === 'requirements' && id.startsWith('repositoryManager.requirements')) { throw new Error('tree view broke'); } return stub('treeView'); },
     registerWebviewViewProvider: () => ({ dispose() {} })
   })
 });
@@ -68,6 +70,8 @@ async function activate(options) {
     extension: { packageJSON: manifest },
     extensionUri: { fsPath: root, path: root },
     globalStorageUri: { fsPath: path.join(root, '.test-storage') },
+    // The Agent keeps its tasks here (workspace storage); none exist yet.
+    storageUri: { fsPath: fs.mkdtempSync(path.join(os.tmpdir(), 'activation-storage-')) },
     globalState: { get: key => state.get(key), update: async (key, value) => { state.set(key, value); }, keys: () => [...state.keys()], setKeysForSync() {} },
     workspaceState: { get: () => undefined, update: async () => undefined, keys: () => [] }
   });

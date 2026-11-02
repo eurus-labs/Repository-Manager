@@ -15,6 +15,7 @@ import { RepositoryManagerLauncher } from './repositoryManagerLauncher';
 import { RepositoryManagerPanel } from './repositoryManagerPanel';
 import { CHANGE_DOCUMENT_SCHEME, ChangeDocumentProvider } from './changeDocuments';
 import { registerRequirements } from './requirements/requirementsView';
+import { registerAgent } from './agent/agentView';
 
 let repositoryTreeProvider: RepositoryTreeProvider;
 let gitOps: GitOperations;
@@ -47,6 +48,7 @@ export function activate(context: vscode.ExtensionContext) {
 
   if (workspaceRoot) {
     step('Git commands', () => registerGit(context, workspaceRoot));
+    step('Agent', () => registerAgent(context));
   } else {
     // The commands are declared in package.json, so VS Code shows them (and the Activity Bar
     // shows the launcher) with no folder too: register them to say why they cannot run.
@@ -134,7 +136,7 @@ function registerGit(context: vscode.ExtensionContext, workspaceRoot: string): v
   context.subscriptions.push(watcher);
 }
 
-/** With no folder open, every Git command shows an error instead of being "not found". */
+/** With no folder open, every Git and Agent command shows an error instead of being "not found". */
 function registerWithoutFolder(context: vscode.ExtensionContext): void {
   const declared: string[] = (context.extension?.packageJSON?.contributes?.commands ?? []).map((c: { command: string }) => c.command);
   for (const id of declared.filter(id => !id.startsWith('repositoryManager.requirements.'))) {

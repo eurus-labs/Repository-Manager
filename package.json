@@ -2,7 +2,7 @@
   "name": "repository-manager",
   "displayName": "Repository Manager",
   "description": "Coordinate branches and Git workflows across a parent repository and its linked repositories from one VS Code dashboard",
-  "version": "2.15.0",
+  "version": "2.16.0",
   "publisher": "repository-manager",
   "engines": {
     "vscode": "^1.74.0"
@@ -168,6 +168,23 @@
         "command": "repositoryManager.requirements.reveal",
         "title": "Show in Requirement Editor",
         "category": "Repository Manager"
+      },
+      {
+        "command": "repositoryManager.agent.newTask",
+        "title": "New Agent Task",
+        "category": "Repository Manager",
+        "icon": "$(add)"
+      },
+      {
+        "command": "repositoryManager.agent.openTask",
+        "title": "Open Agent Task",
+        "category": "Repository Manager"
+      },
+      {
+        "command": "repositoryManager.agent.deleteTask",
+        "title": "Delete Agent Task",
+        "category": "Repository Manager",
+        "icon": "$(trash)"
       }
     ],
     "viewsContainers": {
@@ -181,6 +198,11 @@
           "id": "repository-manager-requirements",
           "title": "Requirements",
           "icon": "resources/requirements-icon.svg"
+        },
+        {
+          "id": "repository-manager-agent",
+          "title": "Agent",
+          "icon": "resources/agent-icon.svg"
         }
       ]
     },
@@ -203,6 +225,13 @@
           "id": "repositoryManager.requirementsCatalog",
           "name": "Requirements",
           "contextualTitle": "Requirements"
+        }
+      ],
+      "repository-manager-agent": [
+        {
+          "id": "repositoryManager.agent.tasks",
+          "name": "Tasks",
+          "contextualTitle": "Agent"
         }
       ]
     },
@@ -242,6 +271,11 @@
           "command": "repositoryManager.requirements.changeSource",
           "when": "view == repositoryManager.requirementsCatalog",
           "group": "navigation@2"
+        },
+        {
+          "command": "repositoryManager.agent.newTask",
+          "when": "view == repositoryManager.agent.tasks",
+          "group": "navigation@1"
         }
       ],
       "commandPalette": [
@@ -255,6 +289,18 @@
         },
         {
           "command": "repositoryManager.requirements.reveal",
+          "when": "false"
+        },
+        {
+          "command": "repositoryManager.agent.newTask",
+          "when": "workspaceFolderCount > 0"
+        },
+        {
+          "command": "repositoryManager.agent.openTask",
+          "when": "false"
+        },
+        {
+          "command": "repositoryManager.agent.deleteTask",
           "when": "false"
         }
       ],
@@ -273,6 +319,11 @@
           "command": "repositoryManager.requirements.newFile",
           "when": "view == repositoryManager.requirements && viewItem =~ /^clarificationFile/",
           "group": "1_new"
+        },
+        {
+          "command": "repositoryManager.agent.deleteTask",
+          "when": "view == repositoryManager.agent.tasks && viewItem == agentTask",
+          "group": "9_delete"
         }
       ]
     },
@@ -363,6 +414,10 @@
       {
         "view": "repositoryManager.requirementsCatalog",
         "contents": "Open a clarification file to see the requirements its items clarify, and which of them are Ready."
+      },
+      {
+        "view": "repositoryManager.agent.tasks",
+        "contents": "Give the agent a task: it drafts a plan of steps, and each step runs only after you approve it, on its own branch, checked by this repository's scripts.\n[New Agent Task](command:repositoryManager.agent.newTask)"
       }
     ],
     "customEditors": [
@@ -385,7 +440,7 @@
     "watch": "tsc -watch -p ./",
     "pretest": "npm run compile && npm run lint",
     "lint": "eslint src --ext ts",
-    "test": "node ./out/test/runTest.js && node ./src/test/summaryWebviewSmoke.js && node ./src/test/historyActionHandlerSmoke.js && node ./src/test/historyRewriteHandlerSmoke.js && node ./src/test/conflictPredictionSmoke.js && node ./src/test/conflictExplanationSmoke.js && node ./src/test/conflictResolutionSmoke.js && node ./src/test/naturalUndoSmoke.js && node ./src/test/syncRecordedHandlerSmoke.js && node ./src/test/pullChangesSmoke.js && node ./src/test/autoFetchPanelSmoke.js && node ./src/test/backgroundFetchSmoke.js && node ./src/test/summaryProviderSmoke.js && node ./src/test/reviewSnapshotSmoke.js && node ./src/test/securityReviewSmoke.js && node ./src/test/securityReviewFindingsSmoke.js && node ./src/test/reviewReportSmoke.js && node ./src/test/reviewControllerSmoke.js && node ./src/test/reviewConsentSmoke.js && node ./src/test/reviewFixSmoke.js && node ./src/test/reviewLimitationsSmoke.js && node ./src/test/historyUpstreamSmoke.js && node ./src/test/reviewHistorySmoke.js && node ./src/test/reviewConversationSmoke.js && node ./src/test/historySearchSmoke.js && node ./src/test/repositoryListSmoke.js && node ./src/test/branchDeleteHandlerSmoke.js && node ./src/test/sidebarViewSmoke.js && node ./src/test/reviewResumeSmoke.js && node ./src/test/reviewSkillsSmoke.js && node ./src/test/reviewTriageCarrySmoke.js && node ./src/test/reviewBridgeSmoke.js && node ./src/test/commitHandlerSmoke.js && node ./src/test/commitMessageSmoke.js && node ./src/test/liveChangesSmoke.js && node ./src/test/reviewFileCoverageSmoke.js && node ./src/test/reviewExplainSmoke.js && node ./src/test/aiDirectedTextSmoke.js && node ./src/test/reviewRetrySmoke.js && node ./src/test/reviewSnapshotKeepSmoke.js && node ./src/test/stashSmoke.js && node ./src/test/stashActionSmoke.js && node ./src/test/discardSmoke.js && node ./src/test/changeDocumentsSmoke.js && node ./src/test/dashboardOpenSmoke.js && node ./src/test/pushCreatedBranchesSmoke.js && node ./src/test/modelPreferencesSmoke.js && node ./src/test/requirementsParserSmoke.js && node ./src/test/requirementsViewSmoke.js && node ./src/test/activationSmoke.js",
+    "test": "node ./out/test/runTest.js && node ./src/test/summaryWebviewSmoke.js && node ./src/test/historyActionHandlerSmoke.js && node ./src/test/historyRewriteHandlerSmoke.js && node ./src/test/conflictPredictionSmoke.js && node ./src/test/conflictExplanationSmoke.js && node ./src/test/conflictResolutionSmoke.js && node ./src/test/naturalUndoSmoke.js && node ./src/test/syncRecordedHandlerSmoke.js && node ./src/test/pullChangesSmoke.js && node ./src/test/autoFetchPanelSmoke.js && node ./src/test/backgroundFetchSmoke.js && node ./src/test/summaryProviderSmoke.js && node ./src/test/reviewSnapshotSmoke.js && node ./src/test/securityReviewSmoke.js && node ./src/test/securityReviewFindingsSmoke.js && node ./src/test/reviewReportSmoke.js && node ./src/test/reviewControllerSmoke.js && node ./src/test/reviewConsentSmoke.js && node ./src/test/reviewFixSmoke.js && node ./src/test/reviewLimitationsSmoke.js && node ./src/test/historyUpstreamSmoke.js && node ./src/test/reviewHistorySmoke.js && node ./src/test/reviewConversationSmoke.js && node ./src/test/historySearchSmoke.js && node ./src/test/repositoryListSmoke.js && node ./src/test/branchDeleteHandlerSmoke.js && node ./src/test/sidebarViewSmoke.js && node ./src/test/reviewResumeSmoke.js && node ./src/test/reviewSkillsSmoke.js && node ./src/test/reviewTriageCarrySmoke.js && node ./src/test/reviewBridgeSmoke.js && node ./src/test/commitHandlerSmoke.js && node ./src/test/commitMessageSmoke.js && node ./src/test/liveChangesSmoke.js && node ./src/test/reviewFileCoverageSmoke.js && node ./src/test/reviewExplainSmoke.js && node ./src/test/aiDirectedTextSmoke.js && node ./src/test/reviewRetrySmoke.js && node ./src/test/reviewSnapshotKeepSmoke.js && node ./src/test/stashSmoke.js && node ./src/test/stashActionSmoke.js && node ./src/test/discardSmoke.js && node ./src/test/changeDocumentsSmoke.js && node ./src/test/dashboardOpenSmoke.js && node ./src/test/pushCreatedBranchesSmoke.js && node ./src/test/modelPreferencesSmoke.js && node ./src/test/requirementsParserSmoke.js && node ./src/test/requirementsViewSmoke.js && node ./src/test/activationSmoke.js && node ./src/test/agentHarnessSmoke.js",
     "test:ui": "npm run compile && node ./src/test/uiSnapshots.js && node ./src/test/requirementEditorUi.js",
     "package": "vsce package",
     "bench:load": "node ./src/test/loadBench.js"
