@@ -10,7 +10,7 @@ import * as path from 'path';
 import { execFile, spawn } from 'child_process';
 import { randomBytes } from 'crypto';
 import { AgentRunner, RunnerHost } from './agentRunner';
-import { CopilotApi, CopilotChatModel, CopilotRouter } from './lmRouter';
+import { CancelToken, CopilotApi, CopilotChatModel, CopilotRouter } from './lmRouter';
 import { renderTaskBody, renderTaskPage } from './agentPage';
 import { TaskStore } from './taskStore';
 import { AgentTask, AgentToolName, CheckResult, TaskGroup, taskGroup, WRITE_TOOLS } from './types';
@@ -101,17 +101,21 @@ function readScripts(root: string): Record<string, string> {
   }
 }
 
-function runNpmScript(root: string, script: string): Promise<CheckResult> {
+function runNpmScript(root: string, script: string, token?: CancelToken): Promise<CheckResult> {
   const started = Date.now();
   return new Promise(resolve => {
+    if (token?.isCancellationRequested) { resolve({ script, passed: false, exitCode: null, output: 'Cancelled', durationMs: 0 }); return; }
     let output = '';
     const child = spawn(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['run', script], { cwd: root, shell: process.platform === 'win32', env: process.env });
     const add = (chunk: Buffer) => { output = (output + chunk.toString()).slice(-OUTPUT_TAIL); };
     child.stdout.on('data', add);
     child.stderr.on('data', add);
     const timer = setTimeout(() => { output += `\nStopped after ${SCRIPT_TIMEOUT_MS / 60000} minutes.`; child.kill(); }, SCRIPT_TIMEOUT_MS);
+    // Cancel stops the script, not only the model.
+    const cancelled = token?.onCancellationRequested?.(() => { output += '\nCancelled.'; child.kill(); });
     const finish = (exitCode: number | null) => {
       clearTimeout(timer);
+      cancelled?.dispose();
       resolve({ script, passed: exitCode === 0, exitCode, output, durationMs: Date.now() - started });
     };
     child.on('error', error => { output += `\n${error.message}`; finish(null); });
@@ -119,7 +123,22 @@ function runNpmScript(root: string, script: string): Promise<CheckResult> {
   });
 }
 
-/** Scripts approved per repository, with the command each had then: a changed command asks again. */
+/**
+ * What `npm run <name>` runs: npm runs pre<name> and post<name> around it, so they are part of
+ * what is approved, and a change to any of the three asks again.
+ */
+export function scriptCommand(scripts: Record<string, string>, name: string): string | undefined {
+  if (scripts[name] === undefined) { return undefined; }
+  return [scripts[`pre${name}`], scripts[name], scripts[`post${name}`]].map(command => command ?? '').join('\n');
+}
+
+/** How the approval question shows a script: its command, and the hooks npm runs with it. */
+export function describeScript(scripts: Record<string, string>, name: string): string {
+  const hooks = [`pre${name}`, `post${name}`].filter(hook => scripts[hook] !== undefined).map(hook => `\n    with ${hook}: ${scripts[hook]}`).join('');
+  return `npm run ${name}  →  ${scripts[name]}${hooks}`;
+}
+
+/** Scripts approved per repository, with the commands each ran then: a changed command asks again. */
 export class ScriptApprovals {
   constructor(private readonly memento: vscode.Memento) {}
   private all(): Record<string, Record<string, string>> {
@@ -128,17 +147,19 @@ export class ScriptApprovals {
   }
   allowed(root: string, scripts: Record<string, string>): string[] {
     const approved = this.all()[root] ?? {};
-    return Object.keys(scripts).filter(name => approved[name] === scripts[name]);
+    return Object.keys(scripts).filter(name => approved[name] !== undefined && approved[name] === scriptCommand(scripts, name));
   }
-  async approve(root: string, scripts: Record<string, string>): Promise<void> {
+  async approve(root: string, scripts: Record<string, string>, names: string[]): Promise<void> {
     const all = this.all();
-    await this.memento.update(APPROVED_SCRIPTS_KEY, { ...all, [root]: { ...(all[root] ?? {}), ...scripts } });
+    const commands = Object.fromEntries(names.map(name => [name, scriptCommand(scripts, name) ?? '']));
+    await this.memento.update(APPROVED_SCRIPTS_KEY, { ...all, [root]: { ...(all[root] ?? {}), ...commands } });
   }
 }
 
 class TaskPage {
   private static readonly pages = new Map<string, TaskPage>();
   private cancel?: vscode.CancellationTokenSource;
+  private busy = false;
 
   static show(id: string, agent: AgentController): void {
     const open = TaskPage.pages.get(id);
@@ -174,6 +195,11 @@ class TaskPage {
 
   private async handle(message: { type?: string; action?: string; index?: number; path?: string }): Promise<void> {
     if (message.type !== 'action') { return; }
+    // One action at a time (a double click must not start two runs); Cancel always gets through.
+    if (message.action !== 'cancel' && message.action !== 'showDiff') {
+      if (this.busy) { return; }
+      this.busy = true;
+    }
     const runner = this.agent.runner;
     try {
       switch (message.action) {
@@ -197,13 +223,13 @@ class TaskPage {
           break;
         }
         case 'cancel': this.cancel?.cancel(); break;
-        case 'accept': runner.accept(this.id); break;
+        case 'accept': await runner.accept(this.id); break;
         case 'acceptAnyway': {
           const task = this.agent.store.get(this.id);
           const checks = task?.plan?.[task.current]?.result?.checks.filter(check => !check.passed).map(check => check.script) ?? [];
           const choice = await vscode.window.showWarningMessage(`Accept this step although ${checks.join(', ')} failed?`,
             { modal: true, detail: 'Use this when the check failed before the task too. The step is marked as accepted with failing checks, here and in the run log.' }, 'Accept Anyway');
-          if (choice) { runner.accept(this.id, { anyway: true }); }
+          if (choice) { await runner.accept(this.id, { anyway: true }); }
           break;
         }
         case 'retry': runner.retry(this.id); break;
@@ -218,6 +244,7 @@ class TaskPage {
     } catch (error) {
       void vscode.window.showErrorMessage(error instanceof Error ? error.message : String(error));
     } finally {
+      if (message.action !== 'cancel' && message.action !== 'showDiff') { this.busy = false; }
       this.update();
     }
   }
@@ -295,11 +322,11 @@ export class AgentController {
     const needed = [...new Set((task.plan ?? []).flatMap(step => step.checks))]
       .filter(name => !allowed.includes(name) && scripts[name] !== undefined);
     if (!needed.length) { return true; }
-    const detail = needed.map(name => `npm run ${name}  →  ${scripts[name]}`).join('\n');
+    const detail = needed.map(name => describeScript(scripts, name)).join('\n');
     const choice = await vscode.window.showWarningMessage(`Allow the agent to run these scripts of ${path.basename(task.repositoryRoot)}? You are asked again only if a script's command changes.`,
       { modal: true, detail }, 'Allow');
     if (choice !== 'Allow') { return false; }
-    await this.approvals.approve(task.repositoryRoot, Object.fromEntries(needed.map(name => [name, scripts[name]])));
+    await this.approvals.approve(task.repositoryRoot, scripts, needed);
     return true;
   }
 

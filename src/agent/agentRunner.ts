@@ -32,9 +32,10 @@ export interface RunnerHost {
   isDirty(absolutePath: string): boolean;
   /** The repository's scripts (package.json), by name. */
   scripts(root: string): Record<string, string>;
-  /** The scripts the person approved for this repository, unchanged since. */
+  /** The scripts the person approved for this repository, unchanged since (read at each call). */
   allowedScripts(root: string): string[];
-  runScript(root: string, script: string): Promise<CheckResult>;
+  /** Runs a script; cancelling the token stops it. */
+  runScript(root: string, script: string, token?: CancelToken): Promise<CheckResult>;
 }
 
 export class AgentError extends Error {}
@@ -170,7 +171,7 @@ export class AgentRunner {
     const task = this.load(id);
     this.expect(task, 'new');
     // Built before the status changes: a repository that is gone fails here, not stuck in planning.
-    const reader = new StepWorkspace({ root: task.repositoryRoot, isDirty: this.host.isDirty, allowedScripts: [], runScript: () => Promise.reject(new Error('No commands while planning')) },
+    const reader = new StepWorkspace({ root: task.repositoryRoot, isDirty: this.host.isDirty, allowedScripts: () => [], runScript: () => Promise.reject(new Error('No commands while planning')) },
       { tools: [], paths: [] });
     const scripts = Object.keys(this.host.scripts(task.repositoryRoot));
     task.plan = undefined;
@@ -247,19 +248,27 @@ export class AgentRunner {
     this.expect(task, 'stepReady');
     const step = this.step(task);
     if (step.attempts >= MAX_ATTEMPTS) { throw new AgentError(`This step already ran ${MAX_ATTEMPTS} times. Skip it or stop the task.`); }
-    const branch = await this.host.git.currentBranch(task.repositoryRoot);
-    if (branch !== task.branch) { throw new AgentError(`The repository is on ${branch || 'no branch'}; switch to ${task.branch} to run the task.`); }
-    const allowed = this.host.allowedScripts(task.repositoryRoot);
-    const unapproved = step.checks.filter(check => !allowed.includes(check));
-    if (unapproved.length) { throw new AgentError(`These scripts are not approved for this repository: ${unapproved.join(', ')}`); }
-    const workspace = new StepWorkspace({
-      root: task.repositoryRoot, isDirty: this.host.isDirty, allowedScripts: allowed,
-      runScript: script => this.host.runScript(task.repositoryRoot, script)
-    }, step);
-    step.attempts++;
+    // Reserved before the first await, so a second Run while this one starts is refused.
     step.result = { summary: '', changes: [], toolCalls: [], checks: [], aiText: [] };
-    this.store.log(id, { type: 'approval', action: 'run', step: task.current });
     this.setStatus(task, 'stepRunning');
+    let workspace: StepWorkspace;
+    try {
+      const branch = await this.host.git.currentBranch(task.repositoryRoot);
+      if (branch !== task.branch) { throw new AgentError(`The repository is on ${branch || 'no branch'}; switch to ${task.branch} to run the task.`); }
+      const unapproved = step.checks.filter(check => !this.host.allowedScripts(task.repositoryRoot).includes(check));
+      if (unapproved.length) { throw new AgentError(`These scripts are not approved for this repository: ${unapproved.join(', ')}`); }
+      workspace = new StepWorkspace({
+        root: task.repositoryRoot, isDirty: this.host.isDirty, allowedScripts: () => this.host.allowedScripts(task.repositoryRoot),
+        runScript: script => this.host.runScript(task.repositoryRoot, script, token)
+      }, step);
+    } catch (error) {
+      step.result = undefined;
+      this.setStatus(task, 'stepReady', error instanceof Error ? error.message : String(error));
+      throw error;
+    }
+    step.attempts++;
+    this.store.log(id, { type: 'approval', action: 'run', step: task.current });
+    this.store.save(task);
     const result: StepResult = step.result;
     try {
       const plan = (task.plan ?? []).map((item, index) => `${index + 1}. [${index === task.current ? 'CURRENT' : item.state}] ${item.title}`).join('\n');
@@ -281,7 +290,11 @@ export class AgentRunner {
       result.changes = [...workspace.changes.values()];
       result.aiText = workspace.aiText;
       for (const script of step.checks) {
-        const check = await this.host.runScript(task.repositoryRoot, script);
+        // Approved for its command: if the step changed the command, it does not run.
+        const check = this.host.allowedScripts(task.repositoryRoot).includes(script)
+          ? await this.host.runScript(task.repositoryRoot, script, token)
+          : { script, passed: false, exitCode: null, output: `Not run: the command of "${script}" changed during the step. Approve it again (or Retry, which undoes the change).`, durationMs: 0 };
+        if (token.isCancellationRequested) { throw new AgentError('Cancelled'); }
         result.checks.push(check);
         this.store.log(id, { type: 'check', step: task.current, script, passed: check.passed, exitCode: check.exitCode, durationMs: check.durationMs });
       }
@@ -312,10 +325,14 @@ export class AgentRunner {
    * the person chooses Accept anyway, for example for a check that failed before the task: then the
    * failing checks are recorded on the step and in the run log.
    */
-  accept(id: string, options: { anyway?: boolean } = {}): AgentTask {
+  async accept(id: string, options: { anyway?: boolean } = {}): Promise<AgentTask> {
     const task = this.load(id);
     this.expect(task, 'stepReview');
     const step = this.step(task);
+    // The changes reviewed are on the task's branch; after a switch they may be elsewhere.
+    const branch = await this.host.git.currentBranch(task.repositoryRoot);
+    if (branch !== task.branch) { throw new AgentError(`The repository is on ${branch || 'no branch'}; switch back to ${task.branch} to accept the step.`); }
+    this.expect(this.load(id), 'stepReview');
     const failed = step.result?.checks.filter(check => !check.passed).map(check => check.script) ?? [];
     if (failed.length && !options.anyway) { throw new AgentError(`Checks failed: ${failed.join(', ')}. Retry the step, accept it anyway, or stop the task.`); }
     step.state = 'done';

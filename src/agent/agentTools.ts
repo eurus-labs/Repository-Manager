@@ -25,8 +25,11 @@ export interface ToolHost {
   root: string;
   /** Whether an editor holds unsaved changes to this absolute path. */
   isDirty(absolutePath: string): boolean;
-  /** Scripts the person approved for this repository. */
-  allowedScripts: string[];
+  /**
+   * Scripts the person approved for this repository, read at each call: a step that changes a
+   * script's command (package.json) makes it unapproved until the person approves it again.
+   */
+  allowedScripts(): string[];
   runScript(script: string): Promise<CheckResult>;
 }
 
@@ -128,17 +131,27 @@ export class StepWorkspace {
     }
   }
 
-  /** The absolute path, refusing one that leaves the repository through a link. */
-  private resolve(relative: string, mustExist: boolean): string {
+  /**
+   * The absolute path, refusing one that leaves the repository or reaches .git through a link.
+   * Also returns the path a link leads to, relative to the repository, which is what a write
+   * really changes.
+   */
+  private locate(relative: string, mustExist: boolean): { absolute: string; target: string } {
     const absolute = path.join(this.realRoot, relative);
     let probe = absolute;
     while (!fs.existsSync(probe)) {
       if (mustExist) { throw new Error(`No such file or folder: ${relative}`); }
       probe = path.dirname(probe);
     }
-    const real = fs.realpathSync(probe);
+    const real = path.join(fs.realpathSync(probe), path.relative(probe, absolute));
     if (real !== this.realRoot && !real.startsWith(this.realRoot + path.sep)) { throw new Error(`Paths may not leave the repository: ${relative}`); }
-    return absolute;
+    const target = path.relative(this.realRoot, real).split(path.sep).join('/');
+    if (target.split('/')[0] === '.git') { throw new Error('The .git folder is not available'); }
+    return { absolute, target };
+  }
+
+  private resolve(relative: string, mustExist: boolean): string {
+    return this.locate(relative, mustExist).absolute;
   }
 
   private readFile(input: Record<string, unknown>): ToolOutcome {
@@ -157,11 +170,15 @@ export class StepWorkspace {
       shown++;
     }
     const end = start + shown - 1;
-    for (const warning of findAiDirectedText(file, slice.slice(0, shown).map((text, index) => ({ line: start + index, text })))) {
-      if (!this.aiText.some(item => item.path === warning.path && item.line === warning.line)) { this.aiText.push(warning); }
-    }
+    this.flag(findAiDirectedText(file, slice.slice(0, shown).map((text, index) => ({ line: start + index, text }))));
     const more = end < lines.length ? `\n(lines ${start}-${end} of ${lines.length}; read on with startLine ${end + 1})` : '';
     return { ok: true, content: `${file}\n${body}${more}`, note: `${file}:${start}-${end}` };
+  }
+
+  private flag(warnings: AiTextWarning[]): void {
+    for (const warning of warnings) {
+      if (!this.aiText.some(item => item.path === warning.path && item.line === warning.line)) { this.aiText.push(warning); }
+    }
   }
 
   private listFiles(input: Record<string, unknown>): ToolOutcome {
@@ -190,6 +207,11 @@ export class StepWorkspace {
         }
         const lines = stdout.split('\n').filter(Boolean);
         const shown = lines.slice(0, SEARCH_MAX).map(line => line.length > 300 ? `${line.slice(0, 299)}…` : line);
+        // What the model sees here counts as read: text speaking to an AI is flagged, as with read_file.
+        for (const line of lines.slice(0, SEARCH_MAX)) {
+          const match = /^(.*?):(\d+):(.*)$/.exec(line);
+          if (match) { this.flag(findAiDirectedText(match[1], [{ line: Number(match[2]), text: match[3] }])); }
+        }
         const more = lines.length > shown.length ? `\n(${lines.length - shown.length} more matches not shown)` : '';
         resolve({ ok: true, content: shown.length ? shown.join('\n') + more : 'No matches.', note: `"${query}" (${lines.length})` });
       });
@@ -200,7 +222,11 @@ export class StepWorkspace {
     if (!pathAllowed(file, this.step.paths)) {
       throw new Error(`${file} is not among the paths this step may change (${this.step.paths.join(', ') || 'none'}). Finish and say which file is missing.`);
     }
-    const absolute = this.resolve(file, false);
+    const { absolute, target } = this.locate(file, false);
+    // A link inside an allowed folder must not lead to a file the step may not change.
+    if (target !== file && !pathAllowed(target, this.step.paths)) {
+      throw new Error(`${file} leads to ${target}, which is not among the paths this step may change.`);
+    }
     if (this.host.isDirty(absolute)) { throw new Error(`${file} has unsaved changes in an editor; it is not changed.`); }
     return absolute;
   }
@@ -238,8 +264,9 @@ export class StepWorkspace {
   }
 
   private async runCheck(input: Record<string, unknown>): Promise<ToolOutcome> {
-    if (typeof input.script !== 'string' || !this.host.allowedScripts.includes(input.script)) {
-      throw new Error(`Only these scripts may run: ${this.host.allowedScripts.join(', ') || 'none'}`);
+    const allowed = this.host.allowedScripts();
+    if (typeof input.script !== 'string' || !allowed.includes(input.script)) {
+      throw new Error(`Only these scripts may run: ${allowed.join(', ') || 'none'} (a script whose command changed must be approved again)`);
     }
     const result = await this.host.runScript(input.script);
     return { ok: true, content: `exit code ${result.exitCode}\n${result.output}`, note: `${input.script}: ${result.passed ? 'passed' : 'failed'}` };

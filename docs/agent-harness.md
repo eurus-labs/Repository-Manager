@@ -141,15 +141,22 @@ Code: `src/agent/` (`lmRouter.ts`, `agentTools.ts`, `agentRunner.ts`,
   uncommitted changes to tracked files. It then creates `agent/<title>-<id>`
   from the current branch and freezes the goal and criteria.
 - Scripts are the `package.json` scripts, run with `npm run`. They are approved
-  once per repository **per script, with its command**: a script whose command
-  changes asks again, and approving `test` never approves `deploy`. Only
-  scripts a plan uses are asked about. Other build systems are not supported
-  yet.
+  once per repository **per script, with its command and the `pre<name>` and
+  `post<name>` hooks npm runs with it**: a change to any of them asks again,
+  and approving `test` never approves `deploy`. Only scripts a plan uses are
+  asked about. Approval is checked again before every run, so a step that
+  edits `package.json` cannot change what a check runs: that check is not run
+  and fails. Cancel stops a running script too. Other build systems are not
+  supported yet.
 - A step's run: at most 25 tool calls; reading is always allowed; edits only
-  to the paths the step lists (a folder covers what is under it), never into
-  `.git`, never through a link out of the repository, never to a file with
+  to the paths the step lists (a folder covers what is under it), checked on
+  the path a link leads to as well; never into `.git` (also not through a
+  link), never through a link out of the repository, never to a file with
   unsaved editor changes, at most 200 KB per file. The repository must be on
-  the task's branch.
+  the task's branch to run a step and to accept it. A Run is reserved before
+  anything else, so a second click does not start a second run.
+- Text that speaks to an AI is flagged wherever the model saw it: in
+  `read_file` and in `search_code` results.
 - Every change keeps the content from before the step. A failed run, Retry,
   and Stop on a step under review put it back; a file changed since the step
   is left as it is and named. The task is saved after every tool call, so a

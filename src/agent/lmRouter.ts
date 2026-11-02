@@ -35,7 +35,10 @@ export interface RouterResponse {
 }
 
 /** The part of a cancellation token the router reads (vscode.CancellationToken fits). */
-export interface CancelToken { readonly isCancellationRequested: boolean }
+export interface CancelToken {
+  readonly isCancellationRequested: boolean;
+  onCancellationRequested?(listener: () => unknown): { dispose(): unknown };
+}
 
 export interface LmRouter {
   call(system: string, messages: AgentMessage[], tools: ToolSpec[], token: CancelToken): Promise<RouterResponse>;
