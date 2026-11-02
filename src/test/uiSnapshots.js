@@ -2100,7 +2100,7 @@ async function main() {
     assert.deepEqual(nextPage, [100], 'scrolling to the end did not ask for exactly one next page');
     await nav.close();
 
-    for (const [width, name] of [[820, '04-narrow'], [680, '04b-narrower']]) {
+    for (const [width, name] of [[820, '04-narrow'], [680, '04b-narrower'], [600, '04f-narrowest']]) {
       const narrow = await openPage(width, 700);
       const layout = await narrow.evaluate(() => ({
         tallestRow: Math.max(...Array.from(document.querySelectorAll('.history-row')).map(row => row.getBoundingClientRect().height)),

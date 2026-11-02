@@ -3136,6 +3136,8 @@ body.sidebar-view { overflow: hidden; background: var(--vscode-sideBar-backgroun
 }
 @media (max-width: 650px) {
   .command-cluster-right { display: flex; gap: 6px; }
+  /* An older rule hid the 2nd to 4th commands here (New branch and Commit now): every command stays. */
+  .command-cluster .dashboard-command:nth-child(n) { display: inline-flex; }
   .dashboard-command-secondary .command-label { display: none; }
 }
 .sidebar-section-tools + .sidebar-section-tools { margin-left: 0; }
