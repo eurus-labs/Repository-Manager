@@ -243,7 +243,7 @@ export class ClarificationsTreeProvider implements vscode.TreeDataProvider<Clari
       tree.iconPath = new vscode.ThemeIcon(item.unsaved ? 'circle-large-filled' : 'circle-filled', new vscode.ThemeColor(STATUS_COLORS[item.status] || 'descriptionForeground'));
       tree.tooltip = new vscode.MarkdownString().appendText(`${item.id} · ${item.status}${item.new ? ' · not saved yet' : item.unsaved ? ' · unsaved edits' : ''}\n\n${item.summary}`);
       tree.contextValue = 'clarificationItem';
-      tree.command = { command: 'repositoryManager.requirements.reveal', title: 'Show', arguments: [file.uri, 'item', item.id] };
+      tree.command = { command: 'repositoryManager.requirements.reveal', title: 'Show', arguments: [file.uri, 'item', item.id, REQUIREMENTS_VIEW_ID] };
       return tree;
     }
     const outline = this.editors.outlineFor(file.uri);
@@ -368,7 +368,7 @@ export class RequirementsCatalogProvider implements vscode.TreeDataProvider<Cata
       tree.iconPath = new vscode.ThemeIcon(item.unsaved ? 'circle-large-filled' : 'circle-filled', new vscode.ThemeColor(STATUS_COLORS[item.status] || 'descriptionForeground'));
       tree.tooltip = new vscode.MarkdownString().appendText(`${item.id} · ${item.status}${item.new ? ' · not saved yet' : item.unsaved ? ' · unsaved edits' : ''}\n\n${item.summary}`);
       tree.contextValue = 'requirementClarification';
-      tree.command = { command: 'repositoryManager.requirements.reveal', title: 'Show', arguments: [node.uri, 'item', item.id] };
+      tree.command = { command: 'repositoryManager.requirements.reveal', title: 'Show', arguments: [node.uri, 'item', item.id, REQUIREMENTS_CATALOG_VIEW_ID] };
       return tree;
     }
     if (isFolder(node)) {
@@ -392,7 +392,7 @@ export class RequirementsCatalogProvider implements vscode.TreeDataProvider<Cata
       : r.empty ? new vscode.ThemeIcon('circle-large-outline')
       : new vscode.ThemeIcon('circle-filled', new vscode.ThemeColor('charts.yellow'));
     tree.tooltip = new vscode.MarkdownString().appendText(`${r.id}${r.title ? ' · ' + r.title : ''}${r.file ? `\n${r.file}` : ''}\n${r.ready ? 'Ready' : `Not ready: ${r.met} of ${r.rules} conditions met`} · ${r.clarifications} clarification${r.clarifications === 1 ? '' : 's'}${r.next ? `\nNext: ${r.next}` : ''}`);
-    tree.command = { command: 'repositoryManager.requirements.reveal', title: 'Show', arguments: [uri, 'req', r.id] };
+    tree.command = { command: 'repositoryManager.requirements.reveal', title: 'Show', arguments: [uri, 'req', r.id, REQUIREMENTS_CATALOG_VIEW_ID] };
     return tree;
   }
 
@@ -529,13 +529,12 @@ export function registerRequirements(context: vscode.ExtensionContext): void {
     requirementView.onDidChangeVisibility(follow),
     vscode.window.tabGroups.onDidChangeTabs(describe),
     vscode.commands.registerCommand('repositoryManager.requirements.refresh', () => clarifications.refresh()),
-    vscode.commands.registerCommand('repositoryManager.requirements.reveal', async (uri: vscode.Uri | string, kind: 'item' | 'req', id: string) => {
+    vscode.commands.registerCommand('repositoryManager.requirements.reveal', async (uri: vscode.Uri | string, kind: 'item' | 'req', id: string, from?: string) => {
       const target = typeof uri === 'string' ? vscode.Uri.parse(uri) : uri;
       await vscode.commands.executeCommand('vscode.openWith', target, REQUIREMENT_EDITOR_VIEW_TYPE);
-      // Clicked in the side bar: already selected there, so not revealed again.
-      const key = `${target.toString()}#${kind}:${id}`;
-      shown.set(REQUIREMENTS_VIEW_ID, key);
-      shown.set(REQUIREMENTS_CATALOG_VIEW_ID, key);
+      // Clicked in a view: already selected there, so not revealed again there. The other view
+      // still shows it (an item clicked in Clarifications is selected under its requirement).
+      if (from === REQUIREMENTS_VIEW_ID || from === REQUIREMENTS_CATALOG_VIEW_ID) { shown.set(from, `${target.toString()}#${kind}:${id}`); }
       editors.select(target, { kind, id });
     }),
     vscode.commands.registerCommand('repositoryManager.requirements.filterClarifications', async () => {

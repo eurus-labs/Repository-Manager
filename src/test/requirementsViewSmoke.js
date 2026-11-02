@@ -125,7 +125,7 @@ async function main() {
   const fileNodes = await clar.provider.getChildren();
   const items = await labels(clar.provider, fileNodes[2]);
   assert.deepEqual(items.map(i => [i.label, i.iconPath.color.id]), [['Q01', 'charts.yellow'], ['Q02', 'charts.blue']]);
-  assert.deepEqual(items[0].command.arguments.map(String), [`file://${path.join(docs, 'CLR-003.md')}`, 'item', 'CLR-003-Q01']);
+  assert.deepEqual(items[0].command.arguments.map(String), [`file://${path.join(docs, 'CLR-003.md')}`, 'item', 'CLR-003-Q01', 'repositoryManager.requirements']);
   assert.equal(clar.provider.getParent((await clar.provider.getChildren(fileNodes[2]))[0]), fileNodes[2]);
 
   // The status filter, picked from the funnel, hides other items and files without a match.
@@ -195,14 +195,14 @@ async function main() {
   // The ID only; the title is in the tooltip. No document is known here, so no folders.
   assert.deepEqual(requirements.map(r => [r.label, r.description, r.iconPath.id]), [['REQ-012', '2/6', 'circle-filled'], ['REQ-013', '1/6', 'circle-filled'], ['REQ_020', 'Ready', 'pass-filled']]);
   assert.match(requirements[0].tooltip.value, /^REQ-012 · Send messages/);
-  assert.deepEqual(requirements[1].command.arguments.map(String), [String(uri), 'req', 'REQ-013']);
+  assert.deepEqual(requirements[1].command.arguments.map(String), [String(uri), 'req', 'REQ-013', 'repositoryManager.requirementsCatalog']);
   assert.equal(reqs.message, '3 requirements · 1 ready · 0 without a clarification · from requirements');
   // Under each requirement, the items that clarify it; a requirement with none has no arrow.
   assert.deepEqual(requirements.map(r => [r.collapsibleState, r.contextValue]), [[1, 'requirement'], [1, 'requirement'], [0, 'requirement']]);
   const reqNodes = await reqs.provider.getChildren();
   const under = await labels(reqs.provider, reqNodes[0]);
   assert.deepEqual(under.map(i => [i.label, i.description]), [['Q01', '● Resend once after a timeout'], ['Q02', 'Duplicates after a day']]);
-  assert.deepEqual(under[1].command.arguments.map(String), [String(uri), 'item', 'CLR-003-Q02']);
+  assert.deepEqual(under[1].command.arguments.map(String), [String(uri), 'item', 'CLR-003-Q02', 'repositoryManager.requirementsCatalog']);
   assert.notEqual(under[0].id, (await labels(reqs.provider, reqNodes[1]))[0].id);
   assert.deepEqual((await labels(reqs.provider, reqNodes[1])).map(i => i.label), ['Q03']);
   const itemUnder = (await reqs.provider.getChildren(reqNodes[1]))[0];
@@ -211,6 +211,18 @@ async function main() {
   // The item the editor shows is selected under its requirement as well as in Clarifications.
   assert.equal(reqs.revealed.some(([node]) => node.item && node.item.id === 'CLR-003-Q03' && node.parent.requirement.id === 'REQ-013'), true,
     'the selected item was not revealed under its requirement');
+  // An item clicked in Clarifications is still selected under its requirement (and the other way round).
+  const clickedRow = (await labels(clar.provider, (await clar.provider.getChildren())[2]))[1];
+  assert.equal(clickedRow.command.arguments[3], 'repositoryManager.requirements');
+  const before = [reqs.revealed.length, clar.revealed.length];
+  await commands.get('repositoryManager.requirements.reveal')(...clickedRow.command.arguments);
+  await listener({ type: 'outline', outline: { ...outline, selected: { kind: 'item', id: 'CLR-003-Q02' } } });
+  await tick();
+  assert.equal(clar.revealed.length, before[1], 'the clicked view was revealed again');
+  assert.equal(reqs.revealed.length, before[0] + 1, 'the item clicked in Clarifications was not selected under its requirement');
+  assert.equal(reqs.revealed.at(-1)[0].item.id, 'CLR-003-Q02');
+  await listener({ type: 'outline', outline });
+  await tick();
   // A requirement's + adds an item that clarifies it, in that requirement's file.
   await commands.get('repositoryManager.requirements.newItemFor')(reqNodes[2]);
   assert.deepEqual(executed.at(-1).map(String), ['vscode.openWith', String(uri), 'repositoryManager.requirementEditor']);

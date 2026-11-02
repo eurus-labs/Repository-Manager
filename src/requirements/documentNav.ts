@@ -10,7 +10,7 @@
  */
 import * as path from 'path';
 
-export interface Toctree { caption?: string; glob: boolean; entries: string[] }
+export interface Toctree { caption?: string; glob: boolean; reversed?: boolean; entries: string[] }
 export interface NavDocument { title: string; toctrees: Toctree[] }
 /** One level of a place: its title, and where it comes in the navigation (to keep that order). */
 export type PlaceStep = [title: string, order: number];
@@ -38,6 +38,7 @@ function toctreeFrom(body: string[]): Toctree {
     if (option) {
       if (option[1] === 'caption') { tree.caption = option[2].trim(); }
       if (option[1] === 'glob') { tree.glob = true; }
+      if (option[1] === 'reversed') { tree.reversed = true; }
       continue;
     }
     options = false;
@@ -89,17 +90,21 @@ function globPattern(glob: string): RegExp {
   return new RegExp(`^${escaped}$`);
 }
 
-/** The documents an entry names: "doc", "Title <doc>", "/from/the/root", or a glob with :glob:. */
-function resolve(entry: string, from: string, glob: boolean, sourceRoot: string, names: string[]): string[] {
+/**
+ * The documents an entry names: "doc", "Title <doc>", "/from/the/root", or a glob with :glob:.
+ * A "Title <doc>" entry's title is what the navigation shows for that document, as in Sphinx.
+ */
+function resolve(entry: string, from: string, glob: boolean, sourceRoot: string, names: string[]): Array<{ doc: string; label?: string }> {
   const titled = /^(.*?)\s*<([^<>]+)>$/.exec(entry);
   const target = documentName((titled ? titled[2] : entry).trim());
   if (!target || target === 'self' || /^[a-z][a-z0-9+.-]*:/i.test(target)) { return []; }
   const joined = path.posix.normalize(target.startsWith('/') ? path.posix.join(sourceRoot, target.slice(1)) : path.posix.join(path.posix.dirname(from), target));
   if (glob && /[*?]/.test(target)) {
     const pattern = globPattern(joined);
-    return names.filter(name => name !== from && pattern.test(name)).sort();
+    return names.filter(name => name !== from && pattern.test(name)).sort().map(doc => ({ doc }));
   }
-  return names.includes(joined) ? [joined] : [];
+  const label = titled?.[1].trim();
+  return names.includes(joined) ? [{ doc: joined, label: label || undefined }] : [];
 }
 
 /**
@@ -108,13 +113,15 @@ function resolve(entry: string, from: string, glob: boolean, sourceRoot: string,
  */
 export function documentPlaces(documents: Map<string, NavDocument>, sourceRoot: string): Map<string, PlaceStep[]> {
   const names = [...documents.keys()].sort();
-  const children = new Map<string, Array<{ caption?: string; docs: string[] }>>();
+  const children = new Map<string, Array<{ caption?: string; docs: string[]; labels: Map<string, string> }>>();
   const listed = new Set<string>();
   for (const name of names) {
-    const trees = documents.get(name)!.toctrees.map(tree => ({
-      caption: tree.caption,
-      docs: tree.entries.flatMap(entry => resolve(entry, name, tree.glob, sourceRoot, names)).filter(doc => doc !== name)
-    }));
+    const trees = documents.get(name)!.toctrees.map(tree => {
+      const found = tree.entries.flatMap(entry => resolve(entry, name, tree.glob, sourceRoot, names)).filter(item => item.doc !== name);
+      // :reversed: lists the entries (globbed ones included) last to first, as Sphinx does.
+      if (tree.reversed) { found.reverse(); }
+      return { caption: tree.caption, docs: found.map(item => item.doc), labels: new Map(found.filter(item => item.label).map(item => [item.doc, item.label!])) };
+    });
     children.set(name, trees);
     trees.forEach(tree => tree.docs.forEach(doc => listed.add(doc)));
   }
@@ -140,7 +147,7 @@ export function documentPlaces(documents: Map<string, NavDocument>, sourceRoot: 
         const caption: PlaceStep[] = name === root && start && tree.caption ? [[tree.caption, order++]] : [];
         for (const doc of tree.docs) {
           if (places.has(doc)) { continue; }
-          places.set(doc, [...at, ...caption, [title(doc), order++]]);
+          places.set(doc, [...at, ...caption, [tree.labels.get(doc) ?? title(doc), order++]]);
           queue.push(doc);
         }
       }

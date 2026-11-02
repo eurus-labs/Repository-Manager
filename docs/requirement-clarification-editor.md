@@ -28,7 +28,8 @@ requests and agents edit it as text.
     page (a top document whose toctrees have captions) shows its captions
     instead of its own title; a top document is one no toctree lists, or, in a
     toctree that points back up, the shallowest one. `Title <doc>` entries,
-    `/`-rooted entries and `:glob:` are read; `self` and links are skipped.
+    `/`-rooted entries, `:glob:` and `:reversed:` are read (a `Title <doc>`
+    entry shows its own title, as Sphinx does); `self` and links are skipped.
     Requirements whose document no toctree reaches are grouped by folder: the
     folders all such documents share are left out, a folder holding only one
     folder is joined to it (`sw_reqs/boschkms_usage`). Each project says how

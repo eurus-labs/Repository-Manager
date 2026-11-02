@@ -227,7 +227,8 @@ async function navigation() {
   const places = Object.fromEntries(catalog.requirements.map(r => [r.id, r.place && r.place.map(([t]) => t)]));
   assert.deepEqual(places, {
     REQ_101: ['Software Requirements', 'Reprog Indus - Requirements', 'Reprog Indus - HexOgen', 'HexOgen software requirements'],
-    REQ_102: ['Software Requirements', 'Reprog Indus - Requirements', 'Reprog Indus - Renault KMS Middleware'],
+    // "Renault <renault/index>": the entry's own title is what the navigation shows, as in Sphinx.
+    REQ_102: ['Software Requirements', 'Reprog Indus - Requirements', 'Renault'],
     REQ_103: ['Software Requirements', 'Reprog Indus - Requirements', 'Reprog Indus - HexToOdx'],
     REQ_104: ['Software Requirements', 'Reprog Indus - Requirements', 'Reprog Indus - HexUlp'],
     REQ_105: undefined
@@ -239,7 +240,12 @@ async function navigation() {
   // Without the start page, the top document's own title leads.
   fs.rmSync(path.join(root, 'index.rst'));
   assert.deepEqual((await requirementCatalog(root)).requirements.find(r => r.id === 'REQ_102').place.map(([t]) => t),
-    ['Reprog Indus - Requirements', 'Reprog Indus - Renault KMS Middleware']);
+    ['Reprog Indus - Requirements', 'Renault']);
+  // :reversed: lists the entries last to first, globbed ones included.
+  write('reprog/index.rst', title('Reprog Indus - Requirements') + '.. toctree::\n   :glob:\n   :reversed:\n\n   tools/*\n   renault/index\n');
+  const reversed = await requirementCatalog(root);
+  const at = id => reversed.requirements.find(r => r.id === id).place.at(-1)[1];
+  assert.ok(at('REQ_102') < at('REQ_103') && at('REQ_103') < at('REQ_104'), 'the reversed toctree kept its listed order');
   // MyST toctrees and an overlined RST title.
   assert.deepEqual(navDocument('# Guide\n\n```{toctree}\n:caption: Parts\n:glob:\n\npart-*\n```\n', '.md'),
     { title: 'Guide', toctrees: [{ caption: 'Parts', glob: true, entries: ['part-*'] }] });
