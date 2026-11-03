@@ -157,6 +157,19 @@ async function main() {
     git('checkout', '--', 'app.js');
     git('reset', '-q', '--hard', head);
 
+    // A folder replaced by a link to an outside folder with the same reviewed content: the fix
+    // would write outside the repository, so it is refused.
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'review-fix-outside-'));
+    fs.cpSync(path.join(repo, 'src'), outside, { recursive: true });
+    fs.renameSync(path.join(repo, 'src'), path.join(repo, 'src.real'));
+    fs.symlinkSync(outside, path.join(repo, 'src'));
+    response = { edits: [{ path: 'src/paths.js', find: 'eval(target);', replace: 'x;' }] };
+    await rejects(propose({ result: { ...result, findings: [finding('s1', 'src/paths.js', 2)] }, findingIds: ['s1'] }), /symbolic link/);
+    assert.equal(fs.readFileSync(path.join(outside, 'paths.js'), 'utf8').includes('eval(target);'), true);
+    fs.rmSync(path.join(repo, 'src'));
+    fs.renameSync(path.join(repo, 'src.real'), path.join(repo, 'src'));
+    fs.rmSync(outside, { recursive: true, force: true });
+
     // A malformed entry in the edits array is rejected on its own; the valid edits still apply.
     response = { edits: [null, 7, [], { path: 'app.js', find: 'eval(input);', replace: 'JSON.parse(input);' }] };
     const tolerant = await propose();

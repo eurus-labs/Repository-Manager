@@ -166,7 +166,7 @@ export class ReviewSurveyService {
           skipped.push({ path, reason: 'gitlink, symlink or missing source blob' });
         } else if (isLockfile(path) && request.scope !== 'changes') {
           skipped.push({ path, reason: 'lockfile (reviewed only when it changes)' });
-        } else if ((snapshot.entry(path)?.size ?? 0) > MAX_FILE_BYTES) {
+        } else if ((entry.size ?? 0) > MAX_FILE_BYTES) {
           // Too large to read (generated output, data): left out now, not a failed check later,
           // which would also take the other files of its component down with it.
           skipped.push({ path, reason: `larger than ${MAX_FILE_BYTES / 1024 / 1024} MB (not read)` });

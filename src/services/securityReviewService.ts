@@ -253,8 +253,10 @@ export class SecurityReviewService {
       : `Partly reviewed: the model saw ${file.seen.toLocaleString('en-US')} of ${file.total.toLocaleString('en-US')} lines` }));
     const limitations = (Array.isArray(raw.limitations) ? raw.limitations.filter((item): item is string =>
       typeof item === 'string' && item.length <= 500) : []).slice(0, 10);
-    // Files that could not be read were left out; the rest of the component was reviewed.
+    // Files that could not be read were left out; the rest of the component was reviewed. Such a
+    // result is not saved, so running the review again tries those files again.
     const unreadable = raw.unreadable || [];
+    if (unreadable.length) { cacheable = false; }
     const left: Array<{ path: string; reason: string; partial?: boolean }> = [...skipped, ...unreadable.map(file => ({ path: file.path, reason: `not read: ${file.reason}` }))];
     const unitState: UnitState = { candidates: [], verdicts: {}, policyResults: [], invalid: [], recheckRules: [],
       skipped: left, limitations, analyzed: unit.paths.length - unreadable.length };

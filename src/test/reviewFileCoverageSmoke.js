@@ -11,7 +11,8 @@ Module._load = function (name, parent, isMain) {
   return originalLoad.call(this, name, parent, isMain);
 };
 const { SecurityReviewProvider } = require('../../out/services/securityReviewProvider.js');
-const { progressComponents } = require('../../out/services/securityReviewService.js');
+const { progressComponents, SecurityReviewService } = require('../../out/services/securityReviewService.js');
+const { ReviewUnitCache } = require('../../out/reviewUnitCache.js');
 const { GitCommandService } = require('../../out/services/gitCommandService.js');
 const { ReviewSurveyService, binaryPathsFromNumstat, changedTargetRanges, isLockfile } = require('../../out/services/reviewSurveyService.js');
 Module._load = originalLoad;
@@ -115,6 +116,31 @@ async function main() {
     const partial = await provider.analyze(brokenPlan, twoFiles, model, { isCancellationRequested: false }, () => {});
     assert.deepEqual(packets[0].files.map(file => file.path), ['out/constants.py']);
     assert.deepEqual(partial.unreadable, [{ path: 'out/gone.py', reason: 'File exceeds snapshot read budget' }]);
+    // In a review, an unreadable file is listed as not read, and the component's result is not saved,
+    // so running the review again tries that file again.
+    const state = new Map();
+    const cache = new ReviewUnitCache({ get: key => state.get(key), update: async (key, value) => { state.set(key, value); } });
+    let analyses = 0;
+    const flaky = { analyze: async (reviewPlan, unit) => { analyses++;
+      return { schemaVersion: 1, targetSha: reviewPlan.snapshot.targetSha, findings: [], policyResults: [], limitations: [], partialPaths: [],
+        unreadable: [{ path: unit.paths[0], reason: 'temporarily locked' }] }; },
+    selectModel: async () => model };
+    const service = new SecurityReviewService(new GitCommandService(repo), flaky, cache);
+    const reviewOnce = () => service.review({ repositoryPath: '.', targetSha: withBig, baseSha: target, scope: 'changes', categories: ['security'] },
+      { isCancellationRequested: false }, () => {});
+    const once = await reviewOnce();
+    assert.ok(once.coverage.skipped.some(item => item.path === 'out/constants.py' && item.reason === 'not read: temporarily locked'),
+      JSON.stringify(once.coverage.skipped));
+    await reviewOnce();
+    assert.equal(analyses, 2, 'a result with an unreadable file was reused instead of trying the file again');
+
+    // A deleted file larger than 1 MB is left out too (its size is read from the base side).
+    fs.rmSync(path.join(repo, 'out/target_CPY.TXT'));
+    const deleted = commit('drop generated output');
+    const deletePlan = await survey.plan({ repositoryPath: '.', targetSha: deleted, baseSha: withBig, scope: 'changes', categories: ['security'] });
+    assert.deepEqual(deletePlan.units, []);
+    assert.deepEqual(deletePlan.coverage.skipped.map(item => [item.path, item.reason]), [['out/target_CPY.TXT', 'larger than 1 MB (not read)']]);
+
     // When no file of the component can be read, the component fails as before.
     await assert.rejects(provider.analyze(brokenPlan, { component: 'out', paths: ['out/gone.py'], rules: [] }, model,
       { isCancellationRequested: false }, () => {}), /read budget/);

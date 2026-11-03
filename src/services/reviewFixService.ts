@@ -114,9 +114,19 @@ export class ReviewFixService {
     if (!paths.length) { throw new FixError('There are no files to fix.'); }
     if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(targetSha)) { throw new FixError('The review has no exact revision to compare with; review again.'); }
     const contents = new Map<string, string>();
+    let realRoot: string;
+    try { realRoot = fs.realpathSync(root); } catch { throw new FixError('The repository folder cannot be read.'); }
     for (const filePath of paths) {
       const absolute = path.join(root, filePath);
       if (isDirtyInEditor(absolute)) { throw new FixError(`${filePath} has unsaved changes in an editor. Save or revert them first.`); }
+      // The file itself, at its own path: a link anywhere on the way (a folder replaced by a link
+      // to somewhere else) would make the fix read and write a file outside the repository.
+      let real: string | undefined;
+      try { real = fs.realpathSync(absolute); } catch { real = undefined; }
+      const same = (a: string, b: string) => process.platform === 'win32' || process.platform === 'darwin' ? a.toLowerCase() === b.toLowerCase() : a === b;
+      if (real !== undefined && !same(real, path.join(realRoot, filePath))) {
+        throw new FixError(`${filePath} is reached through a symbolic link; auto-fix only edits files inside the repository, so fix it by hand.`);
+      }
       let stat: fs.Stats;
       try { stat = fs.statSync(absolute); } catch { throw new FixError(`${filePath} no longer exists in the working tree.`); }
       if (!stat.isFile()) { throw new FixError(`${filePath} is not a regular file.`); }
