@@ -253,8 +253,11 @@ export class SecurityReviewService {
       : `Partly reviewed: the model saw ${file.seen.toLocaleString('en-US')} of ${file.total.toLocaleString('en-US')} lines` }));
     const limitations = (Array.isArray(raw.limitations) ? raw.limitations.filter((item): item is string =>
       typeof item === 'string' && item.length <= 500) : []).slice(0, 10);
+    // Files that could not be read were left out; the rest of the component was reviewed.
+    const unreadable = raw.unreadable || [];
+    const left: Array<{ path: string; reason: string; partial?: boolean }> = [...skipped, ...unreadable.map(file => ({ path: file.path, reason: `not read: ${file.reason}` }))];
     const unitState: UnitState = { candidates: [], verdicts: {}, policyResults: [], invalid: [], recheckRules: [],
-      skipped, limitations, analyzed: unit.paths.length };
+      skipped: left, limitations, analyzed: unit.paths.length - unreadable.length };
     await this.collect(raw.findings.slice(0, 20), raw.policyResults.slice(0, 200), unit.rules.map(rule => rule.id),
       plan, unit, applied, unitState, failed);
     await this.verifyPending(plan, unit, unitState, model, token, report, state, failed);

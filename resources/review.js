@@ -221,14 +221,14 @@
   // Auto-fix: one button in the triage summary, and the proposal (or its outcome) below it.
   function renderFixAction(readiness) {
     const count = readiness.toFix || 0;
-    // A review of local changes read files you are still editing: auto-fix writes only over files with no local changes.
-    if (reviewState.kind === 'local') {
-      return '<button type="button" class="btn review-fix-action" data-action="proposeReviewFix" disabled title="Auto-fix needs committed files: fix your uncommitted changes in the editor, or commit them and review the commit to use auto-fix">Fix with Copilot…</button>';
-    }
     const busy = reviewState.fix && reviewState.fix.status === 'running';
-    const title = count ? 'Copilot proposes edits for the findings marked Needs fix; you see the diff before anything is written'
-      : 'Mark findings "Needs fix" first';
-    return `<button type="button" class="btn review-fix-action" data-action="proposeReviewFix" title="${title}"${count && !busy ? '' : ' disabled'}>Fix ${count || ''} with Copilot…</button>`;
+    // A review of local changes: the fix writes over your uncommitted files, only while each is still
+    // what was reviewed; the review's snapshot keeps the content from before.
+    const title = !count ? 'Mark findings "Needs fix" first'
+      : reviewState.kind === 'local'
+        ? 'Copilot proposes edits for the findings marked Needs fix; you see the diff before anything is written. It edits your uncommitted files only while each is still what was reviewed'
+        : 'Copilot proposes edits for the findings marked Needs fix; you see the diff before anything is written';
+    return `<button type="button" class="btn review-fix-action" data-action="proposeReviewFix" title="${escapeHtml(title)}"${count && !busy ? '' : ' disabled'}>Fix ${count || ''} with Copilot…</button>`;
   }
 
   const FIX_STEPS = [

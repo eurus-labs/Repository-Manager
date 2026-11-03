@@ -27,6 +27,8 @@ export interface RawUnitReview {
    * the total, and for a file whose first line alone is too long, how many characters of it were sent.
    */
   partialPaths: Array<{ path: string; seen: number; total: number; characters?: number }>;
+  /** Files of the component that could not be read: left out, with why (the rest was reviewed). */
+  unreadable?: Array<{ path: string; reason: string }>;
 }
 
 /** What a component sends up front: per file, and for all of its files together. */
@@ -148,43 +150,54 @@ export class SecurityReviewProvider {
     // Every file keeps a share of the component's budget, so early large files cannot crowd out the
     // rest, and all of them together stay within that budget.
     const floor = Math.min(4000, Math.floor(budget / Math.max(1, unit.paths.length)));
+    // A file that cannot be read is left out of this component, not the whole component with it.
+    const unreadable: Array<{ path: string; reason: string }> = [];
     for (const [index, path] of unit.paths.entries()) {
-      const source = plan.snapshot.fileExists(path) ? plan.snapshot : plan.base;
-      if (!source) { throw new Error(`File missing from both revisions: ${path}`); }
-      const limit = Math.min(INITIAL_FILE_CHARS, budget - (unit.paths.length - index - 1) * floor);
-      // A changed lockfile: only its changed entries (with 3 lines of context), at their real line
-      // numbers, so citations still check; unchanged packages and hashes are left out on purpose.
-      if (isLockfile(path) && plan.base && plan.snapshot.fileExists(path) && plan.base.fileExists(path)) {
-        const ranges = changedTargetRanges((await plan.snapshot.readDiff(plan.base.targetSha, path)).patch);
-        const key = `${plan.snapshot.targetSha}:${path}`;
-        const sent: Array<[number, number]> = [];
-        let used = 0;
-        let complete = true;
-        for (const [start, end] of ranges) {
-          const chunk = boundContent(await plan.snapshot.readFile(path, start, Math.min(500, end - start + 1)), limit - used);
-          if (chunk.endLine < chunk.startLine) { complete = false; break; }
-          used += chunk.content.length;
-          sent.push([chunk.startLine, chunk.endLine]);
-          files.push({ path, revision: plan.snapshot.targetSha, startLine: chunk.startLine, endLine: chunk.endLine,
-            totalLines: chunk.totalLines, content: chunk.content, truncated: true,
-            excerpt: 'lockfile: only the changed entries, with 3 lines of context' });
-          if (chunk.endLine < end) { complete = false; break; }
+      const sentBefore = files.length;
+      try {
+        const source = plan.snapshot.fileExists(path) ? plan.snapshot : plan.base;
+        if (!source) { throw new Error(`File missing from both revisions: ${path}`); }
+        const limit = Math.min(INITIAL_FILE_CHARS, budget - (unit.paths.length - index - 1) * floor);
+        // A changed lockfile: only its changed entries (with 3 lines of context), at their real line
+        // numbers, so citations still check; unchanged packages and hashes are left out on purpose.
+        if (isLockfile(path) && plan.base && plan.snapshot.fileExists(path) && plan.base.fileExists(path)) {
+          const ranges = changedTargetRanges((await plan.snapshot.readDiff(plan.base.targetSha, path)).patch);
+          const key = `${plan.snapshot.targetSha}:${path}`;
+          const sent: Array<[number, number]> = [];
+          let used = 0;
+          let complete = true;
+          for (const [start, end] of ranges) {
+            const chunk = boundContent(await plan.snapshot.readFile(path, start, Math.min(500, end - start + 1)), limit - used);
+            if (chunk.endLine < chunk.startLine) { complete = false; break; }
+            used += chunk.content.length;
+            sent.push([chunk.startLine, chunk.endLine]);
+            files.push({ path, revision: plan.snapshot.targetSha, startLine: chunk.startLine, endLine: chunk.endLine,
+              totalLines: chunk.totalLines, content: chunk.content, truncated: true,
+              excerpt: 'lockfile: only the changed entries, with 3 lines of context' });
+            if (chunk.endLine < end) { complete = false; break; }
+          }
+          budget -= used;
+          seen.set(key, [...sent]);
+          // All changed lines sent: the rest of the lockfile is out of scope, not a gap.
+          totals.set(key, complete ? linesCovered(sent) : (await plan.snapshot.readFile(path, 1, 1)).totalLines);
+          continue;
         }
-        budget -= used;
-        seen.set(key, [...sent]);
-        // All changed lines sent: the rest of the lockfile is out of scope, not a gap.
-        totals.set(key, complete ? linesCovered(sent) : (await plan.snapshot.readFile(path, 1, 1)).totalLines);
-        continue;
+        const file = boundContent(await source.readFile(path, 1, INITIAL_FILE_LINES), limit);
+        budget -= file.content.length;
+        const key = `${source.targetSha}:${path}`;
+        seen.set(key, file.endLine ? [[1, file.endLine]] : []);
+        totals.set(key, file.totalLines);
+        if (file.partialLine) { partialLines.set(key, file.partialLine); }
+        files.push({ path, revision: source.targetSha, startLine: 1, endLine: file.endLine, totalLines: file.totalLines,
+          content: file.content, truncated: file.endLine < file.totalLines });
+    
+      } catch (error) {
+        files.splice(sentBefore);
+        for (const revision of [plan.snapshot.targetSha, plan.base?.targetSha]) { seen.delete(`${revision}:${path}`); totals.delete(`${revision}:${path}`); }
+        unreadable.push({ path, reason: error instanceof Error ? error.message : String(error) });
       }
-      const file = boundContent(await source.readFile(path, 1, INITIAL_FILE_LINES), limit);
-      budget -= file.content.length;
-      const key = `${source.targetSha}:${path}`;
-      seen.set(key, file.endLine ? [[1, file.endLine]] : []);
-      totals.set(key, file.totalLines);
-      if (file.partialLine) { partialLines.set(key, file.partialLine); }
-      files.push({ path, revision: source.targetSha, startLine: 1, endLine: file.endLine, totalLines: file.totalLines,
-        content: file.content, truncated: file.endLine < file.totalLines });
     }
+    if (unreadable.length === unit.paths.length) { throw new Error(unreadable[0].reason); }
     const input = { request: plan.request, component: unit.component, files, rules: unit.rules,
       tree: plan.snapshot.listTree('', 100), policyStatus: plan.policy.status,
       ...(skills.length ? { skills: skills.map(skill => ({ id: skill.id, name: skill.name, guidance: skill.guidance })) } : {}),
@@ -206,7 +219,7 @@ export class SecurityReviewProvider {
         !Array.isArray(result.findings) || !Array.isArray(result.policyResults)) {
       throw new Error('AI review returned an invalid result or revision');
     }
-    return { ...(result as unknown as RawUnitReview), partialPaths };
+    return { ...(result as unknown as RawUnitReview), partialPaths, unreadable };
   }
 
   async verify(plan: ReviewPlan, findings: ReviewFinding[], model: ReviewChatModel,

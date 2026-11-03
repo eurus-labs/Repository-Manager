@@ -7,8 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Fix with Copilot** works on a review of local changes: it edits your uncommitted files while each is still what was reviewed. For any review it now checks that each cited file is still what was reviewed, instead of requiring the reviewed commit to be checked out with no local changes.
+
 ### Fixed
 
+- A review leaves out files larger than 1 MB (such as generated test output) as skipped, instead of failing on them as checks that failed again on every retry and took the other files of their component with them.
+- A file that cannot be read during a review is left out of its component alone; the component's other files are still reviewed.
 - In the Side Bar, **Changes** stays visible when the Side Bar is short: the list no longer shrinks to nothing, and the Side Bar scrolls when Branches and Changes do not both fit.
 
 ## [2.16.0] - 2026-11-02
