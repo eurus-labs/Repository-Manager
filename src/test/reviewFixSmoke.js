@@ -7,6 +7,7 @@ const { GitCommandService } = require('../../out/services/gitCommandService.js')
 const { ReviewFixService, FixError, MAX_FIX_FILES } = require('../../out/services/reviewFixService.js');
 const { ReviewController } = require('../../out/reviewController.js');
 const { ReviewHistoryStore } = require('../../out/reviewHistory.js');
+const { snapshotLocalChanges } = require('../../out/services/localChangesSnapshot.js');
 
 const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'review-fix-'));
 const env = { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1',
@@ -57,7 +58,7 @@ async function main() {
     fs.rmSync(path.join(repo, 'scratch.tmp'));
     sent = undefined;
     write('app.js', read('app.js') + '// local\n');
-    await rejects(propose(), /app\.js has local changes/);
+    await rejects(propose(), /app\.js changed since it was reviewed/);
     git('checkout', '--', 'app.js');
     await rejects(propose({ isDirtyInEditor: absolute => absolute.endsWith('app.js') }), /unsaved changes in an editor/);
     const many = { ...result, findings: Array.from({ length: MAX_FIX_FILES + 1 }, (_, index) => finding(`m${index}`, `f${index}.js`, 1)) };
@@ -94,10 +95,10 @@ async function main() {
     // Apply re-checks the file, writes it, and never stages or commits.
     write('app.js', read('app.js').replace('read()', 'readInput()'));
     git('commit', '-qam', 'moved on');
-    await rejects(service.apply(proposal, () => false), /must be checked out/);
+    await rejects(service.apply(proposal, () => false), /app\.js changed since it was reviewed/);
     git('reset', '-q', '--hard', head);
     write('app.js', read('app.js') + '// edited after the proposal\n');
-    await rejects(service.apply(proposal, () => false), /local changes/);
+    await rejects(service.apply(proposal, () => false), /changed since it was reviewed/);
     git('checkout', '--', 'app.js');
     assert.deepEqual(await service.apply(proposal, () => false), ['app.js']);
     assert.match(read('app.js'), /JSON\.parse\(input\)/);
@@ -124,6 +125,50 @@ async function main() {
     assert.deepEqual([...fs.readFileSync(path.join(repo, 'bom.js')).subarray(0, 3)], [0xef, 0xbb, 0xbf], 'the BOM was lost');
     assert.equal(read('bom.js'), '\uFEFFJSON.parse(x);\n');
     git('checkout', '--', 'bom.js');
+
+    // A review of local changes reviews a snapshot of the working tree, never HEAD, and its files
+    // have uncommitted changes by definition: the fix applies while each file is still what was
+    // reviewed, and is refused once it changed after the review.
+    write('app.js', 'const input = readLocal();\neval(input);\nmodule.exports = input;\n');
+    const local = await snapshotLocalChanges(new GitCommandService(repo), repo);
+    local.sha = local.snapshotSha;
+    assert.notEqual(local.sha, head);
+    const localResult = { ...result, request: { ...result.request, scope: 'changes', baseSha: head, targetSha: local.sha },
+      findings: [{ ...finding('lc1', 'app.js', 2), evidence: [{ revision: local.sha, path: 'app.js', side: 'target', startLine: 2, endLine: 2 }] }] };
+    response = { edits: [{ path: 'app.js', find: 'eval(input);', replace: 'JSON.parse(input);' }] };
+    const localFix = await propose({ result: localResult, findingIds: ['lc1'] });
+    assert.equal(localFix.files[0].before, 'const input = readLocal();\neval(input);\nmodule.exports = input;\n');
+    assert.deepEqual(await service.apply(localFix, () => false), ['app.js']);
+    assert.equal(read('app.js'), 'const input = readLocal();\nJSON.parse(input);\nmodule.exports = input;\n');
+    await rejects(propose({ result: localResult, findingIds: ['lc1'] }), /app\.js changed since it was reviewed \(it is not what [0-9a-f]{8} has\)/);
+    // Checked out with CRLF (core.autocrlf on Windows), the file is still what was reviewed.
+    write('app.js', 'const input = readLocal();\r\neval(input);\r\nmodule.exports = input;\r\n');
+    response = { edits: [{ path: 'app.js', find: 'eval(input);', replace: 'JSON.parse(input);' }] };
+    const crlf = await propose({ result: localResult, findingIds: ['lc1'] });
+    assert.match(crlf.files[0].after, /JSON\.parse\(input\);\r\n/);
+    git('checkout', '--', 'app.js');
+    // A commit reviewed earlier: HEAD moved on, but the cited file did not change, so it still applies.
+    write('other.txt', 'later\n');
+    git('add', 'other.txt');
+    git('commit', '-qm', 'later');
+    response = { edits: [{ path: 'app.js', find: 'eval(input);', replace: 'JSON.parse(input);' }] };
+    await service.apply(await propose(), () => false);
+    assert.match(read('app.js'), /JSON\.parse\(input\)/);
+    git('checkout', '--', 'app.js');
+    git('reset', '-q', '--hard', head);
+
+    // A folder replaced by a link to an outside folder with the same reviewed content: the fix
+    // would write outside the repository, so it is refused.
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'review-fix-outside-'));
+    fs.cpSync(path.join(repo, 'src'), outside, { recursive: true });
+    fs.renameSync(path.join(repo, 'src'), path.join(repo, 'src.real'));
+    fs.symlinkSync(outside, path.join(repo, 'src'));
+    response = { edits: [{ path: 'src/paths.js', find: 'eval(target);', replace: 'x;' }] };
+    await rejects(propose({ result: { ...result, findings: [finding('s1', 'src/paths.js', 2)] }, findingIds: ['s1'] }), /symbolic link/);
+    assert.equal(fs.readFileSync(path.join(outside, 'paths.js'), 'utf8').includes('eval(target);'), true);
+    fs.rmSync(path.join(repo, 'src'));
+    fs.renameSync(path.join(repo, 'src.real'), path.join(repo, 'src'));
+    fs.rmSync(outside, { recursive: true, force: true });
 
     // A malformed entry in the edits array is rejected on its own; the valid edits still apply.
     response = { edits: [null, 7, [], { path: 'app.js', find: 'eval(input);', replace: 'JSON.parse(input);' }] };

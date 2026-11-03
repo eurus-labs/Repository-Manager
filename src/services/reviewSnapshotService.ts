@@ -2,13 +2,14 @@ import { stashDiffTarget } from './stashTarget';
 import { GitCommandService } from './gitCommandService';
 
 const MAX_TREE_ENTRIES = 50000;
-const MAX_FILE_BYTES = 1024 * 1024;
+/** The largest file a review reads; larger ones are left out when the review is planned. */
+export const MAX_FILE_BYTES = 1024 * 1024;
 const MAX_DIFF_BYTES = 256 * 1024;
 const MAX_SEARCH_FILES = 200;
 const MAX_SEARCH_MATCHES = 100;
 const MAX_SEARCH_BYTES = 16 * 1024 * 1024;
 
-export interface SnapshotEntry { path: string; mode: string; objectId: string; type: string }
+export interface SnapshotEntry { path: string; mode: string; objectId: string; type: string; /** Bytes, for a file (from ls-tree -l). */ size?: number }
 export interface SnapshotTree { entries: SnapshotEntry[]; truncated: boolean; totalEntries: number }
 export interface SnapshotFile {
   path: string; revision: string; content: string; startLine: number; endLine: number;
@@ -146,15 +147,19 @@ export class ReviewSnapshotService {
     const root = this.git.resolveRepositoryPath(repositoryPath);
     // A stash is reviewed with its untracked files: the snapshot reads the commit holding them.
     const targetSha = await stashDiffTarget(this.git, root, await this.git.resolveRevision(repositoryPath, revision));
-    const output = await this.git.execGitRaw(['ls-tree', '-rz', '--full-tree', targetSha], root, 30000);
+    // -l adds each file's size (padded with spaces; "-" for anything but a file), so the plan can
+    // leave out files too large to read instead of failing on them later.
+    const output = await this.git.execGitRaw(['ls-tree', '-rlz', '--full-tree', targetSha], root, 30000);
     const records = output.split('\0').filter(Boolean);
     const entries = records.slice(0, MAX_TREE_ENTRIES).map(record => {
       const tab = record.indexOf('\t');
-      const header = record.slice(0, tab).split(' ');
-      if (tab < 0 || header.length !== 3 || !/^[a-f0-9]{40}$|^[a-f0-9]{64}$/.test(header[2])) {
+      const header = record.slice(0, tab).split(/ +/);
+      if (tab < 0 || header.length !== 4 || !/^[a-f0-9]{40}$|^[a-f0-9]{64}$/.test(header[2])) {
         throw new Error('Invalid Git tree entry');
       }
-      return { mode: header[0], type: header[1], objectId: header[2], path: record.slice(tab + 1) };
+      const size = Number(header[3]);
+      return { mode: header[0], type: header[1], objectId: header[2], path: record.slice(tab + 1),
+        ...(Number.isSafeInteger(size) ? { size } : {}) };
     });
     return new ReviewSnapshot(this.git, root, targetSha,
       { entries, totalEntries: records.length, truncated: records.length > MAX_TREE_ENTRIES });

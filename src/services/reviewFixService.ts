@@ -49,6 +49,7 @@ export interface FixFile {
 
 export interface FixProposal {
   repositoryPath: string;
+  /** The reviewed revision the files were checked against (a commit, or a local changes snapshot). */
   headSha: string;
   findingIds: string[];
   files: FixFile[];
@@ -102,38 +103,49 @@ export class ReviewFixService {
   }
 
   /**
-   * Checks the working tree can take a fix for these files: the reviewed commit is HEAD, and each
-   * file exists, is small enough, and has no committed-vs-disk or unsaved-editor differences.
+   * Checks the working tree can take a fix for these files: each file exists, is small enough, has
+   * no unsaved editor changes, and on disk is exactly what was reviewed (its content at
+   * `targetSha`, the reviewed revision). That is what makes the fix apply to the reviewed code:
+   * for a review of a commit, the file has not changed since that commit; for a review of local
+   * changes (a snapshot of the working tree, never HEAD), the file has not changed since the
+   * snapshot. Line endings may differ (core.autocrlf checks files out with CRLF).
    */
   async checkWorkingTree(root: string, targetSha: string, paths: string[], isDirtyInEditor: (absolutePath: string) => boolean): Promise<{ headSha: string; contents: Map<string, string> }> {
-    // `git status -- <nothing>` would describe the whole repository.
     if (!paths.length) { throw new FixError('There are no files to fix.'); }
-    const headSha = (await this.git.execGit(['rev-parse', 'HEAD'], root, 10000)).trim();
-    if (headSha !== targetSha) {
-      throw new FixError(`Auto-fix edits your working tree, so the reviewed commit must be checked out. ` +
-        `The review is of ${short(targetSha)}, but HEAD is ${short(headSha)}. Check it out, or review your current branch.`);
-    }
-    // Untrimmed: each porcelain line starts with a two-letter status that may begin with a space.
-    const local = (await this.git.execGitRaw(['status', '--porcelain', '--', ...paths], root, 10000))
-      .split('\n').filter(line => line.length > 3);
-    if (local.length) {
-      const changed = local.map(line => line.slice(3)).slice(0, 3).join(', ');
-      throw new FixError(`${changed} ${local.length > 1 ? 'have' : 'has'} local changes. Commit or stash them first, so the fix applies to the reviewed code.`);
-    }
+    if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(targetSha)) { throw new FixError('The review has no exact revision to compare with; review again.'); }
     const contents = new Map<string, string>();
+    let realRoot: string;
+    try { realRoot = fs.realpathSync(root); } catch { throw new FixError('The repository folder cannot be read.'); }
     for (const filePath of paths) {
       const absolute = path.join(root, filePath);
       if (isDirtyInEditor(absolute)) { throw new FixError(`${filePath} has unsaved changes in an editor. Save or revert them first.`); }
+      // The file itself, at its own path: a link anywhere on the way (a folder replaced by a link
+      // to somewhere else) would make the fix read and write a file outside the repository.
+      let real: string | undefined;
+      try { real = fs.realpathSync(absolute); } catch { real = undefined; }
+      const same = (a: string, b: string) => process.platform === 'win32' || process.platform === 'darwin' ? a.toLowerCase() === b.toLowerCase() : a === b;
+      if (real !== undefined && !same(real, path.join(realRoot, filePath))) {
+        throw new FixError(`${filePath} is reached through a symbolic link; auto-fix only edits files inside the repository, so fix it by hand.`);
+      }
       let stat: fs.Stats;
       try { stat = fs.statSync(absolute); } catch { throw new FixError(`${filePath} no longer exists in the working tree.`); }
       if (!stat.isFile()) { throw new FixError(`${filePath} is not a regular file.`); }
       if (stat.size > MAX_FIX_FILE_BYTES) { throw new FixError(`${filePath} is larger than ${MAX_FIX_FILE_BYTES / 1024} KB; fix it by hand.`); }
       const bytes = fs.readFileSync(absolute);
       if (bytes.includes(0)) { throw new FixError(`${filePath} looks like a binary file; auto-fix only edits text.`); }
-      try { contents.set(filePath, UTF8.decode(bytes)); }
+      let text: string;
+      try { text = UTF8.decode(bytes); }
       catch { throw new FixError(`${filePath} is not UTF-8 text; auto-fix only edits UTF-8 files, so fix it by hand.`); }
+      const reviewed = await this.git.execGitBuffer(['cat-file', 'blob', `${targetSha}:${filePath}`], root, 10000).catch(() => undefined);
+      const lf = (value: string) => value.replace(/\r\n/g, '\n');
+      if (!reviewed || lf(reviewed.toString('utf8')) !== lf(text)) {
+        throw new FixError(`${filePath} changed since it was reviewed (it is not what ${short(targetSha)} has). ` +
+          'Review it again (or check out the reviewed commit), so the fix applies to the reviewed code.');
+      }
+      contents.set(filePath, text);
     }
-    return { headSha, contents };
+    // The reviewed revision: apply compares the files with it again before writing.
+    return { headSha: targetSha, contents };
   }
 
   /** Every check that does not need the model: run before asking for consent, and again in propose. */

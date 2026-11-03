@@ -1327,12 +1327,12 @@ async function main() {
     assert.equal(reviewProbe.workingTreeChanged, 1);
     assert.equal(git(parent, 'diff', '--cached', '--name-only').trim(), '', 'auto-fix staged the file');
     assert.equal(git(parent, 'diff', '--name-only', '--', 'src').trim(), 'src/app.txt');
-    // A second proposal is refused now that the file has local changes.
+    // A second proposal is refused now that the file is no longer what was reviewed.
     await triage('high-verified', 'fix');
     await rv.waitForFunction(() => /1 to fix/.test(document.querySelector('.review-triage-summary').textContent));
     await rv.click('[data-action="proposeReviewFix"]');
-    await rv.waitForFunction(() => /local changes/.test(document.querySelector('.review-fix').textContent));
-    assert.equal(reviewProbe.fixRequests, 1, 'asked the model despite local changes');
+    await rv.waitForFunction(() => /changed since it was reviewed/.test(document.querySelector('.review-fix').textContent));
+    assert.equal(reviewProbe.fixRequests, 1, 'asked the model for a file changed since the review');
     git(parent, 'checkout', '--', 'src/app.txt');
     // Evidence opens the cited line in the dashboard's diff, and brings the dashboard forward.
     const firstBlocking = rv.locator('.review-body .review-blocking .review-finding').first();
@@ -1574,9 +1574,8 @@ async function main() {
     assert.equal(git(parent, 'show', `${localRequest.targetSha}:local-new.txt`), 'new file\n');
     assert.equal(git(parent, 'rev-parse', 'HEAD').trim(), headBeforeLocal, 'Review changes moved HEAD');
     assert.equal(git(parent, 'status', '--porcelain'), statusBeforeLocal, 'Review changes changed the staging or files');
-    // Auto-fix does not write over files you are still editing; the button says what to do instead.
-    assert.equal(await rv.isDisabled('[data-action="proposeReviewFix"]'), true);
-    assert.match(await rv.getAttribute('[data-action="proposeReviewFix"]', 'title'), /Auto-fix needs committed files/);
+    // Auto-fix works on a review of local changes too, while each file is still what was reviewed.
+    assert.match(await rv.getAttribute('[data-action="proposeReviewFix"]', 'title'), /Mark findings "Needs fix" first|only while each is still what was reviewed/);
     assert.match(await rv.textContent('.review-uncommitted-note'), /as they were when it started/);
     await snap(rv, '10h-review-local-changes');
     // Right-click one changed file: Review reviews only that file, on a snapshot of the changes taken now.

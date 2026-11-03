@@ -11,7 +11,8 @@ Module._load = function (name, parent, isMain) {
   return originalLoad.call(this, name, parent, isMain);
 };
 const { SecurityReviewProvider } = require('../../out/services/securityReviewProvider.js');
-const { progressComponents } = require('../../out/services/securityReviewService.js');
+const { progressComponents, SecurityReviewService } = require('../../out/services/securityReviewService.js');
+const { ReviewUnitCache } = require('../../out/reviewUnitCache.js');
 const { GitCommandService } = require('../../out/services/gitCommandService.js');
 const { ReviewSurveyService, binaryPathsFromNumstat, changedTargetRanges, isLockfile } = require('../../out/services/reviewSurveyService.js');
 Module._load = originalLoad;
@@ -79,7 +80,7 @@ async function main() {
     const model = { id: 'mock', version: '1', name: 'Mock', maxInputTokens: 100000, countTokens: async value => Math.ceil(value.length / 4),
       async sendRequest(messages) {
         packets.push(JSON.parse(messages[1]));
-        const response = { schemaVersion: 1, targetSha: target, findings: [], policyResults: [], limitations: [] };
+        const response = { schemaVersion: 1, targetSha: JSON.parse(messages[1]).request.targetSha, findings: [], policyResults: [], limitations: [] };
         return { text: (async function* () { yield JSON.stringify(response); })() };
       } };
     const provider = new SecurityReviewProvider({ lm: { selectChatModels: async () => [model] }, LanguageModelChatMessage: { User: value => value } });
@@ -92,6 +93,57 @@ async function main() {
     assert.match(sent[0].excerpt, /only the changed entries/);
     assert.equal(sent[0].content.split('\n').length, 7);
     assert.deepEqual(raw.partialPaths, [], 'the unchanged lockfile entries were reported as not reviewed');
+
+    // A file larger than 1 MB (generated output, data) is left out when the review is planned, as
+    // a skipped file, not a failed check: the small files beside it in its component are reviewed.
+    const big = Array.from({ length: 30000 }, (_, index) => `LINE ${index} ${'x'.repeat(30)}`).join('\n') + '\n';
+    write('out/target_CPY.TXT', big);
+    write('out/constants.py', 'TIMEOUT = 5\n');
+    const withBig = commit('generated output');
+    const bigPlan = await survey.plan({ repositoryPath: '.', targetSha: withBig, baseSha: target, scope: 'changes', categories: ['security'] });
+    assert.deepEqual(bigPlan.units.flatMap(unit => unit.paths), ['out/constants.py']);
+    assert.deepEqual(bigPlan.coverage.skipped.map(item => [item.path, item.reason]), [['out/target_CPY.TXT', 'larger than 1 MB (not read)']]);
+    assert.ok(big.length > 1024 * 1024);
+
+    // A file that cannot be read while the component is analysed is left out of that component
+    // only; the other files are still sent and reviewed.
+    packets.length = 0;
+    const brokenPlan = { ...bigPlan, snapshot: Object.create(bigPlan.snapshot, { readFile: { value: async (file, ...rest) => {
+      if (file === 'out/gone.py') { throw new Error('File exceeds snapshot read budget'); }
+      return bigPlan.snapshot.readFile(file, ...rest);
+    } }, fileExists: { value: file => file === 'out/gone.py' || bigPlan.snapshot.fileExists(file) } }) };
+    const twoFiles = { component: 'out', paths: ['out/constants.py', 'out/gone.py'], rules: [] };
+    const partial = await provider.analyze(brokenPlan, twoFiles, model, { isCancellationRequested: false }, () => {});
+    assert.deepEqual(packets[0].files.map(file => file.path), ['out/constants.py']);
+    assert.deepEqual(partial.unreadable, [{ path: 'out/gone.py', reason: 'File exceeds snapshot read budget' }]);
+    // In a review, an unreadable file is listed as not read, and the component's result is not saved,
+    // so running the review again tries that file again.
+    const state = new Map();
+    const cache = new ReviewUnitCache({ get: key => state.get(key), update: async (key, value) => { state.set(key, value); } });
+    let analyses = 0;
+    const flaky = { analyze: async (reviewPlan, unit) => { analyses++;
+      return { schemaVersion: 1, targetSha: reviewPlan.snapshot.targetSha, findings: [], policyResults: [], limitations: [], partialPaths: [],
+        unreadable: [{ path: unit.paths[0], reason: 'temporarily locked' }] }; },
+    selectModel: async () => model };
+    const service = new SecurityReviewService(new GitCommandService(repo), flaky, cache);
+    const reviewOnce = () => service.review({ repositoryPath: '.', targetSha: withBig, baseSha: target, scope: 'changes', categories: ['security'] },
+      { isCancellationRequested: false }, () => {});
+    const once = await reviewOnce();
+    assert.ok(once.coverage.skipped.some(item => item.path === 'out/constants.py' && item.reason === 'not read: temporarily locked'),
+      JSON.stringify(once.coverage.skipped));
+    await reviewOnce();
+    assert.equal(analyses, 2, 'a result with an unreadable file was reused instead of trying the file again');
+
+    // A deleted file larger than 1 MB is left out too (its size is read from the base side).
+    fs.rmSync(path.join(repo, 'out/target_CPY.TXT'));
+    const deleted = commit('drop generated output');
+    const deletePlan = await survey.plan({ repositoryPath: '.', targetSha: deleted, baseSha: withBig, scope: 'changes', categories: ['security'] });
+    assert.deepEqual(deletePlan.units, []);
+    assert.deepEqual(deletePlan.coverage.skipped.map(item => [item.path, item.reason]), [['out/target_CPY.TXT', 'larger than 1 MB (not read)']]);
+
+    // When no file of the component can be read, the component fails as before.
+    await assert.rejects(provider.analyze(brokenPlan, { component: 'out', paths: ['out/gone.py'], rules: [] }, model,
+      { isCancellationRequested: false }, () => {}), /read budget/);
     console.log('Review file coverage smoke passed');
   } finally {
     fs.rmSync(repo, { recursive: true, force: true });
