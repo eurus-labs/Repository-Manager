@@ -763,6 +763,36 @@ async function main() {
     await side.locator('#dashboardChanges').waitFor();
     assert.equal(await side.isVisible('#dashboardBranches'), true);
 
+    // Delete is in sight without hovering (faint), and right-click gives VS Code's own menu: each
+    // local branch row carries the context its Delete Branch… command needs (webview/context).
+    await side.mouse.move(0, 0);
+    const claudeRow = side.locator('#dashboardBranches .sidebar-ref-row', { has: side.locator('.sidebar-ref-item[data-branch="claude/review-dashboard-layout-at-narrow-widths"]') });
+    const claudeDelete = claudeRow.locator('.sidebar-ref-delete-action');
+    assert.equal(await claudeDelete.isVisible(), true);
+    assert.deepEqual(await claudeDelete.evaluate(button => [getComputedStyle(button.parentElement).opacity, getComputedStyle(button).opacity]), ['1', '0.5']);
+    const rowContext = row => row.evaluate(element => JSON.parse(element.dataset.vscodeContext));
+    const claudeContext = await rowContext(claudeRow);
+    assert.deepEqual({ ...claudeContext, repository: undefined }, { webviewSection: 'localBranch', repository: undefined,
+      branch: 'claude/review-dashboard-layout-at-narrow-widths', hasRemote: false, preventDefaultContextMenuItems: true });
+    assert.equal(typeof claudeContext.repository, 'string');
+    assert.equal((await rowContext(side.locator('#dashboardBranches .sidebar-ref-row', { has: side.locator('.sidebar-ref-item.current') }))).webviewSection, 'currentBranch');
+    const manifest = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+    assert.deepEqual(manifest.contributes.menus['webview/context'], [{ command: 'repositoryManager.deleteBranchFromMenu',
+      when: "webviewId == 'repositoryManager.launcher' && webviewSection == 'localBranch'" }]);
+    // The name leaves room for the ×: they do not overlap.
+    const overlap = await claudeRow.evaluate(row => {
+      const label = row.querySelector('.sidebar-ref-item span:last-child').getBoundingClientRect();
+      const button = row.querySelector('.sidebar-ref-delete-action').getBoundingClientRect();
+      return label.right > button.left + 1;
+    });
+    assert.equal(overlap, false, 'the branch name runs under the ×');
+    // On touch there is no hover: Reset to origin stays shown, and the name leaves room for both.
+    const touchRules = await side.evaluate(() => [...document.styleSheets].flatMap(sheet => [...sheet.cssRules])
+      .filter(rule => rule.media && /pointer:\s*coarse/.test(rule.media.mediaText)).flatMap(rule => [...rule.cssRules].map(inner => inner.cssText)).join('\n'));
+    assert.match(touchRules, /\.sidebar-ref-row\.has-delete \.sidebar-ref-origin-action \{ visibility: visible; \}/);
+    assert.match(touchRules, /\.sidebar-ref-row\.has-delete \.sidebar-ref-item[^{]*\{ padding-right: 102px; \}/);
+    await snap(side, '01k-sidebar-branch-delete');
+
     // Diff shows file line numbers and hides git's file headers.
     await page.locator('.history-row', { hasText: 'update app in two places' }).click();
     await page.locator('#dashboardChangedFiles [data-action]').first().click();
@@ -784,10 +814,32 @@ async function main() {
     assert.deepEqual(headerLayout, { afterHash: true, inHeader: true, titleRow: true, bar: true });
     await snap(page, '02-commit-diff');
 
-    // History context menu.
+    // History context menu: the commit's local branches (not the current one) can be deleted.
     await page.locator('.history-row', { hasText: 'add linked repositories' }).click({ button: 'right' });
     await page.locator('#historyContextMenu').waitFor();
+    const branchItems = () => page.locator('#historyContextBranches [data-action="contextDeleteBranch"]').allTextContents();
+    assert.deepEqual((await branchItems()).sort(), ["Delete Branch 'claude/review-dashboard-layout-at-narrow-widths'…", "Delete Branch 'main'…"]);
     await snap(page, '05-context-menu');
+    // Confirmed, it runs the real handler: the branch is gone from Git and from the Side Bar.
+    const askedDelete = fakeVscode.window.showWarningMessage;
+    const deleteQuestions = [];
+    fakeVscode.window.showWarningMessage = async (message, options, ...items) => { deleteQuestions.push([message, items]); return options && options.modal ? items[0] : undefined; };
+    await page.click('#historyContextBranches [data-branch="claude/review-dashboard-layout-at-narrow-widths"]');
+    await page.locator('#historyContextMenu').waitFor({ state: 'hidden' });
+    await side.locator(claudeLeaf).waitFor({ state: 'detached' });
+    while (!isHostIdle()) await page.waitForTimeout(20);
+    fakeVscode.window.showWarningMessage = askedDelete;
+    assert.deepEqual(deleteQuestions.map(([message, items]) => [message.replace(/ in .*\?$/, '?'), items]),
+      [["Delete branch 'claude/review-dashboard-layout-at-narrow-widths'?", ['Delete Local Branch']]]);
+    assert.equal(git(parent, 'branch', '--list', 'claude/*'), '');
+    // Put it back for the views below, and reload the lists.
+    git(parent, 'branch', 'claude/review-dashboard-layout-at-narrow-widths', '1.0.0');
+    await page.evaluate(repository => window.dispatchEvent(new MessageEvent('message', { data: { type: 'reloadDashboardHistory', payload: { repositoryPaths: [repository] } } })), claudeContext.repository);
+    await side.locator(claudeLeaf).waitFor();
+    // A commit whose only branch is the current one offers none.
+    await page.locator('.history-row', { hasText: 'update app in two places' }).click({ button: 'right' });
+    await page.locator('#historyContextMenu').waitFor();
+    assert.equal(await page.isHidden('#historyContextBranches'), true);
     await page.mouse.click(5, 5);
     await page.locator('#historyContextMenu').waitFor({ state: 'hidden' });
 

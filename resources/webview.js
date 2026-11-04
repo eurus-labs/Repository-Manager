@@ -342,10 +342,21 @@
     menu.style.top = `${Math.max(0, Math.min(historyContextMenuPoint.y, height - menu.offsetHeight - 8))}px`;
   }
 
+  // The commit's local branches (not the current one) can be deleted from its menu.
+  function fillHistoryBranchItems(commit) {
+    const box = document.getElementById('historyContextBranches');
+    if (!box) return;
+    const known = new Map(((repositoryRefs && repositoryRefs.branches) || []).map(branch => [branch.name, branch]));
+    const names = (commit.refs || []).filter(ref => ref.kind === 'local-branch' && !ref.isCurrent).map(ref => ref.name);
+    box.innerHTML = names.map(name => `<button type="button" role="menuitem" data-action="contextDeleteBranch" data-branch="${escapeHtml(name)}" data-has-remote="${known.get(name) && known.get(name).hasRemote ? 'true' : 'false'}" title="Delete the local branch ${escapeHtml(name)}; you choose whether origin's goes too">Delete Branch '${escapeHtml(name)}'…</button>`).join('');
+    box.hidden = !names.length;
+  }
+
   function showHistoryContextMenu(element, x, y) {
     const commit = loadedHistoryCommits.find(item => item.hash === element.dataset.commit);
     if (!commit) return false;
     historyContextTarget = { repositoryPath: activeDashboardRepository, hash: commit.hash };
+    fillHistoryBranchItems(commit);
     const menu = document.getElementById('historyContextMenu');
     historyContextMenuPoint = { x, y };
     applyHistoryMenuOperation();
@@ -600,6 +611,13 @@
       if (!historyContextTarget) return;
       postMessage('createTagFromCommit', { repositoryPath: historyContextTarget.repositoryPath,
         commit: historyContextTarget.hash });
+      hideHistoryContextMenu();
+    },
+    contextDeleteBranch: (el) => {
+      if (!historyContextTarget || !el.dataset.branch) return;
+      // The extension asks whether to delete the local branch only or origin's as well.
+      postMessage('deleteBranch', { submodule: historyContextTarget.repositoryPath, branch: el.dataset.branch,
+        hasRemote: el.dataset.hasRemote === 'true' });
       hideHistoryContextMenu();
     },
     contextCopyHash: () => {
@@ -2519,7 +2537,12 @@
           ? `<span class="sidebar-ref-actions">${useOrigin}${deleteBranch}</span>`
           : '';
         const leaf = branch.name.split('/').pop();
-        return `<div class="sidebar-ref-row branch-depth-${Math.min(depth, 6)}"><button class="sidebar-ref-item${branch.isCurrent ? ' current' : ''}" type="button" data-action="selectDashboardBranch" data-branch="${escapeHtml(branch.name)}" title="${escapeHtml(branch.name)}" aria-pressed="${branch.isCurrent ? 'true' : 'false'}"><span>⑂</span><span>${escapeHtml(leaf)}</span>${branch.isCurrent ? '<small>HEAD</small>' : ''}</button>${branchActions}</div>`;
+        // Right-click opens VS Code's own menu for the row (webview/context in package.json), which
+        // also works in the Side Bar view, where the list is a copy of this one.
+        const menuContext = !branch.isRemote ? ` data-vscode-context="${escapeHtml(JSON.stringify({
+          webviewSection: branch.isCurrent ? 'currentBranch' : 'localBranch', repository: activeDashboardRepository,
+          branch: branch.name, hasRemote: Boolean(branch.hasRemote), preventDefaultContextMenuItems: true }))}"` : '';
+        return `<div class="sidebar-ref-row branch-depth-${Math.min(depth, 6)}${deleteBranch ? ' has-delete' : ''}"${menuContext}><button class="sidebar-ref-item${branch.isCurrent ? ' current' : ''}" type="button" data-action="selectDashboardBranch" data-branch="${escapeHtml(branch.name)}" title="${escapeHtml(branch.name)}" aria-pressed="${branch.isCurrent ? 'true' : 'false'}"><span>⑂</span><span>${escapeHtml(leaf)}</span>${branch.isCurrent ? '<small>HEAD</small>' : ''}</button>${branchActions}</div>`;
       };
       branchList.innerHTML = renderBranchTree(buildBranchTree(branches), 0, renderBranch) || '<span class="sidebar-placeholder">No branches</span>';
     }

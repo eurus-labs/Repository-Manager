@@ -1337,11 +1337,26 @@ body {
   pointer-events: none;
 }
 
+
 .sidebar-ref-row:hover .sidebar-ref-actions,
 .sidebar-ref-row:focus-within .sidebar-ref-actions {
   opacity: 1;
   pointer-events: auto;
 }
+
+/* Delete stays in sight (faint until the row is hovered), so it can be found without hovering;
+   Reset to origin still appears on hover. The name leaves room for the ×. */
+.sidebar-ref-row.has-delete .sidebar-ref-actions { opacity: 1; pointer-events: auto; background: none; }
+.sidebar-ref-row.has-delete .sidebar-ref-delete-action { opacity: .5; }
+.sidebar-ref-row.has-delete:hover .sidebar-ref-delete-action,
+.sidebar-ref-row.has-delete .sidebar-ref-delete-action:focus-visible { opacity: 1; }
+.sidebar-ref-row.has-delete .sidebar-ref-origin-action { visibility: hidden; }
+.sidebar-ref-row.has-delete:hover .sidebar-ref-origin-action,
+.sidebar-ref-row.has-delete:focus-within .sidebar-ref-origin-action { visibility: visible; }
+.sidebar-ref-row.has-delete:hover .sidebar-ref-actions,
+.sidebar-ref-row.has-delete:focus-within .sidebar-ref-actions { background: linear-gradient(90deg, transparent, var(--bg-secondary) 14px); }
+.sidebar-ref-row.has-delete .sidebar-ref-item { padding-right: 30px; }
+.history-context-branches[hidden] { display: none; }
 
 .sidebar-ref-origin-action,
 .sidebar-ref-delete-action {
@@ -1391,8 +1406,11 @@ body {
 }
 
 @media (pointer: coarse) {
-  .branches-section .sidebar-ref-item { padding-right: 102px; }
+  .branches-section .sidebar-ref-item,
+  .branches-section .sidebar-ref-row.has-delete .sidebar-ref-item { padding-right: 102px; }
   .sidebar-ref-actions { opacity: 1; pointer-events: auto; }
+  /* No hover on touch: Reset to origin stays shown beside the ×. */
+  .sidebar-ref-row.has-delete .sidebar-ref-origin-action { visibility: visible; }
 }
 
 .sidebar-reference-summary {

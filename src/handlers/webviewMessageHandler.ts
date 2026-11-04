@@ -1413,14 +1413,23 @@ export async function handleDeleteBranch(
   // One VS Code dialog asks both questions. The webview's own confirm() is not used: a sandboxed
   // webview may ignore browser dialogs (it then returns false), and the branch list need not sit
   // in the dashboard.
+  // Whether origin has the branch comes from Git, not from the page: a menu opened before the
+  // page had its branch list cannot know, and must not hide the choice to delete origin's too.
+  let hasRemote = payload.hasRemote === true;
+  try {
+    const local = (await ctx.gitOps.getBranches(payload.submodule)).find(branch => branch.name === payload.branch && !branch.isRemote);
+    if (local) { hasRemote = Boolean(local.hasRemote); }
+  } catch {
+    // Keep what the page said.
+  }
   const LOCAL = 'Delete Local Branch';
   const BOTH = `Delete Local and origin/${payload.branch}`;
   const choice = await vscode.window.showWarningMessage(
     `Delete branch '${payload.branch}' in ${payload.submodule}?`,
-    { modal: true, detail: payload.hasRemote
+    { modal: true, detail: hasRemote
       ? `origin/${payload.branch} also exists. Deleting it there affects everyone who uses the remote.`
       : 'The branch is deleted even if it has commits that are not merged anywhere.' },
-    ...(payload.hasRemote ? [LOCAL, BOTH] : [LOCAL])
+    ...(hasRemote ? [LOCAL, BOTH] : [LOCAL])
   );
 
   if (choice !== LOCAL && choice !== BOTH) {
