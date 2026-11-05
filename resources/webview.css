@@ -3163,3 +3163,6 @@ body.sidebar-view { overflow: hidden; background: var(--vscode-sideBar-backgroun
   .dashboard-command-secondary .command-label { display: none; }
 }
 .sidebar-section-tools + .sidebar-section-tools { margin-left: 0; }
+.commit-scope-note { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; margin: 0 0 8px; color: var(--vscode-descriptionForeground, var(--muted)); font-size: 12px; }
+.commit-scope-note[hidden] { display: none; }
+.commit-scope-note .link-button { padding: 0; border: 0; color: var(--vscode-textLink-foreground, var(--accent)); background: none; font: inherit; text-decoration: underline; cursor: pointer; }

@@ -166,6 +166,7 @@ function renderModals(repositories: RepositoryInfo[]): string {
             </div>
             <span id="commitSelectionCount">0 selected</span>
           </div>
+          <div class="commit-scope-note" id="commitScopeNote" hidden></div>
           <div class="commit-preview-layout">
             <div class="commit-changes-list" id="commitChangesList">
               <div class="dashboard-loading">Loading changed files…</div>
@@ -276,7 +277,7 @@ function renderDashboardSidebar(workspaceFolders: WorkspaceFolderInfo[], reposit
         <div class="sidebar-ref-list" id="dashboardBranches"><span class="sidebar-placeholder">Loading branches…</span></div>
       </section>
       <section class="sidebar-section changes-section" data-sidebar-section="changes">
-        <div class="sidebar-section-title"><button type="button" class="sidebar-section-toggle" data-action="toggleSidebarSection" data-section="changes" aria-expanded="true" aria-controls="dashboardChanges" title="The active repository's uncommitted changes. Click a file to open its diff in an editor tab"><span class="sidebar-section-chevron" aria-hidden="true">▾</span><span>Changes</span></button><span class="sidebar-section-tools"><button type="button" class="sidebar-title-action" data-action="openCommitChangesModal" title="Commit selected files" aria-label="Commit selected files"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12h5M15 12h5"></path><circle cx="12" cy="12" r="3"></circle></svg></button></span><span class="sidebar-section-tools" id="sidebarChangesTools"></span><span id="changesRefCount">—</span></div>
+        <div class="sidebar-section-title"><button type="button" class="sidebar-section-toggle" data-action="toggleSidebarSection" data-section="changes" aria-expanded="true" aria-controls="dashboardChanges" title="The active repository's uncommitted changes. Click a file to open its diff in an editor tab"><span class="sidebar-section-chevron" aria-hidden="true">▾</span><span>Changes</span></button><span class="sidebar-section-tools"><button type="button" class="sidebar-title-action" data-action="openCommitChangesModal" title="Commit the files selected here, or choose from every changed file when none is" aria-label="Commit changes"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12h5M15 12h5"></path><circle cx="12" cy="12" r="3"></circle></svg></button></span><span class="sidebar-section-tools" id="sidebarChangesTools"></span><span id="changesRefCount">—</span></div>
         <div class="sidebar-selection-bar" id="sidebarSelectionBar" hidden></div>
         <div class="sidebar-changes-list" id="dashboardChanges" role="list" aria-label="Uncommitted changes"><span class="sidebar-placeholder">Loading changes…</span></div>
       </section>

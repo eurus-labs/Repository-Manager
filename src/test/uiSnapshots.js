@@ -568,6 +568,33 @@ async function main() {
     await discardMenu.waitFor();
     assert.equal(await discardMenu.locator('[data-action="contextDiscardFile"]').textContent(), 'Discard Changes…');
     await page.keyboard.press('Escape');
+    // Commit with files selected in Changes: the dialog lists only those, so the commit and Write
+    // with Copilot take just them; Show all files lists the rest, unticked choices kept to the user.
+    await page.click('.dashboard-command-bar [aria-label="Commit selected files"]');
+    await page.locator('#commitChangesModal.active').waitFor();
+    const dialogRows = () => page.locator('#commitChangesList .commit-change-checkbox').evaluateAll(boxes => boxes.map(box => box.dataset.path));
+    await page.waitForFunction(() => document.querySelectorAll('#commitChangesList .commit-change-checkbox').length > 0);
+    assert.deepEqual(await dialogRows(), ['lib-b', 'live-new.txt']);
+    assert.match(await page.textContent('#commitScopeNote'), /^2 files selected in Changes · \d+ others? not listed\s*Show all files$/);
+    await page.evaluate(() => {
+      const toHost = window.__postToHost;
+      window.__scopeRestore = () => { window.__postToHost = toHost; };
+      window.__scopeRequests = [];
+      window.__postToHost = message => ['commitFiles', 'generateCommitMessage'].includes(message.type) ? window.__scopeRequests.push(message) : toHost(message);
+    });
+    await page.click('#commitMessageGenerate');
+    await page.fill('#commitMessage', 'chore: scoped');
+    await page.click('#commitSelectedFilesButton');
+    assert.deepEqual(await page.evaluate(() => window.__scopeRequests.map(message => [message.type, message.payload.files])),
+      [['generateCommitMessage', ['lib-b', 'live-new.txt']], ['commitFiles', ['lib-b', 'live-new.txt']]]);
+    await page.evaluate(() => { window.__scopeRestore(); window.postMessage({ type: 'commitFilesResult', payload: { repositoryPath: '.', success: false, message: '' } }, '*'); });
+    await page.click('#commitScopeNote [data-action="showAllCommitFiles"]');
+    await page.waitForFunction(() => document.getElementById('commitScopeNote').hidden);
+    assert.ok((await dialogRows()).length > 2, 'Show all files kept the selection only');
+    await page.click('#commitMessageGenerate'); // cancels the pending request
+    await page.fill('#commitMessage', '');
+    await page.keyboard.press('Escape');
+    await page.locator('#commitChangesModal.active').waitFor({ state: 'detached' });
     // The × clears the selection.
     await side.click('#sidebarSelectionBar [data-action="clearWorkingSelection"]');
     await side.waitForFunction(() => document.getElementById('sidebarSelectionBar').hidden);

@@ -46,6 +46,9 @@
   let historyColumnMinimums = [52, 80, 58, 54, 52];
   const runningToolbarOperations = new Set();
   let workingTreeChanges = [];
+  // Files picked in the Side Bar's Changes when the commit dialog opened: the dialog lists only
+  // those (null: every changed file), so the commit and Write with Copilot take just them.
+  let commitScope = null;
   // Repository whose unsent commit message is kept in the Commit dialog (Escape or Cancel keep the draft).
   let commitDraftRepository = null;
   let previewedWorkingTreeFile = null;
@@ -948,6 +951,12 @@
       selectWorkingTreePreview(el.dataset.path);
     },
 
+    // The dialog opened with a Side Bar selection: list every changed file instead.
+    showAllCommitFiles: () => {
+      commitScope = null;
+      postMessage('getWorkingTreeChanges', { repositoryPath: document.getElementById('commitChangesRepositoryPath').value });
+    },
+
     previewWorkingTreeMode: (el) => {
       requestWorkingTreePreview(el.dataset.mode);
     },
@@ -967,6 +976,8 @@
       if (repositoryPath) repositoryPath.value = activeDashboardRepository;
       if (changesList) changesList.innerHTML = '<div class="dashboard-loading">Loading changed files…</div>';
       workingTreeChanges = [];
+      const picked = selectedWorkingPaths();
+      commitScope = picked.length ? new Set(picked) : null;
       previewedWorkingTreeFile = null;
       applyCommitFilter(); // the filter kept from last time, its counts until the files load
       workingTreePreviewRequestId++;
@@ -1410,8 +1421,21 @@
     const repositoryPath = document.getElementById('commitChangesRepositoryPath');
     if (!repositoryPath || repositoryPath.value !== payload.repositoryPath) return;
 
-    const changes = Array.isArray(payload.changes) ? payload.changes : [];
+    const all = Array.isArray(payload.changes) ? payload.changes : [];
+    const scoped = commitScope ? all.filter(change => commitScope.has(change.path)) : all;
+    // Picked files that are no longer changed leave the scope; with none left, every file shows.
+    if (commitScope && !scoped.length) commitScope = null;
+    const changes = commitScope ? scoped : all;
     workingTreeChanges = changes;
+    const note = document.getElementById('commitScopeNote');
+    if (note) {
+      const rest = all.length - changes.length;
+      note.hidden = !commitScope;
+      note.innerHTML = commitScope
+        ? `<span>${changes.length} file${changes.length === 1 ? '' : 's'} selected in Changes${rest ? ` · ${rest} other${rest === 1 ? '' : 's'} not listed` : ''}</span>` +
+          (rest ? '<button type="button" class="link-button" data-action="showAllCommitFiles" title="List every changed file in this dialog">Show all files</button>' : '')
+        : '';
+    }
     const pushAfter = document.getElementById('commitPushAfter');
     if (pushAfter) pushAfter.checked = Boolean(payload.pushAfterCommit);
     const list = document.getElementById('commitChangesList');
