@@ -1421,6 +1421,8 @@
     const repositoryPath = document.getElementById('commitChangesRepositoryPath');
     if (!repositoryPath || repositoryPath.value !== payload.repositoryPath) return;
 
+    // Files the user unticked stay unticked when the list is drawn again (Show all files, a refresh).
+    const unticked = new Set(Array.from(document.querySelectorAll('#commitChangesList .commit-change-checkbox:not(:checked)')).map(box => box.dataset.path));
     const all = Array.isArray(payload.changes) ? payload.changes : [];
     const scoped = commitScope ? all.filter(change => commitScope.has(change.path)) : all;
     // Picked files that are no longer changed leave the scope; with none left, every file shows.
@@ -1462,7 +1464,7 @@
       return '<div class="commit-change-row' + (change.conflicted ? ' conflicted' : '') + '" data-untracked="' + Boolean(change.untracked) + '">' +
         '<input type="checkbox" class="commit-change-checkbox" data-path="' + escapeHtml(change.path) + '"' +
           ' aria-label="Include ' + escapeHtml(change.path) + ' in commit"' +
-          (change.conflicted ? ' disabled' : ' checked') + '>' +
+          (change.conflicted ? ' disabled' : unticked.has(change.path) ? '' : ' checked') + '>' +
         '<button type="button" class="commit-change-preview-button" data-action="previewWorkingTreeFile"' +
           ' data-path="' + escapeHtml(change.path) + '" title="' + escapeHtml(change.path) + '">' +
           '<span class="commit-change-path">' + rename + '<strong>' + escapeHtml(change.path) + '</strong></span>' +

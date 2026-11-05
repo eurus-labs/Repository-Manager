@@ -588,9 +588,12 @@ async function main() {
     assert.deepEqual(await page.evaluate(() => window.__scopeRequests.map(message => [message.type, message.payload.files])),
       [['generateCommitMessage', ['lib-b', 'live-new.txt']], ['commitFiles', ['lib-b', 'live-new.txt']]]);
     await page.evaluate(() => { window.__scopeRestore(); window.postMessage({ type: 'commitFilesResult', payload: { repositoryPath: '.', success: false, message: '' } }, '*'); });
+    await page.uncheck('.commit-change-checkbox[data-path="lib-b"]');
     await page.click('#commitScopeNote [data-action="showAllCommitFiles"]');
     await page.waitForFunction(() => document.getElementById('commitScopeNote').hidden);
     assert.ok((await dialogRows()).length > 2, 'Show all files kept the selection only');
+    assert.equal(await page.isChecked('.commit-change-checkbox[data-path="lib-b"]'), false, 'Show all files ticked an excluded file again');
+    assert.equal(await page.isChecked('.commit-change-checkbox[data-path="live-new.txt"]'), true);
     await page.click('#commitMessageGenerate'); // cancels the pending request
     await page.fill('#commitMessage', '');
     await page.keyboard.press('Escape');
