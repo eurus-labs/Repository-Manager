@@ -49,6 +49,9 @@
   // Files picked in the Side Bar's Changes when the commit dialog opened: the dialog lists only
   // those (null: every changed file), so the commit and Write with Copilot take just them.
   let commitScope = null;
+  // For the usage report: when the dialog opened, and the message Copilot last wrote in it.
+  let commitOpenedAt = 0;
+  let copilotCommitMessage = null;
   // Repository whose unsent commit message is kept in the Commit dialog (Escape or Cancel keep the draft).
   let commitDraftRepository = null;
   let previewedWorkingTreeFile = null;
@@ -976,6 +979,8 @@
       if (repositoryPath) repositoryPath.value = activeDashboardRepository;
       if (changesList) changesList.innerHTML = '<div class="dashboard-loading">Loading changed files…</div>';
       workingTreeChanges = [];
+      commitOpenedAt = Date.now();
+      copilotCommitMessage = null;
       const picked = selectedWorkingPaths();
       commitScope = picked.length ? new Set(picked) : null;
       previewedWorkingTreeFile = null;
@@ -1034,6 +1039,7 @@
     undoCommitMessage: () => {
       const draft = document.getElementById('commitMessage');
       if (draft && previousCommitMessage !== null) draft.value = previousCommitMessage;
+      copilotCommitMessage = null; // your own message again
       previousCommitMessage = null;
       setCommitMessageStatus('Your earlier message is back.');
     },
@@ -1062,7 +1068,9 @@
 
       if (result) result.textContent = push ? 'Creating commit, then pushing…' : 'Creating commit…';
       if (commitButton) commitButton.disabled = true;
-      postMessage('commitFiles', { repositoryPath, files, message, push,
+      const metrics = { durationMs: commitOpenedAt ? Date.now() - commitOpenedAt : 0, copilot: copilotCommitMessage !== null,
+        editRatio: copilotCommitMessage !== null ? editRatio(copilotCommitMessage.trim(), message) : undefined };
+      postMessage('commitFiles', { repositoryPath, files, message, push, metrics,
         partial: selectedPartlyStaged().length ? partialChoice.value : undefined });
     },
 
@@ -1275,6 +1283,19 @@
 
   // What a commit (and Write with Copilot) takes: the ticked files the filter shows. A ticked file
   // the filter hides is not committed, and the count says so.
+  // The share of Copilot's message changed before committing (as src/services/usageLog.ts editRatio).
+  function editRatio(before, after) {
+    const a = Array.from(before.slice(0, 2000)), b = Array.from(after.slice(0, 2000));
+    if (!a.length) return b.length ? 1 : 0;
+    let previous = Array.from({ length: b.length + 1 }, (_, j) => j);
+    for (let i = 1; i <= a.length; i++) {
+      const row = [i];
+      for (let j = 1; j <= b.length; j++) row[j] = Math.min(previous[j] + 1, row[j - 1] + 1, previous[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+      previous = row;
+    }
+    return Math.min(1, previous[b.length] / Math.max(a.length, b.length));
+  }
+
   function commitCheckedFiles() {
     return Array.from(document.querySelectorAll('.commit-change-checkbox:checked'))
       .filter(checkbox => !checkbox.closest('.commit-change-row').hidden)
@@ -3003,6 +3024,7 @@
           // Your own draft is kept for Undo, not lost.
           previousCommitMessage = draft && draft.value.trim() ? draft.value : null;
           if (draft) draft.value = payload.message;
+          copilotCommitMessage = payload.message;
           commitMessagePartial = commitMessagePendingPartial;
           endCommitMessageRequest();
           // "Written by Claude Haiku 4.5, following AGENTS.md and commitlint.config.js. Check it before committing."

@@ -587,6 +587,10 @@ async function main() {
     await page.click('#commitSelectedFilesButton');
     assert.deepEqual(await page.evaluate(() => window.__scopeRequests.map(message => [message.type, message.payload.files])),
       [['generateCommitMessage', ['lib-b', 'live-new.txt']], ['commitFiles', ['lib-b', 'live-new.txt']]]);
+    // The usage report's numbers: how long the dialog was open, and no Copilot message (it never came).
+    const metrics = await page.evaluate(() => window.__scopeRequests[1].payload.metrics);
+    assert.equal(metrics.copilot, false);
+    assert.ok(metrics.durationMs > 0 && metrics.durationMs < 60000, `dialog time ${metrics.durationMs}`);
     await page.evaluate(() => { window.__scopeRestore(); window.postMessage({ type: 'commitFilesResult', payload: { repositoryPath: '.', success: false, message: '' } }, '*'); });
     await page.uncheck('.commit-change-checkbox[data-path="lib-b"]');
     await page.click('#commitScopeNote [data-action="showAllCommitFiles"]');

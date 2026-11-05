@@ -16,6 +16,8 @@ import { RepositoryManagerPanel } from './repositoryManagerPanel';
 import { CHANGE_DOCUMENT_SCHEME, ChangeDocumentProvider } from './changeDocuments';
 import { registerRequirements } from './requirements/requirementsView';
 import { registerAgent } from './agent/agentView';
+import * as path from 'path';
+import { setUsageLog, UsageLog, usageReport } from './services/usageLog';
 
 let repositoryTreeProvider: RepositoryTreeProvider;
 let gitOps: GitOperations;
@@ -112,6 +114,7 @@ function registerGit(context: vscode.ExtensionContext, workspaceRoot: string): v
   registerCreateBranchCommand(context, gitOps, repositoryTreeProvider);
   registerReviewCommands(context, workspaceRoot);
   registerDiscardCommands(context, gitOps);
+  registerUsage(context);
   // Right-click a local branch in the Side Bar: VS Code's menu passes the row's data-vscode-context.
   context.subscriptions.push(vscode.commands.registerCommand('repositoryManager.deleteBranchFromMenu',
     (branch: unknown) => RepositoryManagerPanel.currentPanel?.deleteBranchFromMenu(branch)));
@@ -137,6 +140,26 @@ function registerGit(context: vscode.ExtensionContext, workspaceRoot: string): v
   watcher.onDidCreate(() => repositoryTreeProvider.refresh());
   watcher.onDidDelete(() => repositoryTreeProvider.refresh());
   context.subscriptions.push(watcher);
+}
+
+/** The usage log (src/services/usageLog.ts) and its report, opened as a Markdown document. */
+function registerUsage(context: vscode.ExtensionContext): void {
+  const log = new UsageLog(path.join(context.globalStorageUri.fsPath, 'usage.jsonl'),
+    () => vscode.workspace.getConfiguration('repositoryManager').get<boolean>('usage.enabled', true));
+  setUsageLog(log);
+  context.subscriptions.push(
+    vscode.commands.registerCommand('repositoryManager.showUsage', async () => {
+      const document = await vscode.workspace.openTextDocument({ language: 'markdown', content: usageReport(log.read(), log.file) });
+      await vscode.window.showTextDocument(document, { preview: false });
+    }),
+    vscode.commands.registerCommand('repositoryManager.clearUsage', async () => {
+      const clear = 'Clear';
+      if (await vscode.window.showWarningMessage('Clear the recorded usage? The report starts again from nothing.', { modal: true }, clear) === clear) {
+        log.clear();
+      }
+    }),
+    { dispose: () => setUsageLog(undefined) }
+  );
 }
 
 /** With no folder open, every Git and Agent command shows an error instead of being "not found". */
