@@ -18,6 +18,7 @@ import { resolveDefaultBranch, resolveReleaseRange } from './services/releaseRan
 import { ReviewSkillStore } from './reviewSkillStore';
 import { carryTriage } from './reviewTriageCarry';
 import { ReviewHistoryStore, summarize } from './reviewHistory';
+import { recordUsage } from './services/usageLog';
 
 export interface CancellationLike { readonly isCancellationRequested: boolean }
 
@@ -546,6 +547,7 @@ export class ReviewController {
         await this.host.post({ type: 'reviewTriageUpdated', payload: { requestId: fix.requestId, triage: stored.triage,
           readiness: assessReadiness(stored.result, stored.triage), layout: assessReadiness(stored.result) } });
       }
+      recordUsage({ kind: 'reviewFix', files: paths.length, findings: fixedIds.length });
       this.host.notify(`Applied the fix to ${paths.length} file${paths.length === 1 ? '' : 's'}. Nothing was committed.`);
       this.host.workingTreeChanged();
     } catch (error) {

@@ -385,7 +385,7 @@ export type DashboardRequest =
   | { type: 'getRepositoryRefs'; payload: { repositoryPath: string } }
   | { type: 'getWorkingTreeChanges'; payload: { repositoryPath: string } }
   | { type: 'getWorkingTreePreview'; payload: { repositoryPath: string; path: string; mode: 'staged' | 'unstaged'; requestId: number } }
-  | { type: 'commitFiles'; payload: { repositoryPath: string; files: string[]; message: string; partial?: PartialStagedChoice; push?: boolean } };
+  | { type: 'commitFiles'; payload: { repositoryPath: string; files: string[]; message: string; partial?: PartialStagedChoice; push?: boolean; metrics?: { durationMs: number; copilot: boolean; editRatio?: number } } };
 
 /** For a partly staged file: commit its staged version, or the whole file as in the working tree. */
 export type PartialStagedChoice = 'staged' | 'whole';

@@ -5,6 +5,12 @@ All notable changes to Repository Manager will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Show Usage Report** (Command Palette): how long commits from the dialog take with and without a Copilot message, how much of Copilot's message you change, Align runs and applied review fixes. Comparisons wait until there are enough commits on each side. Recorded on this machine only, as counts and durations; turn it off with `repositoryManager.usage.enabled`, or clear it with **Clear Usage Data**.
+
 ## [2.18.0] - 2026-11-05
 
 ### Changed

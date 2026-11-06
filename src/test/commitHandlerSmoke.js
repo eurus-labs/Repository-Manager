@@ -23,6 +23,7 @@ Module._load = function (request, parent, isMain) {
 };
 const { messageHandlers } = require('../../out/handlers/webviewMessageHandler.js');
 const { GitOperations } = require('../../out/gitOperations.js');
+const usage = require('../../out/services/usageLog.js');
 Module._load = originalLoad;
 
 async function main() {
@@ -70,6 +71,27 @@ async function main() {
     assert.match(result.message, /^Created commit [0-9a-f]+; not pushed: /);
     assert.equal(git(repo, 'log', '-1', '--format=%s'), 'third');
     assert.equal(shown.at(-1)[0], 'error', 'a failed push was reported as a success');
+
+    // A commit from the dialog goes into the usage log: its timing, Copilot use and size, no message.
+    const usageLog = new usage.UsageLog(path.join(base, 'usage', 'usage.jsonl'));
+    usage.setUsageLog(usageLog);
+    writeFileSync(path.join(repo, 'a.txt'), '3\nmore\n');
+    await messageHandlers.commitFiles(ctx, { repositoryPath: '.', files: ['a.txt'], message: 'usage', push: false,
+      metrics: { durationMs: 4200, copilot: true, editRatio: 0.25 } });
+    const [entry] = usageLog.read();
+    assert.deepEqual({ ...entry, at: undefined }, { at: undefined, kind: 'commit', durationMs: 4200, copilot: true, editRatio: 0.25, files: 1, lines: 1 });
+    assert.equal(JSON.stringify(entry).includes('usage"') || JSON.stringify(entry).includes('a.txt'), false, 'the message or a path was recorded');
+    // Bad numbers from the page are not trusted; a failed commit is not recorded.
+    await messageHandlers.commitFiles(ctx, { repositoryPath: '.', files: ['missing.txt'], message: 'nothing', metrics: { durationMs: -5, copilot: 'yes' } });
+    assert.equal(usageLog.read().length, 1, 'a failed commit was recorded');
+    writeFileSync(path.join(repo, 'a.txt'), '3\n');
+    await messageHandlers.commitFiles(ctx, { repositoryPath: '.', files: ['a.txt'], message: 'odd', metrics: { durationMs: -5, copilot: 'yes', editRatio: 3 } });
+    assert.deepEqual([usageLog.read()[1].durationMs, usageLog.read()[1].copilot, usageLog.read()[1].editRatio], [0, false, undefined]);
+    // Align is recorded once a run, from the dashboard or from the Command Palette (the same Git call).
+    await messageHandlers.syncVersions(ctx, { submodules: [] });
+    await ctx.gitOps.syncAllSubmodules();
+    assert.deepEqual(usageLog.read().filter(item => item.kind === 'align').map(item => [item.repositories, item.failed]), [[0, 0], [0, 0]]);
+    usage.setUsageLog(undefined);
 
     // Unticked: no push, and the choice is remembered as off.
     writeFileSync(path.join(repo, 'a.txt'), '4\n');

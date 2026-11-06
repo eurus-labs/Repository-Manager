@@ -19,6 +19,7 @@ import { buildResolutionPrompt, checkResolution, describeSuggestion, parseResolu
 import { STASH_OPERATIONS, StashActionData, StashOperation } from '../services/stashActionService';
 import { DiscardResultData } from '../services/discardService';
 import { openCommitChange, openWorkingChange } from '../changeDocuments';
+import { recordUsage } from '../services/usageLog';
 
 export interface MessageHandlerContext {
   panel: vscode.WebviewPanel;
@@ -258,9 +259,26 @@ export async function handleCommitFiles(ctx: MessageHandlerContext, payload: unk
   });
 
   if (result.success) {
+    await recordCommitUsage(ctx, repositoryPath, files.length, request.metrics);
     await ctx.reloadDashboardHistory([repositoryPath]);
     await ctx.refresh();
   }
+}
+
+/** The dialog's timing and Copilot use, with the size of the commit just made (numbers only). */
+async function recordCommitUsage(ctx: MessageHandlerContext, repositoryPath: string, files: number, metrics: unknown): Promise<void> {
+  const m = metrics && typeof metrics === 'object' ? metrics as Record<string, unknown> : {};
+  const durationMs = typeof m.durationMs === 'number' && Number.isFinite(m.durationMs) && m.durationMs >= 0 ? m.durationMs : 0;
+  const editRatio = typeof m.editRatio === 'number' && m.editRatio >= 0 && m.editRatio <= 1 ? m.editRatio : undefined;
+  let lines: number | undefined;
+  try {
+    const numstat = await new GitCommandService(ctx.workspaceRoot).execGit(['show', '--numstat', '--format=', 'HEAD'], ctx.gitOps.resolveRepositoryPath(repositoryPath), 10000);
+    lines = numstat.split('\n').reduce((sum, row) => {
+      const [added, removed] = row.split('\t');
+      return sum + (Number(added) || 0) + (Number(removed) || 0);
+    }, 0);
+  } catch { /* the size stays unknown */ }
+  recordUsage({ kind: 'commit', durationMs, copilot: m.copilot === true, editRatio: m.copilot === true ? editRatio : undefined, files, lines });
 }
 
 /**
