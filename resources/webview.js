@@ -111,6 +111,11 @@
   // uncommitted changes, also Discard (that file or all; picking several is the Side Bar's). The Uncommitted changes row offers Discard All. The host asks before a discard and keeps a
   // copy first.
   let changesContextTarget = null;
+  // With uncommitted changes, the diff panel stands for the file it shows: its menu is that file's.
+  function workingDiffTarget(target) {
+    if (selectedDashboardCommit !== WORKING_TREE || !selectedDashboardFile || !target.closest('#commitContent .diff-panel')) return null;
+    return Array.from(document.querySelectorAll('#dashboardChangedFiles .changed-file-item')).find(item => item.dataset.path === selectedDashboardFile) || null;
+  }
   function showChangesContextMenu(element, x, y) {
     const file = element.closest('.changed-file-item');
     const local = selectedDashboardCommit === WORKING_TREE || !file;
@@ -747,12 +752,14 @@
     // The diff panel's Open ↗: the file shown, in VS Code's diff editor.
     openDiffInEditor: () => { if (selectedDashboardFile) openInEditor(selectedDashboardFile); },
 
-    // A Side Bar Changes row: opens the diff in an editor tab; Ctrl/Cmd or Shift picks it instead.
+    // A Side Bar Changes row: shows its diff in the dashboard (double-click: in an editor tab);
+    // Ctrl/Cmd or Shift picks it instead. The dashboard has no list of its own for these files.
     openWorkingChange: (el, event) => {
       const filePath = el.dataset.path;
       if (!filePath) return;
       if (event && (event.ctrlKey || event.metaKey || event.shiftKey)) { toggleWorkingSelection(filePath, event); return; }
-      postMessage('openChangeInEditor', { repositoryPath: activeDashboardRepository, path: filePath, working: true });
+      showWorkingFile(filePath);
+      postMessage('revealDashboard', {});
     },
     toggleWorkingSelection: (el, event) => { if (el.dataset.path) toggleWorkingSelection(el.dataset.path, event); },
     toggleAllWorkingSelection: () => {
@@ -836,6 +843,8 @@
       document.querySelectorAll('.changed-file-item').forEach(item => {
         item.classList.toggle('active', item.dataset.path === filePath);
       });
+      syncWorkingLayout();
+      markShownWorkingFile();
       const fileName = document.getElementById('diffFileName');
       const diff = document.getElementById('dashboardDiff');
       if (fileName) fileName.textContent = filePath;
@@ -2344,9 +2353,10 @@
       const folder = slash >= 0 ? change.path.slice(0, slash) : '';
       const selected = workingSelection.has(change.path);
       const where = change.originalPath ? `${change.originalPath} → ${change.path}` : change.path;
-      return `<div class="sidebar-change-row${selected ? ' selected' : ''}" role="listitem">` +
+      const shown = selectedDashboardCommit === WORKING_TREE && selectedDashboardFile === change.path;
+      return `<div class="sidebar-change-row${selected ? ' selected' : ''}${shown ? ' shown' : ''}" role="listitem">` +
         checkboxHtml(selected, 'toggleWorkingSelection', `Select ${change.path}`, change.path) +
-        `<button type="button" class="sidebar-change-item status-${escapeHtml(status)}" data-action="openWorkingChange" data-path="${escapeHtml(change.path)}" title="${escapeHtml(`${where} · ${state}. Open the diff in an editor tab; Ctrl or Shift+click to select`)}">` +
+        `<button type="button" class="sidebar-change-item status-${escapeHtml(status)}" data-action="openWorkingChange" data-path="${escapeHtml(change.path)}" title="${escapeHtml(`${where} · ${state}. Click to show the diff in the dashboard, double-click to open it in an editor tab; Ctrl or Shift+click to select`)}"${shown ? ' aria-current="true"' : ''}>` +
         `<span class="file-status-glyph">${changedFileGlyph(status)}</span><span class="sidebar-change-name">${escapeHtml(name)}</span><small>${escapeHtml(folder)}</small></button>` +
         `<button type="button" class="sidebar-change-discard" data-action="discardWorkingChange" data-path="${escapeHtml(change.path)}" title="${escapeHtml(`Discard changes to ${name}…`)}" aria-label="${escapeHtml(`Discard changes to ${change.path}`)}">↶</button></div>`;
     }).join('');
@@ -2443,9 +2453,10 @@
     }
   }
 
-  function selectWorkingTree() {
+  // `filePath`: the file to show first (one picked in the Side Bar); otherwise the first file.
+  function selectWorkingTree(filePath) {
     if (!dashboardWorkingChanges().length) return;
-    if (selectedDashboardCommit !== WORKING_TREE) selectedDashboardFile = null;
+    if (selectedDashboardCommit !== WORKING_TREE) selectedDashboardFile = filePath || null;
     resetChangeSummary();
     selectedDashboardCommit = WORKING_TREE;
     activeComparisonTarget = null;
@@ -2513,6 +2524,7 @@
       summary.innerHTML = `<div class="commit-avatar uncommitted-avatar" aria-hidden="true">*</div><div class="commit-summary-copy"><strong>Uncommitted changes</strong><span>${escapeHtml(workingTreeCountText(changes))} · ${escapeHtml(where)}${escapeHtml(head)}</span></div><code title="Not committed yet">*</code>`;
     }
     if (count) count.textContent = String(changes.length);
+    syncWorkingLayout();
     // Review changes follows the review lock; Review commit has no commit to review here.
     applyReviewLock();
     if (!files) return;
@@ -2524,10 +2536,42 @@
     const kept = selectedDashboardFile && Array.from(files.querySelectorAll('.changed-file-item')).find(item => item.dataset.path === selectedDashboardFile);
     if (kept && keepDiff) {
       kept.classList.add('active');
+      markShownWorkingFile();
       return;
     }
     const first = kept || files.querySelector('.changed-file-item');
     if (first) actions.selectChangedFile(first);
+  }
+
+  // Uncommitted changes show one file's diff at a time, picked in the Side Bar's Changes.
+  function showWorkingFile(filePath) {
+    if (!dashboardWorkingChanges().some(change => change.path === filePath)) return;
+    if (selectedDashboardCommit !== WORKING_TREE) {
+      commitChosen = false;
+      selectWorkingTree(filePath);
+      return;
+    }
+    actions.selectChangedFile({ dataset: { path: filePath } });
+  }
+
+  // For uncommitted changes the Changed files column is hidden: the Side Bar's Changes is the list,
+  // and the diff takes the width. A commit or a comparison still lists its files here.
+  function syncWorkingLayout() {
+    const content = document.getElementById('commitContent');
+    if (content) content.classList.toggle('working-tree', selectedDashboardCommit === WORKING_TREE);
+  }
+
+  // The Side Bar row of the file whose diff is shown.
+  function markShownWorkingFile() {
+    const shown = selectedDashboardCommit === WORKING_TREE ? selectedDashboardFile : null;
+    document.querySelectorAll('#dashboardChanges .sidebar-change-row').forEach(row => {
+      const item = row.querySelector('.sidebar-change-item');
+      const on = Boolean(shown && item && item.dataset.path === shown);
+      if (row.classList.contains('shown') !== on) row.classList.toggle('shown', on);
+      if (item && (item.getAttribute('aria-current') === 'true') !== on) {
+        if (on) item.setAttribute('aria-current', 'true'); else item.removeAttribute('aria-current');
+      }
+    });
   }
 
   // Staged diff (the index) or Unstaged diff (the working tree) of the selected file.
@@ -2627,6 +2671,8 @@
     const count = document.getElementById('changedFileCount');
     if (count) count.textContent = '0';
     clearFileListTools();
+    syncWorkingLayout();
+    markShownWorkingFile();
   }
 
   function showCommitDetailLoading() {
@@ -2657,6 +2703,8 @@
     if (payload.targetRevision !== expectedTarget && detail.hash !== expectedTarget) return;
     selectedDashboardCommit = detail.hash;
     activeComparisonTarget = detail.hash;
+    syncWorkingLayout();
+    markShownWorkingFile();
     comparisonBaseHash = detail.comparisonBaseHash || null;
     resetChangeSummary();
     changeSummarySelection = { baseSha: comparisonBaseHash, targetSha: detail.hash, files: detail.files || [],
@@ -2782,7 +2830,7 @@
   });
 
   document.body.addEventListener('contextmenu', function (e) {
-    const changesElement = e.target.closest('#uncommittedRow, #dashboardChangedFiles .changed-file-item');
+    const changesElement = e.target.closest('#uncommittedRow, #dashboardChangedFiles .changed-file-item') || workingDiffTarget(e.target);
     if (changesElement) {
       if (showChangesContextMenu(changesElement, e.clientX, e.clientY)) e.preventDefault();
       return;
@@ -2813,7 +2861,7 @@
     }
     moveInSummaryModelMenu(e);
     const changesKeyTarget = (e.key === 'ContextMenu' || (e.shiftKey && e.key === 'F10')) &&
-      e.target.closest('#uncommittedRow, #dashboardChangedFiles .changed-file-item');
+      (e.target.closest('#uncommittedRow, #dashboardChangedFiles .changed-file-item') || workingDiffTarget(e.target));
     if (changesKeyTarget) {
       e.preventDefault();
       const rect = changesKeyTarget.getBoundingClientRect();
@@ -2827,7 +2875,7 @@
 
   document.body.addEventListener('dblclick', function (e) {
     // A changed file in the dashboard: its diff in an editor tab, where it has room.
-    const changedFile = e.target.closest('#dashboardChangedFiles .changed-file-item');
+    const changedFile = e.target.closest('#dashboardChangedFiles .changed-file-item, #dashboardChanges .sidebar-change-item');
     if (changedFile && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
       e.preventDefault();
       openInEditor(changedFile.dataset.path);
