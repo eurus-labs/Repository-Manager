@@ -18,6 +18,7 @@ import {
   ReferenceService
 } from './services';
 import { HistoryAction, HistoryActionService } from './services/historyActionService';
+import { recordUsage } from './services/usageLog';
 import { StashActionService, StashOperation } from './services/stashActionService';
 import { DiscardPlan, DiscardService } from './services/discardService';
 import { StashEntry } from './services/stashTarget';
@@ -137,8 +138,12 @@ export class GitOperations {
   /**
    * Sync submodules to their recorded commits in the parent repository
    */
+  /** Align, from the dashboard or the Command Palette: each run goes into the usage log once. */
   async syncAllSubmodules(submodulePaths?: string[]): Promise<Map<string, CommandResult>> {
-    return this.submoduleService.syncAllSubmodules(submodulePaths);
+    const started = Date.now();
+    const results = await this.submoduleService.syncAllSubmodules(submodulePaths);
+    recordUsage({ kind: 'align', repositories: results.size, failed: [...results.values()].filter(result => !result.success).length, durationMs: Date.now() - started });
+    return results;
   }
 
   /**

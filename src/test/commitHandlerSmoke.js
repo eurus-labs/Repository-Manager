@@ -87,6 +87,10 @@ async function main() {
     writeFileSync(path.join(repo, 'a.txt'), '3\n');
     await messageHandlers.commitFiles(ctx, { repositoryPath: '.', files: ['a.txt'], message: 'odd', metrics: { durationMs: -5, copilot: 'yes', editRatio: 3 } });
     assert.deepEqual([usageLog.read()[1].durationMs, usageLog.read()[1].copilot, usageLog.read()[1].editRatio], [0, false, undefined]);
+    // Align is recorded once a run, from the dashboard or from the Command Palette (the same Git call).
+    await messageHandlers.syncVersions(ctx, { submodules: [] });
+    await ctx.gitOps.syncAllSubmodules();
+    assert.deepEqual(usageLog.read().filter(item => item.kind === 'align').map(item => [item.repositories, item.failed]), [[0, 0], [0, 0]]);
     usage.setUsageLog(undefined);
 
     // Unticked: no push, and the choice is remembered as off.

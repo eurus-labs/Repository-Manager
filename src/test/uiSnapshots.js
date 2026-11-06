@@ -1037,6 +1037,25 @@ async function main() {
       'Written by Claude Haiku 4.5, following AGENTS.md, .commitlintrc and package.json. 1 file was too large to send, so Copilot saw only its name. Check it before committing.');
     assert.equal(await scriptedStatus([], ['a.bin', 'b.bin']),
       'Written by Claude Haiku 4.5, in Conventional Commits style, as this repository names no commit convention. 2 files were too large to send, so Copilot saw only their names. Check it before committing.');
+    // Closing the dialog keeps Copilot's draft, and that it is Copilot's: reopened and committed as
+    // is, the usage report counts it as a Copilot message, unchanged.
+    const copilotDraft = await page.inputValue('#commitMessage');
+    await page.keyboard.press('Escape');
+    await page.locator('#commitChangesModal.active').waitFor({ state: 'detached' });
+    await page.click('[data-action="openCommitChangesModal"]');
+    await page.locator('#commitChangesModal.active').waitFor();
+    assert.equal(await page.inputValue('#commitMessage'), copilotDraft);
+    await page.waitForFunction(() => document.querySelectorAll('#commitChangesList .commit-change-checkbox').length > 0);
+    await page.check('input[name="commitPartial"][value="staged"]').catch(() => undefined);
+    await page.evaluate(() => {
+      const toHost = window.__postToHost;
+      window.__draftRestore = () => { window.__postToHost = toHost; };
+      window.__draftCommits = [];
+      window.__postToHost = message => message.type === 'commitFiles' ? window.__draftCommits.push(message.payload) : toHost(message);
+    });
+    await page.click('#commitSelectedFilesButton');
+    assert.deepEqual(await page.evaluate(() => [window.__draftCommits[0].metrics.copilot, window.__draftCommits[0].metrics.editRatio]), [true, 0]);
+    await page.evaluate(() => { window.__draftRestore(); window.postMessage({ type: 'commitFilesResult', payload: { repositoryPath: '.', success: false, message: '' } }, '*'); });
     // A failure is said in place, and the button is usable again.
     reviewProbe.messageReply = async () => { throw new Error('No Copilot model available. Sign in to GitHub Copilot and try again.'); };
     await page.click('#commitMessageGenerate');

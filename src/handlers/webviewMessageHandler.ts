@@ -571,9 +571,7 @@ export async function handleSyncVersions(
 ): Promise<void> {
   // Sync only the selected submodules, or all if none selected
   const submodulesToSync = payload.submodules.length > 0 ? payload.submodules : undefined;
-  const started = Date.now();
   const results = await ctx.gitOps.syncAllSubmodules(submodulesToSync);
-  recordUsage({ kind: 'align', repositories: results.size, failed: [...results.values()].filter(result => !result.success).length, durationMs: Date.now() - started });
   let successCount = 0;
   const errors: string[] = [];
 

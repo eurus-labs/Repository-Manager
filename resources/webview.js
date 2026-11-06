@@ -980,7 +980,6 @@
       if (changesList) changesList.innerHTML = '<div class="dashboard-loading">Loading changed files…</div>';
       workingTreeChanges = [];
       commitOpenedAt = Date.now();
-      copilotCommitMessage = null;
       const picked = selectedWorkingPaths();
       commitScope = picked.length ? new Set(picked) : null;
       previewedWorkingTreeFile = null;
@@ -994,7 +993,8 @@
       if (previewModes) previewModes.hidden = true;
       if (previewDiff) previewDiff.innerHTML = '<span class="diff-placeholder">Select a file to preview its changes.</span>';
       if (truncated) truncated.textContent = '';
-      if (message && commitDraftRepository !== activeDashboardRepository) message.value = '';
+      // A kept draft keeps whether Copilot wrote it; a cleared one is no longer Copilot's.
+      if (message && commitDraftRepository !== activeDashboardRepository) { message.value = ''; copilotCommitMessage = null; }
       commitDraftRepository = activeDashboardRepository;
       if (result) result.textContent = '';
       if (selectAll) selectAll.checked = true;
@@ -3053,6 +3053,7 @@
             commitMessagePartial = null;
             const draft = document.getElementById('commitMessage');
             if (draft) draft.value = '';
+            copilotCommitMessage = null;
             document.getElementById('commitChangesModal').classList.remove('active');
           }
           break;
