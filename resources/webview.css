@@ -3166,3 +3166,9 @@ body.sidebar-view { overflow: hidden; background: var(--vscode-sideBar-backgroun
 .commit-scope-note { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; margin: 0 0 8px; color: var(--vscode-descriptionForeground, var(--muted)); font-size: 12px; }
 .commit-scope-note[hidden] { display: none; }
 .commit-scope-note .link-button { padding: 0; border: 0; color: var(--vscode-textLink-foreground, var(--accent)); background: none; font: inherit; text-decoration: underline; cursor: pointer; }
+/* Uncommitted changes: the Side Bar's Changes is the file list, so the diff takes the width. */
+#commitContent.working-tree .changed-files-panel,
+#commitContent.working-tree #filesDiffSplitter { display: none; }
+#commitContent.working-tree { grid-template-columns: minmax(0, 1fr) !important; }
+.sidebar-change-row.shown { background: var(--vscode-list-inactiveSelectionBackground, rgba(127, 127, 127, 0.18)); }
+.sidebar-change-row.shown .sidebar-change-name { font-weight: 600; }

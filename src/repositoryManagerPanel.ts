@@ -56,6 +56,8 @@ const READ_ONLY_MESSAGES = new Set([
   'sidebarSnapshot',
   // A changed file in the diff editor: reads Git, changes nothing.
   'openChangeInEditor',
+  // A file picked in the Side Bar's Changes: the dashboard comes to the front; no Git.
+  'revealDashboard',
   // When the page drew its first history (repositoryManager.debug.timings); no Git.
   'dashboardTiming'
 ]);
@@ -562,6 +564,11 @@ export class RepositoryManagerPanel {
   private async _dispatchMessage(message: { type: string; payload?: unknown }) {
     try {
       if (this._reviewBridge.fromDashboard(message)) { return; }
+      if (message.type === 'revealDashboard') {
+        // Keep the focus in the Side Bar, so the arrow keys and the next click stay there.
+        this._panel.reveal(undefined, true);
+        return;
+      }
       if (message.type === 'dashboardTiming') {
         const name = (message.payload as { name?: unknown } | undefined)?.name;
         if (typeof name === 'string') { this._timings?.markOnce(name); }

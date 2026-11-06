@@ -509,25 +509,44 @@ async function main() {
     await page.focus('#uncommittedRow');
     await page.keyboard.press('Enter');
     await page.waitForFunction(() => document.querySelectorAll('#dashboardChangedFiles .changed-file-item').length === 3);
-    await page.click('#dashboardChangedFiles .changed-file-item[data-path="src/app.txt"]');
+    // The dashboard has no file list for uncommitted changes: the Side Bar's Changes picks the
+    // file, and its diff takes the dashboard's width. A click no longer opens an editor tab.
+    assert.equal(await page.isVisible('#commitContent .changed-files-panel'), false, 'the Changed files column is still shown for uncommitted changes');
+    executed.length = 0;
+    await side.waitForFunction(() => document.querySelectorAll('#dashboardChanges .sidebar-change-item').length === 3);
+    await side.click('#dashboardChanges .sidebar-change-item[data-path="src/app.txt"]');
     await page.waitForFunction(() => /\+staged edit/.test(document.getElementById('dashboardDiff').textContent));
     assert.equal(await page.getAttribute('#workingDiffModes [data-mode="staged"]', 'aria-pressed'), 'true');
     assert.equal(await page.isDisabled('#workingDiffModes [data-mode="unstaged"]'), true);
-    await page.click('#dashboardChangedFiles .changed-file-item[data-path="live-new.txt"]');
+    await side.click('#dashboardChanges .sidebar-change-item[data-path="live-new.txt"]');
     await page.waitForFunction(() => /\+new/.test(document.getElementById('dashboardDiff').textContent));
+    assert.equal(await page.textContent('#diffFileName'), 'live-new.txt');
+    await side.waitForFunction(() => document.querySelector('#dashboardChanges .sidebar-change-row.shown [data-path="live-new.txt"]'));
+    assert.equal(await side.locator('#dashboardChanges .sidebar-change-row.shown').count(), 1);
+    assert.deepEqual(executed.filter(([command]) => command === 'vscode.diff' || command === 'vscode.open'), [], 'a click opened an editor tab');
+    const diffBox = await page.locator('#commitContent .diff-panel').boundingBox();
+    const contentBox = await page.locator('#commitContent').boundingBox();
+    assert.ok(diffBox.width >= contentBox.width - 2, `the diff is ${diffBox.width}px of ${contentBox.width}px`);
     await snap(page, '01c-uncommitted-changes');
     // Right-click a changed file: Review (that file), Discard Changes (that file) and Discard All Changes.
     const discardMenu = page.locator('#changesContextMenu');
     const discardItems = () => discardMenu.locator('button:visible').allTextContents();
-    // The Side Bar lists the same files under Branches; a click opens one in an editor tab: a
+    // An uncommitted file's menu: pick it in the Side Bar, then right-click its diff in the dashboard.
+    const fileMenu = async filePath => {
+      await side.locator(`#dashboardChanges .sidebar-change-item[data-path="${filePath}"]`).waitFor();
+      await side.click(`#dashboardChanges .sidebar-change-item[data-path="${filePath}"]`);
+      await page.waitForFunction(name => document.getElementById('diffFileName').textContent === name, filePath);
+      await page.click('#dashboardDiff', { button: 'right' });
+    };
+    // The Side Bar lists the same files under Branches; a double-click opens one in an editor tab: a
     // changed file as HEAD ↔ the file on disk, a new file as it is.
     const sideChanges = () => side.locator('#dashboardChanges .sidebar-change-item').evaluateAll(items => items.map(item => item.dataset.path));
     await side.waitForFunction(() => document.querySelectorAll('#dashboardChanges .sidebar-change-item').length === 3);
     assert.deepEqual(await sideChanges(), await page.locator('#dashboardChangedFiles .changed-file-item').evaluateAll(items => items.map(item => item.dataset.path)));
     assert.equal(await side.textContent('#changesRefCount'), '3');
     executed.length = 0;
-    await side.click('#dashboardChanges .sidebar-change-item[data-path="src/app.txt"]');
-    await side.click('#dashboardChanges .sidebar-change-item[data-path="live-new.txt"]');
+    await side.dblclick('#dashboardChanges .sidebar-change-item[data-path="src/app.txt"]');
+    await side.dblclick('#dashboardChanges .sidebar-change-item[data-path="live-new.txt"]');
     for (let i = 0; i < 100 && executed.length < 2; i++) await page.waitForTimeout(20);
     const opened = executed.map(([command, left, right, title]) => command === 'vscode.diff'
       ? [command, JSON.parse(left.query).path, right.fsPath.endsWith(path.join('src', 'app.txt')), title] : [command, left.fsPath.endsWith('live-new.txt')]);
@@ -559,12 +578,13 @@ async function main() {
     assert.deepEqual(await checked(side), ['lib-b', 'live-new.txt']);
     assert.match(await side.textContent('#sidebarSelectionBar'), /^2 selected\s*Discard…/);
     assert.equal(await page.locator('#dashboardChangedFiles .change-check, #commitContent [data-action="discardWorkingSelection"]').count(), 0);
-    await page.click('#dashboardChangedFiles .changed-file-item[data-path="src/app.txt"]', { modifiers: ['Control'] });
-    assert.equal(await page.textContent('#diffFileName'), 'src/app.txt');
+    // A plain click shows another file's diff and leaves the selection as it is.
+    await side.click('#dashboardChanges .sidebar-change-item[data-path="src/app.txt"]');
+    await page.waitForFunction(() => document.getElementById('diffFileName').textContent === 'src/app.txt');
     assert.deepEqual(await checked(side), ['lib-b', 'live-new.txt']);
     await snap(side, '01h-sidebar-selected-changes');
-    // Right-clicking a file in the dashboard's list acts on that file, whatever the Side Bar has selected.
-    await page.click('#dashboardChangedFiles .changed-file-item[data-path="live-new.txt"]', { button: 'right' });
+    // Right-clicking the diff acts on the file it shows, whatever the Side Bar has selected.
+    await fileMenu('live-new.txt');
     await discardMenu.waitFor();
     assert.equal(await discardMenu.locator('[data-action="contextDiscardFile"]').textContent(), 'Discard Changes…');
     await page.keyboard.press('Escape');
@@ -606,7 +626,7 @@ async function main() {
     await side.click('#sidebarSelectionBar [data-action="clearWorkingSelection"]');
     await side.waitForFunction(() => document.getElementById('sidebarSelectionBar').hidden);
     assert.deepEqual(await checked(side), []);
-    await page.click('#dashboardChangedFiles .changed-file-item[data-path="live-new.txt"]', { button: 'right' });
+    await fileMenu('live-new.txt');
     await discardMenu.waitFor();
     assert.deepEqual(await discardItems(), ['Open Changes', 'Review Changes in This File', 'Discard Changes…', 'Discard All Changes…']);
     await snap(page, '01d-discard-menu');
@@ -691,8 +711,19 @@ async function main() {
     await page.evaluate(() => window.dispatchEvent(new MessageEvent('message', { data: { type: 'workingTreeChangesLoaded', payload: {
       purpose: 'dashboard', repositoryPath: '.', changes: [{ path: 'src/app.txt', indexStatus: 'U', workTreeStatus: 'U', staged: false,
         unstaged: true, untracked: false, conflicted: true }] } } })));
-    await page.locator('#dashboardChangedFiles .changed-file-item[data-path="src/app.txt"]').waitFor();
-    await page.click('#dashboardChangedFiles .changed-file-item[data-path="src/app.txt"]', { button: 'right' });
+    // More changes than the Side Bar lists (500): the dashboard shows its Changed files column again,
+    // so every file can still be picked.
+    await page.evaluate(() => window.dispatchEvent(new MessageEvent('message', { data: { type: 'workingTreeChangesLoaded', payload: {
+      purpose: 'dashboard', repositoryPath: '.', changes: Array.from({ length: 501 }, (_, i) => ({ path: `many/f${i}.txt`, indexStatus: '?',
+        workTreeStatus: '?', staged: false, unstaged: false, untracked: true, conflicted: false })) } } })));
+    await page.waitForFunction(() => document.querySelectorAll('#dashboardChangedFiles .changed-file-item').length === 501);
+    assert.equal(await page.isVisible('#commitContent .changed-files-panel'), true, 'files beyond the Side Bar list cannot be picked');
+    await side.waitForFunction(() => /1 more: see Changed files/.test(document.getElementById('dashboardChanges').textContent));
+    await page.evaluate(() => window.dispatchEvent(new MessageEvent('message', { data: { type: 'workingTreeChangesLoaded', payload: {
+      purpose: 'dashboard', repositoryPath: '.', changes: [{ path: 'src/app.txt', indexStatus: 'U', workTreeStatus: 'U', staged: false,
+        unstaged: true, untracked: false, conflicted: true }] } } })));
+    await page.waitForFunction(() => !document.querySelector('#commitContent .changed-files-panel').offsetParent);
+    await fileMenu('src/app.txt');
     await discardMenu.waitFor();
     assert.deepEqual(await discardItems(), ['Suggest Resolution…', 'Open Changes', 'Review Changes in This File', 'Discard Changes…', 'Discard All Changes…']);
     await snap(page, '01e-suggest-resolution-menu');
@@ -1686,7 +1717,7 @@ async function main() {
     // Right-click one changed file: Review reviews only that file, on a snapshot of the changes taken now.
     const runsBeforeFile = runs.length;
     await page.click('#uncommittedRow');
-    await page.click('#dashboardChangedFiles .changed-file-item[data-path="local-new.txt"]', { button: 'right' });
+    await fileMenu('local-new.txt');
     await page.click('#changesContextMenu [data-action="contextReviewFile"]');
     for (let i = 0; i < 150 && runs.length === runsBeforeFile; i++) await page.waitForTimeout(20);
     assert.deepEqual([localRequest.scope, localRequest.paths, localRequest.baseSha], ['changes', ['local-new.txt'], headBeforeLocal]);

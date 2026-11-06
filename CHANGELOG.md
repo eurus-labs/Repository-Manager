@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Show Usage Report** (Command Palette): how long commits from the dialog take with and without a Copilot message, how much of Copilot's message you change, Align runs and applied review fixes. Comparisons wait until there are enough commits on each side. Recorded on this machine only, as counts and durations; turn it off with `repositoryManager.usage.enabled`, or clear it with **Clear Usage Data**.
 
+### Changed
+
+- **Uncommitted changes** no longer have a Changed files column in the dashboard: click a file in the Side Bar's **Changes** to show its diff in the dashboard, across its full width (double-click opens it in an editor tab). Right-click the diff for that file's actions. A commit or a comparison still lists its files.
+
 ## [2.18.0] - 2026-11-05
 
 ### Changed
