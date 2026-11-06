@@ -2361,7 +2361,7 @@
         `<button type="button" class="sidebar-change-discard" data-action="discardWorkingChange" data-path="${escapeHtml(change.path)}" title="${escapeHtml(`Discard changes to ${name}…`)}" aria-label="${escapeHtml(`Discard changes to ${change.path}`)}">↶</button></div>`;
     }).join('');
     const more = changes.length > SIDEBAR_CHANGES_SHOWN
-      ? `<span class="sidebar-placeholder">${changes.length - SIDEBAR_CHANGES_SHOWN} more: see Uncommitted changes in the dashboard</span>` : '';
+      ? `<span class="sidebar-placeholder">${changes.length - SIDEBAR_CHANGES_SHOWN} more: see Changed files under Uncommitted changes in the dashboard</span>` : '';
     list.innerHTML = rows + more || `<span class="sidebar-placeholder">${known ? 'No uncommitted changes' : 'Loading changes…'}</span>`;
     syncWorkingSelection();
   }
@@ -2555,10 +2555,12 @@
   }
 
   // For uncommitted changes the Changed files column is hidden: the Side Bar's Changes is the list,
-  // and the diff takes the width. A commit or a comparison still lists its files here.
+  // and the diff takes the width. A commit or a comparison still lists its files here, and so do
+  // changes too many for the Side Bar to list them all.
   function syncWorkingLayout() {
     const content = document.getElementById('commitContent');
-    if (content) content.classList.toggle('working-tree', selectedDashboardCommit === WORKING_TREE);
+    const sidebarListsAll = dashboardWorkingChanges().length <= SIDEBAR_CHANGES_SHOWN;
+    if (content) content.classList.toggle('working-tree', selectedDashboardCommit === WORKING_TREE && sidebarListsAll);
   }
 
   // The Side Bar row of the file whose diff is shown.

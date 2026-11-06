@@ -711,6 +711,18 @@ async function main() {
     await page.evaluate(() => window.dispatchEvent(new MessageEvent('message', { data: { type: 'workingTreeChangesLoaded', payload: {
       purpose: 'dashboard', repositoryPath: '.', changes: [{ path: 'src/app.txt', indexStatus: 'U', workTreeStatus: 'U', staged: false,
         unstaged: true, untracked: false, conflicted: true }] } } })));
+    // More changes than the Side Bar lists (500): the dashboard shows its Changed files column again,
+    // so every file can still be picked.
+    await page.evaluate(() => window.dispatchEvent(new MessageEvent('message', { data: { type: 'workingTreeChangesLoaded', payload: {
+      purpose: 'dashboard', repositoryPath: '.', changes: Array.from({ length: 501 }, (_, i) => ({ path: `many/f${i}.txt`, indexStatus: '?',
+        workTreeStatus: '?', staged: false, unstaged: false, untracked: true, conflicted: false })) } } })));
+    await page.waitForFunction(() => document.querySelectorAll('#dashboardChangedFiles .changed-file-item').length === 501);
+    assert.equal(await page.isVisible('#commitContent .changed-files-panel'), true, 'files beyond the Side Bar list cannot be picked');
+    await side.waitForFunction(() => /1 more: see Changed files/.test(document.getElementById('dashboardChanges').textContent));
+    await page.evaluate(() => window.dispatchEvent(new MessageEvent('message', { data: { type: 'workingTreeChangesLoaded', payload: {
+      purpose: 'dashboard', repositoryPath: '.', changes: [{ path: 'src/app.txt', indexStatus: 'U', workTreeStatus: 'U', staged: false,
+        unstaged: true, untracked: false, conflicted: true }] } } })));
+    await page.waitForFunction(() => !document.querySelector('#commitContent .changed-files-panel').offsetParent);
     await fileMenu('src/app.txt');
     await discardMenu.waitFor();
     assert.deepEqual(await discardItems(), ['Suggest Resolution…', 'Open Changes', 'Review Changes in This File', 'Discard Changes…', 'Discard All Changes…']);
