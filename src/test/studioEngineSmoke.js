@@ -46,6 +46,12 @@ async function main() {
     assert.deepEqual(checkValue({ summary: 's', points: ['a'] }, schema), []);
     assert.deepEqual(checkValue({ summary: 1, points: [2] }, schema), ['output.summary must be a string, not number.', 'output.points[0] must be a string, not number.']);
     assert.deepEqual(checkValue({}, schema), ['output.summary is missing.', 'output.points is missing.']);
+    // An enum of objects or lists compares values, whatever the order of the keys.
+    const options = { enum: [{ status: 'ok', n: [1, 2] }, 'none'] };
+    assert.deepEqual(checkValue(JSON.parse('{"n": [1, 2], "status": "ok"}'), options), []);
+    assert.deepEqual(checkValue('none', options), []);
+    assert.equal(checkValue({ status: 'ok', n: [2, 1] }, options).length, 1);
+    assert.equal(checkValue({ status: 'ok', n: [1, 2], extra: true }, options).length, 1);
 
     // ---- Validation: what a shared file is checked for before it runs.
     assert.deepEqual(messages(workflow({ nodes: [{ id: 'a', type: 'gate', with: { title: 't' } }] })), []);

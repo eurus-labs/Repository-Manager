@@ -39,12 +39,22 @@ function typeOf(value: unknown): string {
   return typeof value;
 }
 
+/** Equal as JSON values: lists in order, objects whatever the order of their keys. */
+function sameJson(a: unknown, b: unknown): boolean {
+  if (a === b) { return true; }
+  if (typeOf(a) !== typeOf(b) || typeof a !== 'object' || a === null) { return false; }
+  if (Array.isArray(a)) { return a.length === (b as unknown[]).length && a.every((item, index) => sameJson(item, (b as unknown[])[index])); }
+  const left = a as Record<string, unknown>, right = b as Record<string, unknown>;
+  const keys = Object.keys(left);
+  return keys.length === Object.keys(right).length && keys.every(key => Object.prototype.hasOwnProperty.call(right, key) && sameJson(left[key], right[key]));
+}
+
 /** Where `value` does not fit `schema`, at most `limit` problems, each with its path. */
 export function checkValue(value: unknown, schema: JsonSchema, where = 'output', limit = 20): string[] {
   const problems: string[] = [];
   const visit = (current: unknown, rule: JsonSchema, at: string) => {
     if (problems.length >= limit) { return; }
-    if (rule.enum && !rule.enum.some(option => option === current)) {
+    if (rule.enum && !rule.enum.some(option => sameJson(option, current))) {
       problems.push(`${at} must be one of ${rule.enum.map(option => JSON.stringify(option)).join(', ')}.`);
       return;
     }
