@@ -19,7 +19,7 @@ permissions:
 jobs:
   verify:
     if: github.event_name != 'release' && (github.event_name != 'workflow_dispatch' || inputs.release_tag == '')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
 
     steps:
@@ -60,7 +60,7 @@ jobs:
 
   upload-release:
     if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.release_tag != '')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
       contents: write
