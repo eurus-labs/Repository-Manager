@@ -4,7 +4,7 @@
  * stored task (no VS Code here), and sent to the webview whole on every change.
  */
 
-import { MAX_ATTEMPTS } from './agentRunner';
+import { MAX_ATTEMPTS, stepVerification } from './agentRunner';
 import { AgentTask, PlanStep, RunLogEntry } from './types';
 
 export function escapeHtml(value: unknown): string {
@@ -33,8 +33,8 @@ function stepDetails(step: PlanStep): string {
   return `<dl class="step-facts">
     <dt>May change</dt><dd>${list(step.paths, 'nothing (read only)')}</dd>
     <dt>Tools</dt><dd>${list(['read', ...step.tools], '')}</dd>
-    <dt>Checks</dt><dd>${list(step.checks, 'none: nothing verifies this step')}</dd>
-  </dl>`;
+    <dt>Checks</dt><dd>${list(step.checks, step.tools.length ? 'none: a change it makes can only be accepted as unverified' : 'none: nothing verifies this step')}</dd>
+  </dl>${step.unknownChecks?.length ? `<p class="warning">Not scripts of this repository: ${list(step.unknownChecks, '')}. Edit this step's checks before approving the plan.</p>` : ''}`;
 }
 
 function stepResult(task: AgentTask, step: PlanStep): string {
@@ -59,6 +59,18 @@ function stepResult(task: AgentTask, step: PlanStep): string {
   </section>`;
 }
 
+/** How an accepted step was verified, so an unverified or failing step never reads as checked. */
+function verificationBadge(step: PlanStep): string {
+  if (step.state !== 'done') { return ''; }
+  if (step.acceptedDespite?.length) { return ` <span class="badge warning-badge" title="Accepted anyway">failing: ${escapeHtml(step.acceptedDespite.join(', '))}</span>`; }
+  switch (step.verification) {
+    case 'passed': return ' <span class="badge" title="Every check passed">checks passed</span>';
+    case 'unverified': return ' <span class="badge warning-badge" title="Accepted as unverified: it changed files and no check ran">unverified</span>';
+    case 'noChanges': return ' <span class="badge" title="No file changed and no check ran">no changes</span>';
+    default: return '';
+  }
+}
+
 function stepCard(task: AgentTask, step: PlanStep, index: number): string {
   const current = index === task.current && ['stepReady', 'stepRunning', 'stepReview'].includes(task.status);
   const state = current ? (task.status === 'stepRunning' ? 'running' : 'current') : step.state;
@@ -72,13 +84,16 @@ function stepCard(task: AgentTask, step: PlanStep, index: number): string {
   } else if (current && task.status === 'stepRunning') {
     actions = button('cancel', 'Cancel');
   } else if (current && task.status === 'stepReview') {
-    const failed = step.result?.checks.some(check => !check.passed) ? 'A check failed' : '';
+    const verification = stepVerification(step);
+    const blocked = verification === 'failed' ? 'A check failed' : verification === 'unverified' ? 'No check verified the changes' : '';
     const spent = step.attempts >= MAX_ATTEMPTS ? `Ran ${MAX_ATTEMPTS} times` : '';
-    actions = button('accept', 'Accept', { primary: true, disabled: failed }) +
-      (failed ? button('acceptAnyway', 'Accept anyway') : '') + button('retry', 'Retry', { disabled: spent }) + button('stop', 'Stop task');
+    actions = button('accept', 'Accept', { primary: true, disabled: blocked }) +
+      (verification === 'failed' ? button('acceptAnyway', 'Accept anyway') : '') +
+      (verification === 'unverified' ? button('acceptUnverified', 'Accept as unverified') : '') +
+      button('retry', 'Retry', { disabled: spent }) + button('stop', 'Stop task');
   }
   return `<li class="step ${state}">
-    <div class="step-head"><span class="step-state">${escapeHtml(state)}</span> <strong>${index + 1}. ${escapeHtml(step.title)}</strong>${step.acceptedDespite?.length ? ` <span class="badge warning-badge" title="Accepted anyway">failing: ${escapeHtml(step.acceptedDespite.join(', '))}</span>` : ''}</div>
+    <div class="step-head"><span class="step-state">${escapeHtml(state)}</span> <strong>${index + 1}. ${escapeHtml(step.title)}</strong>${verificationBadge(step)}</div>
     <p>${escapeHtml(step.intent)}</p>
     ${task.status === 'planReview' || current ? stepDetails(step) : ''}
     ${current && task.status === 'stepReview' ? stepResult(task, step) : ''}

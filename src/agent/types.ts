@@ -19,6 +19,7 @@ export const ALL_TOOLS: readonly AgentToolName[] = [...READ_TOOLS, ...WRITE_TOOL
 export type TaskStatus = 'new' | 'planning' | 'planReview' | 'stepReady' | 'stepRunning' | 'stepReview' | 'done' | 'stopped';
 
 export type StepState = 'pending' | 'done' | 'skipped';
+export type StepVerification = 'passed' | 'failed' | 'unverified' | 'noChanges';
 
 export interface FileChange {
   /** Relative to the task's repository, with forward slashes. */
@@ -73,6 +74,13 @@ export interface PlanStep {
   result?: StepResult;
   /** Checks that were failing when the person chose Accept anyway. */
   acceptedDespite?: string[];
+  /** Check names the model proposed that are not scripts of the repository: the plan waits until they are fixed. */
+  unknownChecks?: string[];
+  /**
+   * How an accepted step was verified: its checks all passed, it was accepted with failing checks,
+   * it changed files and no check ran (accepted as unverified), or it changed nothing and ran none.
+   */
+  verification?: StepVerification;
   /** Results of earlier attempts that were retried: what failed, sent with the next run. */
   feedback?: string;
 }

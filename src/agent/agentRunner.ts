@@ -11,7 +11,7 @@
 import { AgentMessage, CancelToken, ContentBlock, LmRouter, ToolSpec } from './lmRouter';
 import { cleanPath, revertChanges, StepWorkspace, TOOL_SPECS, ToolOutcome } from './agentTools';
 import { TaskStore } from './taskStore';
-import { AgentTask, AgentToolName, CheckResult, PlanStep, READ_TOOLS, StepResult, TaskStatus, WRITE_TOOLS } from './types';
+import { AgentTask, AgentToolName, CheckResult, PlanStep, READ_TOOLS, StepResult, StepVerification, TaskStatus, WRITE_TOOLS } from './types';
 
 export const MAX_STEPS = 10;
 /** Runs of one step: the first and two retries. */
@@ -78,13 +78,28 @@ export function parsePlan(final: unknown, scripts: string[]): PlanStep[] {
     const paths = (Array.isArray(item.paths) ? item.paths : []).flatMap(value => {
       try { return [cleanPath(value) + (typeof value === 'string' && value.endsWith('/') ? '/' : '')]; } catch { return []; }
     });
-    const checks = (Array.isArray(item.checks) ? item.checks : [])
-      .filter((check): check is string => typeof check === 'string' && scripts.includes(check));
+    const named = (Array.isArray(item.checks) ? item.checks : [])
+      .filter((check): check is string => typeof check === 'string' && check.trim().length > 0).map(check => check.trim().slice(0, 100));
+    // An unknown name is kept aside, not dropped: dropping it would leave the step silently unchecked.
+    const checks = named.filter(check => scripts.includes(check));
+    const unknown = [...new Set(named.filter(check => !scripts.includes(check)))];
     return {
       title, intent: text(item.intent, 2000), tools: [...new Set(tools)], paths: [...new Set(paths)].slice(0, 30),
-      checks: [...new Set(checks)], state: 'pending', attempts: 0
+      checks: [...new Set(checks)], state: 'pending', attempts: 0, ...(unknown.length ? { unknownChecks: unknown } : {})
     } as PlanStep;
   });
+}
+
+/**
+ * What a step's run proves: every check passed, one failed, it changed files with no check run
+ * (unverified), or it changed nothing and ran no check. The model's summary never counts.
+ */
+export function stepVerification(step: PlanStep): StepVerification {
+  const result = step.result;
+  const checks = result?.checks ?? [];
+  if (checks.some(check => !check.passed)) { return 'failed'; }
+  if (checks.length) { return 'passed'; }
+  return result?.changes.length ? 'unverified' : 'noChanges';
 }
 
 /** A branch name for the task: agent/<words of the title>-<id end>. */
@@ -203,6 +218,8 @@ export class AgentRunner {
       const unknown = fields.checks.filter(check => !scripts.includes(check));
       if (unknown.length) { throw new AgentError(`Not a script of this repository: ${unknown.join(', ')}`); }
       step.checks = [...new Set(fields.checks)];
+      // The person chose the checks: the names the model got wrong are settled.
+      delete step.unknownChecks;
     }
     if (fields.tools !== undefined) { step.tools = [...new Set(fields.tools.filter(tool => WRITE_TOOLS.includes(tool)))]; }
     this.store.log(id, { type: 'approval', action: 'edit', step: index, detail: Object.keys(fields).join(', ') });
@@ -227,6 +244,10 @@ export class AgentRunner {
   async approvePlan(id: string): Promise<AgentTask> {
     const task = this.load(id);
     this.expect(task, 'planReview');
+    const unsettled = (task.plan ?? []).map((step, index) => ({ step, index })).filter(({ step }) => step.unknownChecks?.length);
+    if (unsettled.length) {
+      throw new AgentError(`Not scripts of this repository: ${unsettled.map(({ step, index }) => `step ${index + 1} (${step.unknownChecks!.join(', ')})`).join('; ')}. Edit those steps' checks first.`);
+    }
     const allowed = this.host.allowedScripts(task.repositoryRoot);
     const missing = [...new Set((task.plan ?? []).flatMap(step => step.checks))].filter(check => !allowed.includes(check));
     if (missing.length) { throw new AgentError(`These scripts are not approved for this repository: ${missing.join(', ')}`); }
@@ -333,13 +354,21 @@ export class AgentRunner {
     const branch = await this.host.git.currentBranch(task.repositoryRoot);
     if (branch !== task.branch) { throw new AgentError(`The repository is on ${branch || 'no branch'}; switch back to ${task.branch} to accept the step.`); }
     this.expect(this.load(id), 'stepReview');
+    const verification = stepVerification(step);
     const failed = step.result?.checks.filter(check => !check.passed).map(check => check.script) ?? [];
-    if (failed.length && !options.anyway) { throw new AgentError(`Checks failed: ${failed.join(', ')}. Retry the step, accept it anyway, or stop the task.`); }
+    if (verification === 'failed' && !options.anyway) { throw new AgentError(`Checks failed: ${failed.join(', ')}. Retry the step, accept it anyway, or stop the task.`); }
+    if (verification === 'unverified' && !options.anyway) {
+      throw new AgentError('The step changed files and no check ran, so nothing verified it. Retry it with a check, accept it as unverified, or stop the task.');
+    }
     step.state = 'done';
+    step.verification = verification;
     if (failed.length) { step.acceptedDespite = failed; }
-    this.store.log(id, failed.length
+    const changed = step.result?.changes.map(change => change.path) ?? [];
+    this.store.log(id, verification === 'failed'
       ? { type: 'approval', action: 'acceptAnyway', step: task.current, detail: `failing: ${failed.join(', ')}` }
-      : { type: 'approval', action: 'accept', step: task.current });
+      : verification === 'unverified'
+        ? { type: 'approval', action: 'acceptUnverified', step: task.current, detail: `no check ran; changed: ${changed.join(', ')}` }
+        : { type: 'approval', action: 'accept', step: task.current, detail: verification === 'noChanges' ? 'no file changed' : 'checks passed' });
     this.next(task);
     return task;
   }
