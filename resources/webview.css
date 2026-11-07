@@ -3068,6 +3068,9 @@ body.sidebar-view { overflow: hidden; background: var(--vscode-sideBar-backgroun
 .sidebar-selection-discard { padding: 1px 8px; border: 1px solid color-mix(in srgb, var(--error) 55%, transparent); border-radius: 4px; color: var(--error);
   background: transparent; font: inherit; font-size: 11px; letter-spacing: 0; text-transform: none; cursor: pointer; }
 .sidebar-selection-discard:hover { background: rgba(240, 113, 120, .12); }
+.sidebar-selection-stash { padding: 1px 8px; border: 1px solid var(--border-strong); border-radius: 4px; color: var(--text-primary);
+  background: transparent; font: inherit; font-size: 11px; letter-spacing: 0; text-transform: none; cursor: pointer; }
+.sidebar-selection-stash:hover { background: var(--bg-hover); }
 .sidebar-selection-clear { width: 20px; height: 20px; padding: 0; border: 0; border-radius: 4px; color: var(--text-muted); background: transparent; cursor: pointer; }
 .sidebar-selection-clear:hover { color: var(--text-primary); background: var(--bg-hover); }
 

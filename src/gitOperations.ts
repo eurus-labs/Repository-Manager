@@ -368,6 +368,11 @@ export class GitOperations {
     return this.stashActionService.run(repositoryPath, hash, operation);
   }
 
+  /** Stash only `paths` (new files included); the other changes stay. */
+  async stashPaths(repositoryPath: string, paths: string[], message?: string): Promise<CommandResult> {
+    return this.stashActionService.push(repositoryPath, paths, message);
+  }
+
   /** What discarding these uncommitted changes (all of them when `paths` is undefined) would do. */
   async planDiscard(repositoryPath: string, paths?: string[]): Promise<DiscardPlan> {
     return this.discardService.plan(repositoryPath, paths);

@@ -63,8 +63,8 @@ export class DiscardService {
     return (await this.planWithChanges(repositoryPath, paths)).plan;
   }
 
-  /** The plan, and the changes it was made from (one `git status` serves both). */
-  private async planWithChanges(repositoryPath: string, paths?: string[]): Promise<{ plan: DiscardPlan; changes: WorkingTreeChange[] }> {
+  /** The plan, and the changes it was made from (one `git status` serves both). Stash… uses it too. */
+  async planWithChanges(repositoryPath: string, paths?: string[]): Promise<{ plan: DiscardPlan; changes: WorkingTreeChange[] }> {
     const root = this.git.resolveRepositoryPath(repositoryPath);
     const changes = await new CommitService(this.git).getWorkingTreeChanges(repositoryPath);
     const wanted = paths ? new Set(paths) : undefined;

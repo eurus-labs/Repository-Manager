@@ -1328,6 +1328,33 @@ export async function handleDiscardChanges(ctx: MessageHandlerContext, payload: 
   await ctx.refresh();
 }
 
+/** Stash… for the files picked in Changes: asks for an optional message, then stashes just them. */
+export async function handleStashChanges(ctx: MessageHandlerContext, payload: {
+  repositoryPath: string; paths?: string[]
+}): Promise<void> {
+  if (!payload || typeof payload.repositoryPath !== 'string') { return; }
+  const paths = Array.isArray(payload.paths) ? payload.paths.filter((item): item is string => typeof item === 'string' && item.length > 0) : [];
+  if (!paths.length) { return; }
+  const count = `${paths.length} file${paths.length === 1 ? '' : 's'}`;
+  const message = await vscode.window.showInputBox({
+    title: `Stash ${count}`,
+    prompt: 'A message for the stash (optional). The other changes stay in the working tree.',
+    placeHolder: paths.length === 1 ? path.basename(paths[0]) : `${count}`
+  });
+  if (message === undefined) { return; }
+  const repositoryPath = payload.repositoryPath;
+  const result = await ctx.gitOps.stashPaths(repositoryPath, paths, message);
+  await handleGetWorkingTreeChanges(ctx, { repositoryPath, purpose: 'dashboard' });
+  showResult(result.success, result.message);
+  if (result.success) {
+    // Every older stash moved down one place: a history filtered to stash@{n} would now show another.
+    await sendToWebview(ctx, { type: 'stashActionCompleted', payload: { repositoryPath,
+      operation: 'push', changedWorkingTree: false, removedStash: false, movedStashes: true } });
+    await ctx.reloadDashboardHistory([repositoryPath]);
+  }
+  await ctx.refresh();
+}
+
 /** Undo from the message after a discard: the files come back from the copy it kept. */
 async function undoDiscard(ctx: MessageHandlerContext, repositoryPath: string, backup: string, paths: string[]): Promise<void> {
   try {
@@ -1529,6 +1556,7 @@ export const messageHandlers: Record<string, (ctx: MessageHandlerContext, payloa
   'openChangeInEditor': (ctx, payload) => handleOpenChangeInEditor(ctx, payload),
   'naturalUndo': (ctx, payload) => handleNaturalUndo(ctx, payload as { repositoryPath: string }),
   'suggestConflictResolution': async (ctx, payload) => { await handleSuggestConflictResolution(ctx, payload as { repositoryPath: string; path: string }); },
+  'stashChanges': (ctx, payload) => handleStashChanges(ctx, payload as { repositoryPath: string; paths?: string[] }),
   'stashAction': (ctx, payload) => handleStashAction(ctx, payload as { repositoryPath: string; stash: string; operation: StashOperation }),
   'getCommits': (ctx, payload) => handleGetCommits(ctx, payload as { submodule: string }),
   'getRecordedCommit': (ctx, payload) => handleGetRecordedCommit(ctx, payload as { submodule: string }),

@@ -9,6 +9,7 @@ const Module = require('node:module');
 // hash the webview sent, whatever its stash@{n} is by then, and only Drop asks first.
 const shown = [];
 let answer;
+let inputAnswer;
 const fakeVscode = {
   window: {
     async showWarningMessage(message, ...rest) {
@@ -16,6 +17,7 @@ const fakeVscode = {
       shown.push({ kind: modal ? 'confirm' : 'warning', message });
       return modal ? answer : undefined;
     },
+    async showInputBox(options) { shown.push({ kind: 'input', message: options.title }); return inputAnswer; },
     showInformationMessage(message) { shown.push({ kind: 'info', message }); },
     showErrorMessage(message) { shown.push({ kind: 'error', message }); }
   },
@@ -26,7 +28,7 @@ Module._load = function (request, parent, isMain) {
   if (request === 'vscode') return fakeVscode;
   return originalLoad.call(this, request, parent, isMain);
 };
-const { handleStashAction } = require('../../out/handlers/webviewMessageHandler.js');
+const { handleStashAction, handleStashChanges } = require('../../out/handlers/webviewMessageHandler.js');
 const { GitCommandService } = require('../../out/services/gitCommandService.js');
 const { StashActionService } = require('../../out/services/stashActionService.js');
 Module._load = originalLoad;
@@ -54,6 +56,7 @@ function context(repo) {
     workspaceRoot: repo.root,
     panel: { webview: { postMessage: async message => { calls.posted.push(message); return true; } } },
     gitOps: {
+      stashPaths: (...args) => service.push(...args),
       describeStash: (...args) => service.describe(...args),
       runStashAction: (...args) => service.run(...args)
     },
@@ -230,6 +233,84 @@ async function main() {
       await handleStashAction(ctx, { repositoryPath: '.', stash: 42, operation: 'drop' });
       assert.deepEqual(shown, []);
       assert.equal(repo.stashes().length, 1);
+    }
+    // Stash… on selected files: just those (a new one included) go into the stash; the rest stay.
+    {
+      const repo = repository(); repos.push(repo);
+      repo.write('tracked.txt', 'stash me\n');
+      repo.write('other.txt', 'keep me\n');
+      repo.write('new.txt', 'new file\n');
+      repo.write('[x].txt', 'glob-like name\n');
+      const { ctx, calls } = context(repo);
+      ctx.panel.webview.postMessage = async message => { calls.posted.push(message); return true; };
+      shown.length = 0; inputAnswer = 'partial work';
+      await handleStashChanges(ctx, { repositoryPath: '.', paths: ['tracked.txt', 'new.txt'] });
+      assert.equal(repo.read('tracked.txt'), 'base\n', 'the selected file was not stashed');
+      assert.equal(existsSync(path.join(repo.root, 'new.txt')), false, 'the new file stayed');
+      assert.equal(repo.read('other.txt'), 'keep me\n', 'an unselected file was stashed');
+      assert.equal(repo.read('[x].txt'), 'glob-like name\n');
+      assert.deepEqual(repo.stashes().map(line => line.split(' ').slice(1).join(' ')), ['On main: partial work']);
+      assert.deepEqual(shown.map(item => item.kind), ['input', 'info']);
+      assert.match(shown[1].message, /Stashed 2 files as "partial work"/);
+      assert.equal(calls.reloaded, 1);
+      // Older stashes moved down one place: the dashboard drops a stash@{n} filter.
+      assert.deepEqual(calls.posted.filter(message => message.type === 'stashActionCompleted').map(message => message.payload.movedStashes), [true]);
+
+      // A file whose name is a glob stashes that file only, not tracked.txt-like matches.
+      shown.length = 0; inputAnswer = '';
+      await handleStashChanges(ctx, { repositoryPath: '.', paths: ['[x].txt'] });
+      assert.equal(existsSync(path.join(repo.root, '[x].txt')), false);
+      assert.equal(repo.read('other.txt'), 'keep me\n');
+      assert.equal(repo.stashes().length, 2);
+
+      // Cancelling the message box stashes nothing; an unchanged file reports nothing to stash.
+      shown.length = 0; inputAnswer = undefined;
+      await handleStashChanges(ctx, { repositoryPath: '.', paths: ['other.txt'] });
+      assert.equal(repo.read('other.txt'), 'keep me\n');
+      assert.equal(repo.stashes().length, 2);
+      const none = await ctx.gitOps.stashPaths('.', ['tracked.txt']);
+      assert.equal(none.success, false);
+      assert.equal(repo.stashes().length, 2);
+    }
+    // Codex review findings on the first version, each against real Git.
+    {
+      const repo = repository(); repos.push(repo);
+      const { service } = context(repo);
+      const stashFiles = () => repo.run('stash', 'show', '--include-untracked', '--name-only', 'stash@{0}').split('\n').filter(Boolean).sort();
+      // A staged file left out of the selection stays staged and out of the stash.
+      repo.write('tracked.txt', 'selected\n');
+      repo.write('other.txt', 'staged elsewhere\n');
+      repo.run('add', 'other.txt');
+      assert.equal((await service.push('.', ['tracked.txt'])).success, true);
+      assert.deepEqual(stashFiles(), ['tracked.txt'], 'an unselected staged file went into the stash');
+      assert.equal(repo.run('status', '--porcelain'), 'M  other.txt');
+      assert.equal(repo.read('other.txt'), 'staged elsewhere\n');
+      repo.run('reset', '-q', '--hard'); repo.run('stash', 'clear');
+
+      // A selected rename goes whole: no deletion of its old path is left behind, and Pop brings it back.
+      repo.run('mv', 'tracked.txt', 'moved.txt');
+      const renamed = await service.push('.', ['moved.txt']);
+      assert.equal(renamed.success, true, renamed.message);
+      assert.equal(repo.run('status', '--porcelain'), '', 'half of the rename stayed behind');
+      assert.equal(repo.read('tracked.txt'), 'base\n');
+      repo.run('stash', 'pop', '-q');
+      assert.equal(existsSync(path.join(repo.root, 'tracked.txt')), false);
+      assert.equal(repo.read('moved.txt'), 'base\n');
+      repo.run('reset', '-q', '--hard'); repo.run('clean', '-qfd'); repo.run('stash', 'clear');
+
+      // A linked repository in the selection is named as left out, not counted as stashed.
+      const sub = repository(); repos.push(sub);
+      repo.run('-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', sub.root, 'linked');
+      repo.run('commit', '-qm', 'link');
+      writeFileSync(path.join(repo.root, 'linked', 'tracked.txt'), 'inside\n');
+      repo.write('tracked.txt', 'selected again\n');
+      const mixed = await service.push('.', ['tracked.txt', 'linked']);
+      assert.equal(mixed.success, true, mixed.message);
+      assert.match(mixed.message, /Stashed 1 file .*Left out: linked \(a linked repository/);
+      assert.deepEqual(stashFiles(), ['tracked.txt']);
+      const only = await service.push('.', ['linked']);
+      assert.equal(only.success, false);
+      assert.match(only.message, /^Nothing to stash\. Left out: linked/);
     }
     console.log('Stash action smoke passed');
   } finally {

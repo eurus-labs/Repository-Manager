@@ -779,6 +779,10 @@
       const paths = selectedWorkingPaths();
       if (paths.length) postMessage('discardChanges', { repositoryPath: activeDashboardRepository, paths });
     },
+    stashWorkingSelection: () => {
+      const paths = selectedWorkingPaths();
+      if (paths.length) postMessage('stashChanges', { repositoryPath: activeDashboardRepository, paths });
+    },
     // A row's own ↶: that file only, whatever else is selected.
     discardWorkingChange: (el) => {
       if (el.dataset.path) postMessage('discardChanges', { repositoryPath: activeDashboardRepository, paths: [el.dataset.path] });
@@ -2320,6 +2324,7 @@
     const bar = document.getElementById('sidebarSelectionBar');
     if (bar) {
       const html = selected ? `<span>${selected} selected</span><button type="button" class="sidebar-selection-discard" data-action="discardWorkingSelection" title="Discard the changes to the selected files (asks first)">Discard…</button>` +
+        '<button type="button" class="sidebar-selection-stash" data-action="stashWorkingSelection" title="Stash the changes to the selected files; the others stay">Stash…</button>' +
         '<button type="button" class="sidebar-selection-clear" data-action="clearWorkingSelection" title="Clear the selection" aria-label="Clear the selection">×</button>' : '';
       if (bar.innerHTML !== html) bar.innerHTML = html;
       bar.hidden = !selected;
@@ -3221,8 +3226,8 @@
           if (!done || done.repositoryPath !== activeDashboardRepository) break;
           if (done.changedWorkingTree) openWorkingTreeAfterStash = done.repositoryPath;
           // A history filtered to stash@{n} (from the Stashes list) names a moving position: once a
-          // stash is removed it is gone or names another stash, so the reload that follows shows all.
-          if (done.removedStash && /^stash(@\{\d+\})?$/.test(getDashboardFilters(activeDashboardRepository).branch || '')) {
+          // stash is removed or a new one pushed it names another stash, so the reload shows all.
+          if ((done.removedStash || done.movedStashes) && /^stash(@\{\d+\})?$/.test(getDashboardFilters(activeDashboardRepository).branch || '')) {
             setHistoryRevision('');
             saveState();
           }
