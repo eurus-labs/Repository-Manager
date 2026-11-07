@@ -3226,8 +3226,8 @@
           if (!done || done.repositoryPath !== activeDashboardRepository) break;
           if (done.changedWorkingTree) openWorkingTreeAfterStash = done.repositoryPath;
           // A history filtered to stash@{n} (from the Stashes list) names a moving position: once a
-          // stash is removed it is gone or names another stash, so the reload that follows shows all.
-          if (done.removedStash && /^stash(@\{\d+\})?$/.test(getDashboardFilters(activeDashboardRepository).branch || '')) {
+          // stash is removed or a new one pushed it names another stash, so the reload shows all.
+          if ((done.removedStash || done.movedStashes) && /^stash(@\{\d+\})?$/.test(getDashboardFilters(activeDashboardRepository).branch || '')) {
             setHistoryRevision('');
             saveState();
           }

@@ -253,6 +253,8 @@ async function main() {
       assert.deepEqual(shown.map(item => item.kind), ['input', 'info']);
       assert.match(shown[1].message, /Stashed 2 files as "partial work"/);
       assert.equal(calls.reloaded, 1);
+      // Older stashes moved down one place: the dashboard drops a stash@{n} filter.
+      assert.deepEqual(calls.posted.filter(message => message.type === 'stashActionCompleted').map(message => message.payload.movedStashes), [true]);
 
       // A file whose name is a glob stashes that file only, not tracked.txt-like matches.
       shown.length = 0; inputAnswer = '';
@@ -269,6 +271,46 @@ async function main() {
       const none = await ctx.gitOps.stashPaths('.', ['tracked.txt']);
       assert.equal(none.success, false);
       assert.equal(repo.stashes().length, 2);
+    }
+    // Codex review findings on the first version, each against real Git.
+    {
+      const repo = repository(); repos.push(repo);
+      const { service } = context(repo);
+      const stashFiles = () => repo.run('stash', 'show', '--include-untracked', '--name-only', 'stash@{0}').split('\n').filter(Boolean).sort();
+      // A staged file left out of the selection stays staged and out of the stash.
+      repo.write('tracked.txt', 'selected\n');
+      repo.write('other.txt', 'staged elsewhere\n');
+      repo.run('add', 'other.txt');
+      assert.equal((await service.push('.', ['tracked.txt'])).success, true);
+      assert.deepEqual(stashFiles(), ['tracked.txt'], 'an unselected staged file went into the stash');
+      assert.equal(repo.run('status', '--porcelain'), 'M  other.txt');
+      assert.equal(repo.read('other.txt'), 'staged elsewhere\n');
+      repo.run('reset', '-q', '--hard'); repo.run('stash', 'clear');
+
+      // A selected rename goes whole: no deletion of its old path is left behind, and Pop brings it back.
+      repo.run('mv', 'tracked.txt', 'moved.txt');
+      const renamed = await service.push('.', ['moved.txt']);
+      assert.equal(renamed.success, true, renamed.message);
+      assert.equal(repo.run('status', '--porcelain'), '', 'half of the rename stayed behind');
+      assert.equal(repo.read('tracked.txt'), 'base\n');
+      repo.run('stash', 'pop', '-q');
+      assert.equal(existsSync(path.join(repo.root, 'tracked.txt')), false);
+      assert.equal(repo.read('moved.txt'), 'base\n');
+      repo.run('reset', '-q', '--hard'); repo.run('clean', '-qfd'); repo.run('stash', 'clear');
+
+      // A linked repository in the selection is named as left out, not counted as stashed.
+      const sub = repository(); repos.push(sub);
+      repo.run('-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', sub.root, 'linked');
+      repo.run('commit', '-qm', 'link');
+      writeFileSync(path.join(repo.root, 'linked', 'tracked.txt'), 'inside\n');
+      repo.write('tracked.txt', 'selected again\n');
+      const mixed = await service.push('.', ['tracked.txt', 'linked']);
+      assert.equal(mixed.success, true, mixed.message);
+      assert.match(mixed.message, /Stashed 1 file .*Left out: linked \(a linked repository/);
+      assert.deepEqual(stashFiles(), ['tracked.txt']);
+      const only = await service.push('.', ['linked']);
+      assert.equal(only.success, false);
+      assert.match(only.message, /^Nothing to stash\. Left out: linked/);
     }
     console.log('Stash action smoke passed');
   } finally {

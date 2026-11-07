@@ -14,7 +14,9 @@
 
 import { CommandResult } from '../types';
 import { GitCommandService } from './gitCommandService';
+import { CommitService } from './commitService';
 import { findStash, StashEntry } from './stashTarget';
+import { DiscardService } from './discardService';
 
 export type StashOperation = 'apply' | 'pop' | 'drop';
 export const STASH_OPERATIONS: readonly StashOperation[] = ['apply', 'pop', 'drop'];
@@ -66,7 +68,7 @@ export class StashActionService {
   async push(repositoryPath: string, paths: string[], message?: string): Promise<CommandResult> {
     const cwd = this.git.resolveRepositoryPath(repositoryPath);
     const previous = this.queues.get(cwd) || Promise.resolve();
-    const next = previous.catch(() => undefined).then(() => this.pushNow(cwd, paths, message));
+    const next = previous.catch(() => undefined).then(() => this.pushNow(cwd, repositoryPath, paths, message));
     this.queues.set(cwd, next);
     try {
       return await next;
@@ -75,30 +77,69 @@ export class StashActionService {
     }
   }
 
-  private async pushNow(cwd: string, paths: string[], message?: string): Promise<CommandResult> {
-    const files = `${paths.length} file${paths.length === 1 ? '' : 's'}`;
+  private async pushNow(cwd: string, repositoryPath: string, paths: string[], message?: string): Promise<CommandResult> {
     if (!paths.length) {
       return { success: false, message: 'Nothing to stash.' };
     }
     if ((await this.unmergedPaths(cwd)).length) {
       return { success: false, message: 'Resolve the conflicts in Source Control before stashing.' };
     }
+    // Discard's plan already sorts the selection: a rename matched by either path, and linked or
+    // nested repositories left out (a stash would save nothing of their contents).
+    const { plan, changes } = await new DiscardService(this.git).planWithChanges(repositoryPath, paths);
+    const skipped = plan.skipped.length ? ` Left out: ${plan.skipped.map(item => `${item.path} (${item.reason})`).join('; ')}.` : '';
+    const chosen = new Set([...plan.restored, ...plan.deleted]);
+    if (!chosen.size) {
+      return { success: false, message: `Nothing to stash.${skipped}` };
+    }
+    // A rename is stashed by both paths, or its old path's deletion stays behind. Git only takes a
+    // path still in the index, so the old path's staged deletion is unstaged first (an unstaged one).
+    const pathspecs = new Set<string>();
+    const renamedFrom: string[] = [];
+    for (const change of changes) {
+      if (!chosen.has(change.path)) { continue; }
+      pathspecs.add(change.path);
+      if (change.originalPath) { pathspecs.add(change.originalPath); renamedFrom.push(change.originalPath); }
+    }
+    // git stash saves the whole index, whatever the pathspec: other staged files would ride along.
+    // They are unstaged for the push and staged again from this tree afterwards.
+    const all = await new CommitService(this.git).getWorkingTreeChanges(repositoryPath);
+    const otherStaged = new Set<string>();
+    for (const change of all) {
+      if (!change.staged || pathspecs.has(change.path)) { continue; }
+      otherStaged.add(change.path);
+      if (change.originalPath) { otherStaged.add(change.originalPath); }
+    }
+    const index = otherStaged.size ? await this.git.execGit(['write-tree'], cwd, 30000) : '';
     const before = await this.git.execGit(['rev-parse', '-q', '--verify', 'refs/stash'], cwd, 10000).catch(() => '');
-    const args = ['stash', 'push', '--include-untracked'];
+    const args = ['--literal-pathspecs', 'stash', 'push', '--include-untracked'];
     const text = (message || '').trim();
     if (text) { args.push('-m', text); }
-    // --literal-pathspecs: a file named like a glob stashes that file only.
+    let failure: string | undefined;
     try {
-      await this.git.execGit(['--literal-pathspecs', ...args, '--', ...paths], cwd, 120000);
+      const unstage = [...otherStaged, ...renamedFrom];
+      if (unstage.length) {
+        await this.git.execGit(['--literal-pathspecs', 'reset', '-q', '--', ...unstage], cwd, 30000);
+      }
+      await this.git.execGit([...args, '--', ...pathspecs], cwd, 120000);
     } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error);
-      return { success: false, message: `Stash failed: ${detail}` };
+      failure = error instanceof Error ? error.message : String(error);
+    } finally {
+      if (otherStaged.size) {
+        await this.git.execGit(['--literal-pathspecs', 'restore', `--source=${index}`, '--staged', '--', ...otherStaged], cwd, 30000)
+          .catch(error => { failure = `${failure ? `${failure} ` : ''}Staging of other files could not be put back: ${error instanceof Error ? error.message : String(error)}`; });
+      }
+    }
+    if (failure) {
+      return { success: false, message: `Stash failed: ${failure}` };
     }
     const after = await this.git.execGit(['rev-parse', '-q', '--verify', 'refs/stash'], cwd, 10000).catch(() => '');
     if (!after || after === before) {
-      return { success: false, message: `Nothing to stash in the selected ${files}.` };
+      return { success: false, message: `Nothing to stash in the selection.${skipped}` };
     }
-    return { success: true, message: `Stashed ${files}${text ? ` as "${text}"` : ''} in stash@{0}. Apply or Pop it from Stashes.` };
+    const files = `${chosen.size} file${chosen.size === 1 ? '' : 's'}`;
+    return { success: true, data: { movedStashes: true },
+      message: `Stashed ${files}${text ? ` as "${text}"` : ''} in stash@{0}. Apply or Pop it from Stashes.${skipped}` };
   }
 
   private async runNow(cwd: string, repositoryPath: string, hash: string, operation: StashOperation): Promise<CommandResult> {

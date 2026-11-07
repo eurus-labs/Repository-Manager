@@ -1346,7 +1346,12 @@ export async function handleStashChanges(ctx: MessageHandlerContext, payload: {
   const result = await ctx.gitOps.stashPaths(repositoryPath, paths, message);
   await handleGetWorkingTreeChanges(ctx, { repositoryPath, purpose: 'dashboard' });
   showResult(result.success, result.message);
-  if (result.success) { await ctx.reloadDashboardHistory([repositoryPath]); }
+  if (result.success) {
+    // Every older stash moved down one place: a history filtered to stash@{n} would now show another.
+    await sendToWebview(ctx, { type: 'stashActionCompleted', payload: { repositoryPath,
+      operation: 'push', changedWorkingTree: false, removedStash: false, movedStashes: true } });
+    await ctx.reloadDashboardHistory([repositoryPath]);
+  }
   await ctx.refresh();
 }
 
