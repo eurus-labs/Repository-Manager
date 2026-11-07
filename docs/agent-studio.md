@@ -268,6 +268,90 @@ Its open points:
 - which findings block the Plan;
 - which Jira MCP server to use (later: the I/O comes first *(decided)*).
 
+## Phase 1 as built
+
+Code lives in `src/studio/`. Everything except `studioCommands.ts` runs in Node without `vscode`;
+`src/test/studioEngineSmoke.js` covers it.
+
+**Workflow file** (`workflow.ts`). The format is `repository-manager/workflow@1`, as in the
+example above. Validation reports every problem it finds, with where it is:
+
+- the file: its format, required fields, node ids (unique, lowercase; `inputs`, `item` and
+  `index` are reserved);
+- steps: each type exists, its settings are known and the required ones are there, and a prompt
+  node names a prompt of the file;
+- types and prompts: schemas are well formed, and a prompt's `output` names a type;
+- the graph: edges point to nodes, and there is no cycle (repeat with `forEach`);
+- references: each one reads a declared input, the loop item (only with `forEach`), or
+  `<node>.output` of a node that runs before it.
+
+A path written literally in the file (`file.write` `path`, `docs.requirements` `from`) must be
+relative and stay inside the workspace. A path chosen by the person as an input may be anywhere
+for reading. `file.write` checks its target again when it runs.
+
+**References** (`expressions.ts`):
+
+- `${inputs.x}`, `${node.output.a[0].b}`, `${item}`, `${index}`. Only own data is read, plus
+  `length` of a list or text.
+- A string that is only `${…}` keeps the value's type; text around references makes text.
+- Conditions: `==`, `!=`, `>`, `>=`, `<`, `<=`, `!`, or a value alone, where an empty list is
+  false.
+- Nothing is evaluated as JavaScript.
+
+**Running** (`engine.ts`):
+
+- Nodes run one at a time in dependency order, ties in file order.
+- A node with incoming edges runs when at least one of them is taken (its source is done and its
+  `when` holds); otherwise it is skipped.
+- `forEach` runs the step once per item, and its output is the list of results.
+
+**Gates.** Before a step with an effect, and at every `gate` node, the run waits with a preview
+of exactly what will happen (for `file.write`: create or replace, the path and the content).
+The person approves or stops the run. A workflow cannot turn these gates off.
+
+**Each run is kept** in the extension's workspace storage:
+
+- `state.json`, written whole after each node;
+- `log.jsonl`: start, nodes, model calls, waits, approvals and the finish;
+- `workflow.json`, the workflow as it started.
+
+A waiting run goes on after a restart. The run also records the file's hash and version.
+
+**Steps:**
+
+| Type | Effect | What it does |
+| --- | --- | --- |
+| `prompt` | read, uses the model | Sends `input` as data with the prompt's instructions and output schema. The reply must be one JSON object that fits the schema; one repair turn, then the node fails with the schema problems. Input over 120,000 characters fails: loop with `forEach` |
+| `docs.requirements` | read | Requirements in the `.rst` and `.md` files of a folder, as the Requirements view reads them; with `ref`, at that Git revision (`git ls-tree` and `git show`), with the commit it read |
+| `requirements.compare` | read | Matches two lists by ID: `added`, `removed`, `changed` (title or text differ), `unchanged`, and counts. Same text under another ID is a `possibleRename`, never merged |
+| `file.write` | write | Text, JSON, or Markdown with fenced JSON (`markdown-json`), inside the workspace |
+| `gate` | — | Waits for the person, showing `show` |
+
+**In VS Code** (`studioCommands.ts`):
+
+- **Run Workflow…** lists the workflows in `.repository-manager/workflows/`, the library (global
+  storage) and the samples (`resources/studio/samples/`).
+- It asks the inputs: a folder, or a repository folder and a revision, or text.
+- Before starting, one dialog says what the run sends to Copilot (the selected model, as the other
+  Copilot features use it), what it will ask before doing, and where it stops for an answer.
+- Each gate is a modal with the preview, **Show in Editor** for the whole of it, **Approve** (or
+  **Continue**) and **Stop Run**. Closing it leaves the run waiting.
+- **Show Workflow Runs** lists runs: a waiting one goes on, any other opens its state and log.
+
+**Sample.** `analyze-requirements.workflow.json` (stage 1 of the sample above): read the new
+requirements and the previous ones at a revision, compare them by ID, analyze each change with
+the model (`forEach`), and write `analysis/requirement-changes.md` after approval. With no change,
+analysis and writing are skipped.
+
+**Not in phase 1:**
+
+- the Studio view and the visual editor;
+- AI authoring, import and export, and the first-run approval of an imported workflow;
+- MCP, script and code steps;
+- containers.
+
+Live Copilot calls are not verified outside VS Code: the tests use a scripted model.
+
 ## Phases
 
 Each phase ends with something usable on its own.

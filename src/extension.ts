@@ -16,6 +16,7 @@ import { RepositoryManagerPanel } from './repositoryManagerPanel';
 import { CHANGE_DOCUMENT_SCHEME, ChangeDocumentProvider } from './changeDocuments';
 import { registerRequirements } from './requirements/requirementsView';
 import { registerAgent } from './agent/agentView';
+import { registerStudio } from './studio/studioCommands';
 import * as path from 'path';
 import { setUsageLog, UsageLog, usageReport } from './services/usageLog';
 
@@ -51,6 +52,7 @@ export function activate(context: vscode.ExtensionContext) {
   if (workspaceRoot) {
     step('Git commands', () => registerGit(context, workspaceRoot));
     step('Agent', () => registerAgent(context));
+    step('Studio', () => registerStudio(context, workspaceRoot));
   } else {
     // The commands are declared in package.json, so VS Code shows them (and the Activity Bar
     // shows the launcher) with no folder too: register them to say why they cannot run.

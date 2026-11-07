@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Show Usage Report** (Command Palette): how long commits from the dialog take with and without a Copilot message, how much of Copilot's message you change, Align runs and applied review fixes. Comparisons wait until there are enough commits on each side. Recorded on this machine only, as counts and durations; turn it off with `repositoryManager.usage.enabled`, or clear it with **Clear Usage Data**.
 
+- **Run Workflow…** (Command Palette), the first part of the Agent Studio: runs a workflow defined in a JSON file, from `.repository-manager/workflows/`, your library, or the samples. It asks before it writes anything, shows exactly what it will write, and keeps each run so a waiting one can go on (**Show Workflow Runs**). The sample **Analyze requirement changes** compares the requirements in a folder with a previous revision in another repository, by ID, and asks Copilot what each change means and what to clarify with the PO.
+
 - **Stash…** beside **Discard…** when files are selected in the Side Bar's **Changes**: stashes just those files (new files included) with an optional message, leaving the other changes in place.
 
 ### Changed
