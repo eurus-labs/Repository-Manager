@@ -59,6 +59,48 @@ export class StashActionService {
     }
   }
 
+  /**
+   * Stash only `paths` (new files included), leaving every other change in place. Queued with the
+   * other actions: a push moves every stash@{n} that Pop and Drop look up.
+   */
+  async push(repositoryPath: string, paths: string[], message?: string): Promise<CommandResult> {
+    const cwd = this.git.resolveRepositoryPath(repositoryPath);
+    const previous = this.queues.get(cwd) || Promise.resolve();
+    const next = previous.catch(() => undefined).then(() => this.pushNow(cwd, paths, message));
+    this.queues.set(cwd, next);
+    try {
+      return await next;
+    } finally {
+      if (this.queues.get(cwd) === next) { this.queues.delete(cwd); }
+    }
+  }
+
+  private async pushNow(cwd: string, paths: string[], message?: string): Promise<CommandResult> {
+    const files = `${paths.length} file${paths.length === 1 ? '' : 's'}`;
+    if (!paths.length) {
+      return { success: false, message: 'Nothing to stash.' };
+    }
+    if ((await this.unmergedPaths(cwd)).length) {
+      return { success: false, message: 'Resolve the conflicts in Source Control before stashing.' };
+    }
+    const before = await this.git.execGit(['rev-parse', '-q', '--verify', 'refs/stash'], cwd, 10000).catch(() => '');
+    const args = ['stash', 'push', '--include-untracked'];
+    const text = (message || '').trim();
+    if (text) { args.push('-m', text); }
+    // --literal-pathspecs: a file named like a glob stashes that file only.
+    try {
+      await this.git.execGit(['--literal-pathspecs', ...args, '--', ...paths], cwd, 120000);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      return { success: false, message: `Stash failed: ${detail}` };
+    }
+    const after = await this.git.execGit(['rev-parse', '-q', '--verify', 'refs/stash'], cwd, 10000).catch(() => '');
+    if (!after || after === before) {
+      return { success: false, message: `Nothing to stash in the selected ${files}.` };
+    }
+    return { success: true, message: `Stashed ${files}${text ? ` as "${text}"` : ''} in stash@{0}. Apply or Pop it from Stashes.` };
+  }
+
   private async runNow(cwd: string, repositoryPath: string, hash: string, operation: StashOperation): Promise<CommandResult> {
     const unchanged: StashActionData = { changedWorkingTree: false, removedStash: false };
     // Conflicts found after a failed Apply are the stash's own only if there were none before.

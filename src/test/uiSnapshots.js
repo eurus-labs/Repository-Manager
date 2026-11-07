@@ -622,6 +622,19 @@ async function main() {
     await page.fill('#commitMessage', '');
     await page.keyboard.press('Escape');
     await page.locator('#commitChangesModal.active').waitFor({ state: 'detached' });
+    // Stash… beside Discard… stashes just the selected files (the host asks for a message).
+    await side.locator('#sidebarSelectionBar [data-action="stashWorkingSelection"]').waitFor();
+    await side.locator('#sidebarSelectionBar').screenshot({ path: path.join(outputDir, '19b-sidebar-selection-stash.png') });
+    await page.evaluate(() => {
+      const toHost = window.__postToHost;
+      window.__stashRestore = () => { window.__postToHost = toHost; };
+      window.__stashRequests = [];
+      window.__postToHost = message => message.type === 'stashChanges' ? window.__stashRequests.push(message) : toHost(message);
+    });
+    await side.click('#sidebarSelectionBar [data-action="stashWorkingSelection"]');
+    await page.waitForFunction(() => window.__stashRequests.length === 1);
+    assert.deepEqual(await page.evaluate(() => window.__stashRequests[0].payload), { repositoryPath: '.', paths: ['lib-b', 'live-new.txt'] });
+    await page.evaluate(() => window.__stashRestore());
     // The × clears the selection.
     await side.click('#sidebarSelectionBar [data-action="clearWorkingSelection"]');
     await side.waitForFunction(() => document.getElementById('sidebarSelectionBar').hidden);
