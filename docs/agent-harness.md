@@ -173,12 +173,14 @@ Code: `src/agent/` (`lmRouter.ts`, `agentTools.ts`, `agentRunner.ts`,
   the step (`unknownChecks`), shown in plan review, and blocks Approve until
   the person edits that step's checks; it is never dropped silently
   *(decided, #138)*.
-- A step that changed files while no check ran is not verified: plain Accept
+- A step that changed code while no check ran is not verified: plain Accept
   is refused, and **Accept as unverified** keeps it after a confirmation
-  (`acceptUnverified` in the run log). Each accepted step records how it was
-  verified (`verification`: `passed`, `failed`, `unverified`, or
-  `noChanges` for a step that changed nothing and ran no check), and the page
-  labels it so; only `passed` reads as checked.
+  (`acceptUnverified` in the run log). A step that changed documentation only
+  (`.md`, `.mdx`, `.markdown`, `.rst`, `.adoc`, `.txt`, or anything under the
+  top-level `docs/`) needs no check *(decided)*. Each accepted step records how
+  it was verified (`verification`: `passed`, `failed`, `unverified`,
+  `docsOnly`, or `noChanges` for a step that changed nothing and ran no
+  check), and the page labels it so; only `passed` reads as checked.
 - The agent does not commit *(decided)*: accepted steps stay as uncommitted
   changes on the task's branch, and the developer writes the commits from the
   dashboard.

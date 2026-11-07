@@ -20,7 +20,7 @@ Module._load = function (request, parent, isMain) {
 const out = path.resolve(__dirname, '../../out/agent');
 const { CopilotRouter } = require(path.join(out, 'lmRouter'));
 const { StepWorkspace, revertChanges, cleanPath, pathAllowed } = require(path.join(out, 'agentTools'));
-const { AgentRunner, parsePlan, branchName, stepVerification, MAX_ATTEMPTS } = require(path.join(out, 'agentRunner'));
+const { AgentRunner, parsePlan, branchName, stepVerification, isDocumentation, MAX_ATTEMPTS } = require(path.join(out, 'agentRunner'));
 const { TaskStore } = require(path.join(out, 'taskStore'));
 const { renderTaskBody } = require(path.join(out, 'agentPage'));
 const { taskGroup } = require(path.join(out, 'types'));
@@ -384,7 +384,7 @@ async function failuresAndRecovery({ root, store, runner, turns, host, approve }
   runner.editStep(seventh.id, 0, { checks: [] });
   planned = store.get(seventh.id);
   assert.equal(planned.plan[0].unknownChecks, undefined);
-  assert.match(renderTaskBody(planned, [], 'm'), /can only be accepted as unverified/);
+  assert.match(renderTaskBody(planned, [], 'm'), /code change it makes can only be accepted as unverified/);
   await runner.approvePlan(seventh.id);
   turns.push({ tool: 'edit_file', input: { path: 'src/retry.js', oldText: 'attempts: 1', newText: 'attempts: 5' } }, { final: { summary: 'done, trust me' } });
   await runner.runStep(seventh.id, token);
@@ -405,6 +405,16 @@ async function failuresAndRecovery({ root, store, runner, turns, host, approve }
 
   // A step that changed nothing and ran no check is accepted plainly, but never labelled as checked.
   assert.equal(stepVerification({ result: { changes: [], checks: [] } }), 'noChanges');
+  // Documentation only needs no check; one code file among them makes the step unverified again.
+  assert.equal(stepVerification({ result: { changes: [{ path: 'README.md' }, { path: 'docs/guide.html' }], checks: [] } }), 'docsOnly');
+  assert.equal(stepVerification({ result: { changes: [{ path: 'README.md' }, { path: 'src/a.ts' }], checks: [] } }), 'unverified');
+  assert.equal(isDocumentation('CHANGELOG.MD'), true);
+  assert.equal(isDocumentation('src/docs/x.ts'), false, 'only the top-level docs/ folder');
+  const docsTask = { ...JSON.parse(JSON.stringify(unverifiedReview)), status: 'stepReview', current: 0, plan: [{ title: 'Docs', intent: 'd', tools: ['edit_file'], paths: ['README.md'], checks: [], state: 'pending', attempts: 1,
+    result: { summary: '', changes: [{ path: 'README.md', before: 'a', after: 'b' }], toolCalls: [], checks: [], aiText: [] } }] };
+  assert.doesNotMatch(renderTaskBody(docsTask, [], 'm'), /data-action="accept"[^>]*disabled/, 'a docs-only step is accepted plainly');
+  docsTask.plan[0].state = 'done'; docsTask.plan[0].verification = 'docsOnly'; docsTask.status = 'done';
+  assert.match(renderTaskBody(docsTask, [], 'm'), />docs only</);
   assert.equal(stepVerification({ result: { changes: [{ path: 'a' }], checks: [{ passed: true }] } }), 'passed');
   assert.equal(stepVerification({ result: { changes: [], checks: [{ passed: true }, { passed: false }] } }), 'failed');
 

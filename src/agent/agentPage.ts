@@ -33,7 +33,7 @@ function stepDetails(step: PlanStep): string {
   return `<dl class="step-facts">
     <dt>May change</dt><dd>${list(step.paths, 'nothing (read only)')}</dd>
     <dt>Tools</dt><dd>${list(['read', ...step.tools], '')}</dd>
-    <dt>Checks</dt><dd>${list(step.checks, step.tools.length ? 'none: a change it makes can only be accepted as unverified' : 'none: nothing verifies this step')}</dd>
+    <dt>Checks</dt><dd>${list(step.checks, step.tools.length ? 'none: a code change it makes can only be accepted as unverified' : 'none: nothing verifies this step')}</dd>
   </dl>${step.unknownChecks?.length ? `<p class="warning">Not scripts of this repository: ${list(step.unknownChecks, '')}. Edit this step's checks before approving the plan.</p>` : ''}`;
 }
 
@@ -66,6 +66,7 @@ function verificationBadge(step: PlanStep): string {
   switch (step.verification) {
     case 'passed': return ' <span class="badge" title="Every check passed">checks passed</span>';
     case 'unverified': return ' <span class="badge warning-badge" title="Accepted as unverified: it changed files and no check ran">unverified</span>';
+    case 'docsOnly': return ' <span class="badge" title="Only documentation changed and no check ran">docs only</span>';
     case 'noChanges': return ' <span class="badge" title="No file changed and no check ran">no changes</span>';
     default: return '';
   }

@@ -19,7 +19,7 @@ export const ALL_TOOLS: readonly AgentToolName[] = [...READ_TOOLS, ...WRITE_TOOL
 export type TaskStatus = 'new' | 'planning' | 'planReview' | 'stepReady' | 'stepRunning' | 'stepReview' | 'done' | 'stopped';
 
 export type StepState = 'pending' | 'done' | 'skipped';
-export type StepVerification = 'passed' | 'failed' | 'unverified' | 'noChanges';
+export type StepVerification = 'passed' | 'failed' | 'unverified' | 'docsOnly' | 'noChanges';
 
 export interface FileChange {
   /** Relative to the task's repository, with forward slashes. */
@@ -78,7 +78,8 @@ export interface PlanStep {
   unknownChecks?: string[];
   /**
    * How an accepted step was verified: its checks all passed, it was accepted with failing checks,
-   * it changed files and no check ran (accepted as unverified), or it changed nothing and ran none.
+   * it changed files and no check ran (accepted as unverified), it changed documentation only and ran
+   * no check, or it changed nothing and ran none.
    */
   verification?: StepVerification;
   /** Results of earlier attempts that were retried: what failed, sent with the next run. */

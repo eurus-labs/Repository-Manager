@@ -90,16 +90,27 @@ export function parsePlan(final: unknown, scripts: string[]): PlanStep[] {
   });
 }
 
+const DOC_EXTENSIONS = ['.md', '.mdx', '.markdown', '.rst', '.adoc', '.txt'];
+
+/** Documentation by its name: a prose extension, or anything under a top-level docs/ folder. */
+export function isDocumentation(filePath: string): boolean {
+  const normal = filePath.replace(/\\/g, '/').toLowerCase();
+  return normal.startsWith('docs/') || DOC_EXTENSIONS.some(extension => normal.endsWith(extension));
+}
+
 /**
- * What a step's run proves: every check passed, one failed, it changed files with no check run
- * (unverified), or it changed nothing and ran no check. The model's summary never counts.
+ * What a step's run proves: every check passed, one failed, it changed code with no check run
+ * (unverified), it changed documentation only, or it changed nothing and ran no check. The model's
+ * summary never counts.
  */
 export function stepVerification(step: PlanStep): StepVerification {
   const result = step.result;
   const checks = result?.checks ?? [];
   if (checks.some(check => !check.passed)) { return 'failed'; }
   if (checks.length) { return 'passed'; }
-  return result?.changes.length ? 'unverified' : 'noChanges';
+  const changes = result?.changes ?? [];
+  if (!changes.length) { return 'noChanges'; }
+  return changes.every(change => isDocumentation(change.path)) ? 'docsOnly' : 'unverified';
 }
 
 /** A branch name for the task: agent/<words of the title>-<id end>. */
@@ -368,7 +379,8 @@ export class AgentRunner {
       ? { type: 'approval', action: 'acceptAnyway', step: task.current, detail: `failing: ${failed.join(', ')}` }
       : verification === 'unverified'
         ? { type: 'approval', action: 'acceptUnverified', step: task.current, detail: `no check ran; changed: ${changed.join(', ')}` }
-        : { type: 'approval', action: 'accept', step: task.current, detail: verification === 'noChanges' ? 'no file changed' : 'checks passed' });
+        : { type: 'approval', action: 'accept', step: task.current,
+          detail: verification === 'noChanges' ? 'no file changed' : verification === 'docsOnly' ? `documentation only, no check ran: ${changed.join(', ')}` : 'checks passed' });
     this.next(task);
     return task;
   }
