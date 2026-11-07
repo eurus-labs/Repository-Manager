@@ -15,10 +15,12 @@ never reviews its own diff.
 The user's real work is a chain that starts long before code:
 
 1. Analyze a requirement, and compare a new version with the old one.
-2. Prepare the discussion with the PO, hold it, and reach a DoU
-   (*(open)*: confirm the term, presumably Definition of Understanding).
-3. Review the requirement. If it is good enough, create an initiative, then
-   epics, then tasks in Jira.
+2. Prepare the DoU (Discussion of Understanding: the open points the
+   developers need the PO to clarify), discuss it with the PO, and record the
+   answers.
+3. Review the requirement analysis against the goals the customer set: find
+   requirements that do not serve them. If the analysis holds, create an
+   initiative, then epics, then tasks in Jira.
 4. Implement code task by task.
 
 No single feature covers this chain, and the chain is not only coding
@@ -56,10 +58,10 @@ Out of scope for now:
   - A free canvas comes later, only if real workflows need branching the forms
     cannot express.
 
-### Earlier decisions this changes
+### Earlier decisions this changes *(decided: replace them)*
 
-These come from `docs/agent-harness.md` and need the user's confirmation
-before they are replaced:
+These came from `docs/agent-harness.md`; the user agreed to replace them, and
+that document will be updated when phase 1 lands:
 
 - **Review.** The earlier decision was: "Review does not get an icon and is not
   listed in it." Review becomes a Studio step, and its history a Studio view.
@@ -78,10 +80,10 @@ container run any stage given the repository.
 
 | Stage | Starts from | Steps (packs) | Ends with |
 | --- | --- | --- | --- |
-| 1. Analyze | Requirement docs at two revisions | Read docs (Docs) · diff of the two revisions (Code) · LLM: classify changes, find gaps and conflicts · Gate | `analysis/<req>.md`: what changed, impact, open questions |
-| 2. Prepare PO discussion | Analysis | LLM: turn the open questions into clarification items · write the clarification file (Docs) · Gate | Clarification file (schema v3), items `open` |
-| — PO discussion | — | People. The PO's answers go into the clarification file as response and decision events, as the Requirement Editor does today | Items `resolved`, DoU reached |
-| 3. Review requirement | Resolved clarifications | Review with requirement skills (Review) · Condition: blocking findings? · Gate | Review report; stop, or continue to 4 |
+| 1. Analyze | New requirements (this repository) and the old ones (RST in a separate repository) | Read both sets (Docs) · match requirements by ID · LLM: classify each as added, changed, removed or unchanged, and find gaps and conflicts · Gate | Analysis (see I/O) |
+| 2. Prepare DoU | Analysis | LLM: turn the open questions into DoU points · write the clarification file (Docs) · Gate | DoU: clarification file (schema v3), points `open` |
+| — Discuss with PO | DoU | People. The PO's answers go into the DoU as response and decision events, as the Requirement Editor does today | Points `resolved` |
+| 3. Review analysis | Analysis, resolved DoU, customer goals | Review with goal-alignment skills: does each requirement serve a customer goal, and does each goal have requirements (Review) · Condition: blocking findings? · Gate | Review report; stop, or continue to 4 |
 | 4. Plan in Jira | Reviewed requirement | LLM: draft initiative → epics → tasks, each task linked to accepted criteria · Gate with preview · MCP tool: create issues (Jira) | Jira keys written back into the requirement's clarification items |
 | 5. Implement | One Jira task | Agent: plan → (agent step → check → **review** → Gate) × n · commit · MCP: move the task | Branch and commits; task updated |
 
@@ -140,6 +142,55 @@ The container supplies another host:
 - API models;
 - the mounted repository;
 - gates answered over HTTP or the CLI.
+
+## I/O between stages
+
+Phase 2 fixes these shapes; Jira itself comes later *(decided: design the I/O
+first)*. Every file is Markdown with fenced JSON where structure is needed, so
+people read it and steps parse it, as clarification files already do.
+
+**Inputs of stage 1**
+
+- `new`: requirement documents in this repository (RST or MyST, as the
+  Requirements view reads them).
+- `old`: a second repository with the previous requirements as RST
+  *(decided)*. The workflow names its location and revision (`repository`,
+  `ref`); the run records the commit it read.
+- `goals`: the customer's goals, needed by stage 3 *(open: where they live)*.
+
+**Analysis** (`analysis/<scope>.md`), one entry per requirement:
+
+```json
+{ "id": "REQ-123", "change": "added|changed|removed|unchanged",
+  "old": { "ref": "<commit>", "text": "…" }, "new": { "ref": "<commit>", "text": "…" },
+  "summary": "what changed and why it matters", "impact": ["…"],
+  "openPoints": ["question the PO must answer"], "goals": ["G-2"] }
+```
+
+Matching is by requirement ID. An ID found on one side only is `added` or
+`removed`. A requirement whose ID changed with the same text is reported as a
+possible rename, never merged silently.
+
+**DoU**: the existing clarification file, schema v3, one item per open point,
+`Related requirements` set to the requirement's ID. Nothing new.
+
+**Review report**: the review engine's report. Each finding names a
+requirement and a goal:
+
+- *not serving any goal*;
+- *goal not covered*;
+- *conflicts with goal*.
+
+**Plan** (`plan/<scope>.md`), the input of stage 4, independent of Jira:
+
+```json
+{ "initiative": { "title": "…", "goals": ["G-2"] },
+  "epics": [ { "key": null, "title": "…", "requirements": ["REQ-123"],
+    "tasks": [ { "key": null, "title": "…", "criteria": ["REQ-123-AC1"], "description": "…" } ] } ] }
+```
+
+`key` is empty until an issue exists. Stage 4 fills it in, and stage 5 starts
+from one task of this file.
 
 ## Safety
 
@@ -233,14 +284,19 @@ Each phase ends with something usable on its own.
 - **MCP availability.** The Jira MCP server the user's organisation allows is
   not known yet *(open)*.
 
+## Answered
+
+- DoU is the Discussion of Understanding: the open points developers need the
+  PO to clarify. It is the clarification file.
+- The old requirements are RST files in a separate repository.
+- Jira: design the I/O first. The Plan file is the hand-over, and the server
+  and issue types are chosen later.
+- Stage 3 reviews the requirement analysis against the customer's goals.
+- The earlier agent-harness decisions are replaced.
+
 ## Open questions
 
-1. What does DoU stand for, and what makes it reached? For example: every
-   clarification item resolved, and a PO decision event on each.
-2. Is the old revision for "compare new and old" a Git revision of the
-   requirement docs, a released baseline, or something else?
-3. Which Jira MCP server, and which issue types: does the Jira project have an
-   Initiative type?
-4. Requirement review: which criteria count as blocking? These become the
-   requirement review skills.
-5. Should the earlier agent-harness decisions listed above be replaced?
+1. Where are the customer's goals written, and do they have IDs? Stage 3
+   needs them as an input.
+2. Which goal-alignment findings block stage 4: any requirement serving no
+   goal, or only a conflict with a goal?
