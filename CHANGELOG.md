@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **Uncommitted changes** no longer have a Changed files column in the dashboard: click a file in the Side Bar's **Changes** to show its diff in the dashboard, across its full width (double-click opens it in an editor tab). Right-click the diff for that file's actions. A commit or a comparison still lists its files.
+- **Agent** no longer passes a step that changed code without running a check: plain **Accept** is off and **Accept as unverified** asks first. A step that changed documentation only is accepted as before. A check the plan names that is not a repository script blocks **Approve** until you edit the step's checks, instead of being dropped. Accepted steps show whether their checks passed, failed, did not run, changed documentation only, or changed nothing.
 
 ## [2.18.0] - 2026-11-05
 

@@ -234,6 +234,14 @@ class TaskPage {
           if (choice) { await runner.accept(this.id, { anyway: true }); }
           break;
         }
+        case 'acceptUnverified': {
+          const task = this.agent.store.get(this.id);
+          const changed = task?.plan?.[task.current]?.result?.changes.map(change => change.path) ?? [];
+          const choice = await vscode.window.showWarningMessage(`Accept this step although no check verified it?`,
+            { modal: true, detail: `It changed ${changed.join(', ') || 'files'} and no check ran. The step is marked as unverified, here and in the run log.` }, 'Accept as Unverified');
+          if (choice) { await runner.accept(this.id, { anyway: true }); }
+          break;
+        }
         case 'retry': runner.retry(this.id); break;
         case 'skip': runner.skip(this.id); break;
         case 'stop': {

@@ -20,7 +20,7 @@ Module._load = function (request, parent, isMain) {
 const out = path.resolve(__dirname, '../../out/agent');
 const { CopilotRouter } = require(path.join(out, 'lmRouter'));
 const { StepWorkspace, revertChanges, cleanPath, pathAllowed } = require(path.join(out, 'agentTools'));
-const { AgentRunner, parsePlan, branchName, MAX_ATTEMPTS } = require(path.join(out, 'agentRunner'));
+const { AgentRunner, parsePlan, branchName, stepVerification, isDocumentation, MAX_ATTEMPTS } = require(path.join(out, 'agentRunner'));
 const { TaskStore } = require(path.join(out, 'taskStore'));
 const { renderTaskBody } = require(path.join(out, 'agentPage'));
 const { taskGroup } = require(path.join(out, 'types'));
@@ -202,7 +202,7 @@ async function wholeTask() {
   const task = store.create({ title: 'Retry uploads 3 times', goal: 'Retry a failed upload 3 times', criteria: ['attempts is 3', 'tests pass'], repositoryRoot: root });
   assert.equal(taskGroup(task), 'todo');
 
-  // Plan: the model reads, then proposes; unknown tools and scripts that do not exist are dropped.
+  // Plan: the model reads, then proposes; unknown tools are dropped, scripts that do not exist are held for the person.
   turns.push({ tool: 'read_file', input: { path: 'src/retry.js' } },
     { final: { steps: [{ title: 'Set attempts', intent: 'Set attempts to 3.', tools: ['edit_file', 'rm_rf'], paths: ['src/retry.js', '../etc'], checks: ['test', 'nope'] }] } });
   await runner.plan(task.id, token);
@@ -211,11 +211,15 @@ async function wholeTask() {
   assert.deepEqual(current.plan[0].tools, ['edit_file']);
   assert.deepEqual(current.plan[0].paths, ['src/retry.js']);
   assert.deepEqual(current.plan[0].checks, ['test']);
+  assert.deepEqual(current.plan[0].unknownChecks, ['nope']);
   assert.deepEqual(router.calls[0].tools, ['read_file', 'list_files', 'search_code'], 'planning only reads');
   assert.match(router.calls[0].messages[0].content, /Goal: Retry a failed upload 3 times[\s\S]*1\. attempts is 3[\s\S]*scripts that can be checks: test, deploy/);
   assert.equal(taskGroup(current), 'waiting');
 
-  // Approval needs the checks' scripts approved and a clean tree; then the branch is created.
+  // Approval needs every proposed check to be a script, the checks' scripts approved and a clean
+  // tree; then the branch is created.
+  await assert.rejects(runner.approvePlan(task.id), /step 1 \(nope\)/);
+  runner.editStep(task.id, 0, { checks: ['test'] });
   await assert.rejects(runner.approvePlan(task.id), /not approved for this repository: test/);
   await approve('test');
   fs.writeFileSync(path.join(root, 'src', 'retry.js'), 'module.exports = { attempts: 0 };\n');
@@ -272,7 +276,7 @@ async function wholeTask() {
   const log = store.readLog(task.id);
   const types = new Set(log.map(entry => entry.type));
   for (const type of ['model', 'tool', 'approval', 'check', 'status']) { assert.ok(types.has(type), `run log has ${type}`); }
-  assert.deepEqual(log.filter(entry => entry.type === 'approval').map(entry => entry.action), ['approvePlan', 'run', 'retry', 'run', 'accept']);
+  assert.deepEqual(log.filter(entry => entry.type === 'approval').map(entry => entry.action), ['edit', 'approvePlan', 'run', 'retry', 'run', 'accept']);
   assert.ok(changed > 5);
   return { root, store, runner, turns, host, approve, dirty, storage };
 }
@@ -337,6 +341,8 @@ async function failuresAndRecovery({ root, store, runner, turns, host, approve }
 
   // Accept anyway: a check that already failed before the task (this test always fails).
   await runner.accept(third.id);
+  assert.equal(store.get(third.id).plan[0].verification, 'noChanges');
+  assert.doesNotMatch(renderTaskBody(store.get(third.id), [], 'm'), /checks passed/);
   git(root, 'switch', '-q', 'main');
   fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({ scripts: { test: 'node -e "process.exit(1)"' } }));
   git(root, 'commit', '-q', '-am', 'a failing test');
@@ -358,6 +364,59 @@ async function failuresAndRecovery({ root, store, runner, turns, host, approve }
   const anyway = store.readLog(fifth.id).find(entry => entry.action === 'acceptAnyway');
   assert.equal(anyway.detail, 'failing: test');
   assert.match(renderTaskBody(accepted, [], 'm'), /failing: test/);
+  assert.equal(accepted.plan[0].verification, 'failed');
+
+  // Issue #138: an unknown check name is kept and blocks approval, never silently dropped.
+  const proposed = parsePlan({ steps: [{ title: 'Edit', intent: 'e', tools: ['edit_file'], paths: ['src/'], checks: ['missing-check', 'test'] }] }, ['test']);
+  assert.deepEqual(proposed[0].checks, ['test']);
+  assert.deepEqual(proposed[0].unknownChecks, ['missing-check']);
+  assert.equal(parsePlan({ steps: [{ title: 'Ok', checks: ['test'] }] }, ['test'])[0].unknownChecks, undefined);
+  git(root, 'checkout', '-q', '--', '.');
+  git(root, 'switch', '-q', 'main');
+  const seventh = store.create({ title: 'Seventh', goal: 'g', criteria: ['c'], repositoryRoot: root });
+  turns.push({ final: { steps: [{ title: 'A', intent: 'a', tools: ['edit_file'], paths: ['src/'], checks: ['missing-check'] }] } });
+  await runner.plan(seventh.id, token);
+  let planned = store.get(seventh.id);
+  assert.deepEqual(planned.plan[0].checks, []);
+  assert.match(renderTaskBody(planned, [], 'm'), /Not scripts of this repository: <code>missing-check<\/code>/);
+  await assert.rejects(runner.approvePlan(seventh.id), /step 1 \(missing-check\)\. Edit those steps' checks first/);
+  // Choosing the checks (here: none) settles it; the step can then only be accepted as unverified.
+  runner.editStep(seventh.id, 0, { checks: [] });
+  planned = store.get(seventh.id);
+  assert.equal(planned.plan[0].unknownChecks, undefined);
+  assert.match(renderTaskBody(planned, [], 'm'), /code change it makes can only be accepted as unverified/);
+  await runner.approvePlan(seventh.id);
+  turns.push({ tool: 'edit_file', input: { path: 'src/retry.js', oldText: 'attempts: 1', newText: 'attempts: 5' } }, { final: { summary: 'done, trust me' } });
+  await runner.runStep(seventh.id, token);
+  const unverifiedReview = store.get(seventh.id);
+  assert.equal(stepVerification(unverifiedReview.plan[0]), 'unverified');
+  const reviewPage = renderTaskBody(unverifiedReview, [], 'm');
+  assert.match(reviewPage, /data-action="accept"[^>]*disabled/, 'plain Accept is off for an unverified change');
+  assert.match(reviewPage, /data-action="acceptUnverified"/);
+  assert.doesNotMatch(reviewPage, /data-action="acceptAnyway"/);
+  await assert.rejects(runner.accept(seventh.id), /no check ran, so nothing verified it/);
+  await runner.accept(seventh.id, { anyway: true });
+  const unverified = store.get(seventh.id);
+  assert.equal(unverified.plan[0].verification, 'unverified');
+  assert.equal(unverified.plan[0].acceptedDespite, undefined);
+  assert.match(renderTaskBody(unverified, [], 'm'), />unverified</);
+  const unverifiedLog = store.readLog(seventh.id).find(entry => entry.action === 'acceptUnverified');
+  assert.equal(unverifiedLog.detail, 'no check ran; changed: src/retry.js');
+
+  // A step that changed nothing and ran no check is accepted plainly, but never labelled as checked.
+  assert.equal(stepVerification({ result: { changes: [], checks: [] } }), 'noChanges');
+  // Documentation only needs no check; one code file among them makes the step unverified again.
+  assert.equal(stepVerification({ result: { changes: [{ path: 'README.md' }, { path: 'docs/guide.html' }], checks: [] } }), 'docsOnly');
+  assert.equal(stepVerification({ result: { changes: [{ path: 'README.md' }, { path: 'src/a.ts' }], checks: [] } }), 'unverified');
+  assert.equal(isDocumentation('CHANGELOG.MD'), true);
+  assert.equal(isDocumentation('src/docs/x.ts'), false, 'only the top-level docs/ folder');
+  const docsTask = { ...JSON.parse(JSON.stringify(unverifiedReview)), status: 'stepReview', current: 0, plan: [{ title: 'Docs', intent: 'd', tools: ['edit_file'], paths: ['README.md'], checks: [], state: 'pending', attempts: 1,
+    result: { summary: '', changes: [{ path: 'README.md', before: 'a', after: 'b' }], toolCalls: [], checks: [], aiText: [] } }] };
+  assert.doesNotMatch(renderTaskBody(docsTask, [], 'm'), /data-action="accept"[^>]*disabled/, 'a docs-only step is accepted plainly');
+  docsTask.plan[0].state = 'done'; docsTask.plan[0].verification = 'docsOnly'; docsTask.status = 'done';
+  assert.match(renderTaskBody(docsTask, [], 'm'), />docs only</);
+  assert.equal(stepVerification({ result: { changes: [{ path: 'a' }], checks: [{ passed: true }] } }), 'passed');
+  assert.equal(stepVerification({ result: { changes: [], checks: [{ passed: true }, { passed: false }] } }), 'failed');
 
   // A step may not change the command of a check it runs: the check is not run.
   const sixth = store.create({ title: 'Sixth', goal: 'g', criteria: ['c'], repositoryRoot: root });
