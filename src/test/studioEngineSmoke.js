@@ -170,6 +170,42 @@ async function main() {
     assert.equal(state.status, 'failed');
     assert.match(state.error, /^analyze: Item 1: The model's reply does not fit the output: The reply is not one JSON object\./);
 
+    // A folder below the repository root, at a revision: its files are read from that folder.
+    const sub = workflow({ inputs: { from: { type: 'repository' } }, nodes: [{ id: 'read', type: 'docs.requirements', with: { from: '${inputs.from}' } }] });
+    state = await engine.continue(sub, await engine.start(sub, 'hash', { from: { path: path.join(old, 'spec'), ref: released } }), never);
+    assert.equal(state.status, 'done', state.error);
+    assert.deepEqual(state.nodes.read.output.requirements.map(item => [item.id, item.file]), [['REQ-1', 'login.rst'], ['REQ-2', 'login.rst'], ['REQ-3', 'login.rst']]);
+
+    // A catalog with an unread document is incomplete: comparing it would invent changes.
+    await assert.rejects(steps.get('requirements.compare').run({ old: { requirements: [], skipped: ['big.rst'] }, new: [] }, {}),
+      /"old" is incomplete: 1 document was not read \(big\.rst\)/);
+
+    // A loop over a value that is not there fails; it does not run once.
+    const missingList = workflow({ nodes: [
+      { id: 'a', type: 'gate', with: { title: 'a' } },
+      { id: 'w', type: 'file.write', forEach: '${a.output.items}', with: { path: 'x.txt', content: 'x' } }], edges: [{ from: 'a', to: 'w' }] });
+    assert.deepEqual(messages(missingList), []);
+    state = await engine.continue(missingList, await engine.start(missingList, 'hash', {}), never);
+    state = await engine.continue(missingList, await engine.answer(state, true), never);
+    assert.deepEqual([state.status, state.nodes.w.status], ['failed', 'failed']);
+    assert.match(state.error, /^w: "forEach" \(\$\{a\.output\.items\}\) did not give a list \(undefined\)\.$/);
+
+    // Writes stay in the workspace through links too: a linked folder, or a linked file.
+    const outside = path.join(base, 'outside');
+    fs.mkdirSync(outside);
+    fs.symlinkSync(outside, path.join(workspace, 'linked'));
+    fs.writeFileSync(path.join(outside, 'kept.txt'), 'kept');
+    fs.symlinkSync(path.join(outside, 'kept.txt'), path.join(workspace, 'link.txt'));
+    const write = steps.get('file.write');
+    const writeContext = { root: workspace };
+    await assert.rejects(write.run({ path: 'linked/result.txt', content: 'x' }, writeContext), /leads outside the workspace through a symbolic link/);
+    await assert.rejects(write.run({ path: 'linked/deeper/result.txt', content: 'x' }, writeContext), /leads outside the workspace through a symbolic link/);
+    await assert.rejects(write.preview({ path: 'link.txt', content: 'x' }, writeContext), /is a symbolic link/);
+    assert.deepEqual([fs.readdirSync(outside), fs.readFileSync(path.join(outside, 'kept.txt'), 'utf8')], [['kept.txt'], 'kept']);
+    // The preview holds all of what will be written; the dialog shortens it, not the run.
+    const long = 'a'.repeat(5000) + 'THE END';
+    assert.match(await write.preview({ path: 'long.txt', content: long }, writeContext), /^Create long\.txt \(5007 characters\):\n\na+THE END$/);
+
     // A loop over an empty list runs nothing and asks nothing, even for a step that writes.
     const empty = workflow({ nodes: [{ id: 'w', type: 'file.write', forEach: '${inputs.list}', with: { path: 'x-${index}.txt', content: '${item}' } }],
       inputs: { list: { type: 'string', default: [] } } });

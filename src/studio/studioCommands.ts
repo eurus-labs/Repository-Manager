@@ -95,10 +95,14 @@ export function registerStudio(context: vscode.ExtensionContext, workspaceRoot: 
   /** Runs on, asking at each gate, until the run is done, stopped or failed. */
   const drive = async (workflow: Workflow, state: RunState): Promise<void> => {
     let current = state;
-    while (current.status === 'running') {
-      current = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: `${workflow.title}`, cancellable: true },
-        async (_progress, token) => engine.continue(workflow, current, { get cancelled() { return token.isCancellationRequested; } }));
-      if (current.status !== 'waiting' || !current.waiting) { break; }
+    // A run reopened from Show Workflow Runs may already be waiting: ask first, then go on.
+    while (current.status === 'running' || current.status === 'waiting') {
+      if (current.status === 'running') {
+        current = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: `${workflow.title}`, cancellable: true },
+          async (_progress, token) => engine.continue(workflow, current, { get cancelled() { return token.isCancellationRequested; } }));
+        continue;
+      }
+      if (!current.waiting) { break; }
       const approve = current.waiting.kind === 'gate' ? 'Continue' : 'Approve';
       const show = 'Show in Editor';
       const stop = 'Stop Run';

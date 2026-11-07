@@ -182,8 +182,12 @@ export class WorkflowEngine {
 
         // One input per run of the step: once, or once per item of forEach.
         const base = scope();
-        const items = node.forEach === undefined ? undefined : resolve(node.forEach, base);
-        if (items !== undefined && !Array.isArray(items)) { return await this.fail(state, id, `"forEach" did not give a list (${typeof items}).`); }
+        const looped = node.forEach === undefined ? undefined : resolve(node.forEach, base);
+        // A declared loop needs a list: a missing value is an error, not one run.
+        if (node.forEach !== undefined && !Array.isArray(looped)) {
+          return await this.fail(state, id, `"forEach" (${node.forEach}) did not give a list (${looped === null ? 'null' : typeof looped}).`);
+        }
+        const items = looped as unknown[] | undefined;
         const runs = (items ?? [undefined]).map((item, index) => ({
           item, index, input: resolve(node.with ?? {}, items ? { ...base, item, index } : base) as Record<string, unknown>
         }));

@@ -287,7 +287,8 @@ example above. Validation reports every problem it finds, with where it is:
 
 A path written literally in the file (`file.write` `path`, `docs.requirements` `from`) must be
 relative and stay inside the workspace. A path chosen by the person as an input may be anywhere
-for reading. `file.write` checks its target again when it runs.
+for reading. `file.write` checks its target again when it runs. It refuses a target that is a
+symbolic link, or whose nearest existing folder resolves outside the workspace.
 
 **References** (`expressions.ts`):
 
@@ -303,10 +304,12 @@ for reading. `file.write` checks its target again when it runs.
 - Nodes run one at a time in dependency order, ties in file order.
 - A node with incoming edges runs when at least one of them is taken (its source is done and its
   `when` holds); otherwise it is skipped.
-- `forEach` runs the step once per item, and its output is the list of results.
+- `forEach` runs the step once per item, and its output is the list of results. A loop whose
+  reference gives no list fails the node; an empty list runs nothing and asks nothing.
 
 **Gates.** Before a step with an effect, and at every `gate` node, the run waits with a preview
-of exactly what will happen (for `file.write`: create or replace, the path and the content).
+of exactly what will happen (for `file.write`: create or replace, the path and all of the
+content; the dialog shortens it, and Show in Editor shows it whole).
 The person approves or stops the run. A workflow cannot turn these gates off.
 
 **Each run is kept** in the extension's workspace storage:
@@ -322,8 +325,8 @@ A waiting run goes on after a restart. The run also records the file's hash and 
 | Type | Effect | What it does |
 | --- | --- | --- |
 | `prompt` | read, uses the model | Sends `input` as data with the prompt's instructions and output schema. The reply must be one JSON object that fits the schema; one repair turn, then the node fails with the schema problems. Input over 120,000 characters fails: loop with `forEach` |
-| `docs.requirements` | read | Requirements in the `.rst` and `.md` files of a folder, as the Requirements view reads them; with `ref`, at that Git revision (`git ls-tree` and `git show`), with the commit it read |
-| `requirements.compare` | read | Matches two lists by ID: `added`, `removed`, `changed` (title or text differ), `unchanged`, and counts. Same text under another ID is a `possibleRename`, never merged |
+| `docs.requirements` | read | Requirements in the `.rst` and `.md` files of a folder, as the Requirements view reads them; with `ref`, at that Git revision (`git ls-tree` and `git show`), with the commit it read. A folder below the repository root is read as that folder |
+| `requirements.compare` | read | Refuses a list with unread documents (`skipped`), since their requirements would look added or removed. Matches two lists by ID: `added`, `removed`, `changed` (title or text differ), `unchanged`, and counts. Same text under another ID is a `possibleRename`, never merged |
 | `file.write` | write | Text, JSON, or Markdown with fenced JSON (`markdown-json`), inside the workspace |
 | `gate` | — | Waits for the person, showing `show` |
 

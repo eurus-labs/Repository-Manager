@@ -51,11 +51,24 @@ const text = (value: unknown, name: string): string => {
   return value;
 };
 
-function insideRoot(root: string, relative: string): string {
+const within = (base: string, target: string) => target === base || target.startsWith(base + path.sep);
+
+/**
+ * The file a workspace-relative path names, refused when it leaves the workspace: by its text
+ * ("..", absolute) or through a symbolic link, in the file itself or in any folder above it.
+ */
+async function insideRoot(root: string, relative: string): Promise<string> {
   if (!isLocalPath(relative)) { throw new StepError(`"${relative}" is not a path inside the workspace.`); }
-  const target = path.resolve(root, relative);
   const base = path.resolve(root);
-  if (target !== base && !target.startsWith(base + path.sep)) { throw new StepError(`"${relative}" is outside the workspace.`); }
+  const target = path.resolve(base, relative);
+  if (!within(base, target)) { throw new StepError(`"${relative}" is outside the workspace.`); }
+  const realBase = await fs.realpath(base);
+  const link = await fs.lstat(target).then(info => info.isSymbolicLink(), () => false);
+  if (link) { throw new StepError(`"${relative}" is a symbolic link; a workflow does not write through links.`); }
+  // The nearest folder that exists, as the file system resolves it, must be in the workspace.
+  let existing = path.dirname(target);
+  while (!(await fs.stat(existing).then(() => true, () => false)) && existing !== base) { existing = path.dirname(existing); }
+  if (!within(realBase, await fs.realpath(existing))) { throw new StepError(`"${relative}" leads outside the workspace through a symbolic link.`); }
   return target;
 }
 
@@ -149,7 +162,8 @@ const docsRequirements: StepDefinition = {
     const ref = typeof input.ref === 'string' && input.ref ? input.ref : from.ref;
     const read = ref
       ? { list: async () => (await git(['ls-tree', '-r', '--name-only', ref], from.path)).split('\n').filter(file => DOC.test(file)),
-          content: (file: string) => git(['show', `${ref}:${file}`], from.path) }
+          // "./": relative to the chosen folder, as ls-tree lists it, not to the repository root.
+          content: (file: string) => git(['show', `${ref}:./${file}`], from.path) }
       : { list: () => filesIn(from.path), content: (file: string) => fs.readFile(path.join(from.path, file), 'utf8') };
     const files = (await read.list()).slice(0, MAX_REQUIREMENT_FILES);
     const requirements: RequirementItem[] = [];
@@ -174,6 +188,11 @@ export type ChangeKind = 'added' | 'removed' | 'changed';
 export interface RequirementChange { id: string; change: ChangeKind; old?: RequirementItem; new?: RequirementItem; possibleRename?: string }
 
 const list = (value: unknown, name: string): RequirementItem[] => {
+  // Requirements of a document that was not read are unknown, not removed.
+  const skipped = value && typeof value === 'object' && !Array.isArray(value) ? (value as { skipped?: unknown }).skipped : undefined;
+  if (Array.isArray(skipped) && skipped.length) {
+    throw new StepError(`"${name}" is incomplete: ${skipped.length} document${skipped.length === 1 ? ' was' : 's were'} not read (${skipped.slice(0, 3).join(', ')}${skipped.length > 3 ? ', …' : ''}), so their requirements would look added or removed.`);
+  }
   const items = value && typeof value === 'object' && !Array.isArray(value) ? (value as { requirements?: unknown }).requirements : value;
   if (!Array.isArray(items)) { throw new StepError(`"${name}" must be a list of requirements, or the output of docs.requirements.`); }
   return items.filter((item): item is RequirementItem => Boolean(item) && typeof item.id === 'string');
@@ -234,15 +253,15 @@ const fileWrite: StepDefinition = {
   localPaths: ['path'],
   async preview(input, context) {
     const relative = text(input.path, 'path');
-    const target = insideRoot(context.root, relative);
+    const target = await insideRoot(context.root, relative);
     const content = rendered(input);
     const exists = await fs.stat(target).then(() => true, () => false);
-    const shown = content.length > 4000 ? `${content.slice(0, 4000)}\n… (${content.length - 4000} more characters)` : content;
-    return `${exists ? 'Replace' : 'Create'} ${relative} (${content.length} characters):\n\n${shown}`;
+    // All of it: the dialog shortens it, and Show in Editor shows what will be written.
+    return `${exists ? 'Replace' : 'Create'} ${relative} (${content.length} characters):\n\n${content}`;
   },
   async run(input, context) {
     const relative = text(input.path, 'path');
-    const target = insideRoot(context.root, relative);
+    const target = await insideRoot(context.root, relative);
     const content = rendered(input);
     if (content.length > MAX_WRITE_CHARS) { throw new StepError(`The content is larger than ${MAX_WRITE_CHARS} characters.`); }
     await fs.mkdir(path.dirname(target), { recursive: true });
@@ -261,7 +280,7 @@ const gate: StepDefinition = {
   optional: ['show'],
   async preview(input) {
     const shown = input.show === undefined ? '' : typeof input.show === 'string' ? input.show : JSON.stringify(input.show, null, 2);
-    return shown.length > 4000 ? `${shown.slice(0, 4000)}\n…` : shown;
+    return shown;
   },
   async run(input) { return { approved: true, title: input.title }; }
 };
