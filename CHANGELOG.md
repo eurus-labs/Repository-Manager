@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Run Workflow…** (Command Palette), the first part of the Agent Studio: runs a workflow defined in a JSON file, from `.repository-manager/workflows/`, your library, or the samples. It asks before it writes anything, shows exactly what it will write, and keeps each run so a waiting one can go on (**Show Workflow Runs**). The sample **Analyze requirement changes** compares the requirements in a folder with a previous revision in another repository, by ID, and asks Copilot what each change means and what to clarify with the PO.
 
+- **Workflow Editor**: a `*.workflow.json` file opens as a diagram. Add steps from the palette, drag them, connect them, and edit each step, the inputs, prompts and types in forms beside it. Problems show on the steps they concern, steps that write show the approval the engine will ask for, and **Run** runs it. The file stays plain JSON (**Open as JSON**); Undo, Save and edits in the text editor work as for any file.
+
 - **Stash…** beside **Discard…** when files are selected in the Side Bar's **Changes**: stashes just those files (new files included) with an optional message, leaving the other changes in place.
 
 ### Changed

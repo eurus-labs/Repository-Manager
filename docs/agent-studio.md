@@ -355,6 +355,67 @@ analysis and writing are skipped.
 
 Live Copilot calls are not verified outside VS Code: the tests use a scripted model.
 
+## Phase 2a as built: the visual editor
+
+A `*.workflow.json` file opens in the Workflow Editor (`src/studio/workflowEditorProvider.ts`,
+`resources/studioEditor.js`).
+
+**One source.** The editor is a custom *text* editor: the file is a VS Code text document and
+the page keeps no copy of its own.
+
+1. The page sends an edit, such as `{ op: 'renameNode', id, to }`.
+2. The host applies it to the parsed file (`workflowEdit.ts`, no `vscode`) and replaces the
+   document's text.
+3. Every change to the document, from the page or from the JSON editor beside it, draws the page
+   again.
+
+So Undo, Redo, Save, dirty state and hot exit are VS Code's own. The written file has a stable
+key order and two-space indentation.
+
+**Edits:**
+
+- workflow fields;
+- add a step (a free id, its required settings empty, a place), remove one (its edges and place go
+  too), rename one;
+- step title, prompt and `forEach`;
+- settings: JSON when the text reads as JSON, text otherwise; quote a value to keep it text;
+- move a step (only the drop is written), add and remove edges, edge conditions;
+- inputs, prompts and types;
+- **Arrange** lays the steps out again in columns by depth.
+
+A rename also renames the step in edges, positions, and every `${…}` reference that reads it.
+An edit that cannot apply (invalid JSON in a schema, a name in use) is said on the page and
+leaves the file alone.
+
+**The page:**
+
+- **Palette:** the step library, each with what it does.
+- **Diagram:**
+  - steps in boxes; steps that write, run or send are dashed and show "🔒 asks before it
+    writes files", the engine's gate, which the page cannot remove;
+  - `gate` steps show "⏸ waits for your answer", and prompt steps are marked AI;
+  - conditions are shortened on the edge, whole on hover.
+- **Problems:** the validator's problems, listed and shown on the steps they concern; Run is off
+  while there are any.
+- **Side panel:**
+  - the workflow: its fields, what a run sends and asks, inputs, prompts and types;
+  - or the selected step: its fields, settings, the steps after it with their conditions, and
+    Delete.
+- **Keyboard:** steps are reachable with Tab; Enter selects and Delete removes.
+- **Open as JSON** opens the text editor. **Run** saves, then runs the file through Run Workflow….
+
+A file that is not JSON, or not a workflow, is said, with only Open as JSON offered.
+
+**Tests:**
+
+- `src/test/workflowEditSmoke.js` covers the edits in Node.
+- `src/test/studioEditorUi.js` drives the real page in Chromium against the real provider and a
+  fake text document. It covers the diagram, a rename that updates references, an edit made as
+  JSON, adding and connecting a step, a problem shown on its step, a drag, a refused edit, Delete,
+  Open as JSON, and Run.
+
+**Not in 2a:** AI-assisted authoring (2b).
+
 ## Phases
 
 Each phase ends with something usable on its own.
