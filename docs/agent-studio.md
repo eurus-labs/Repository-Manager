@@ -39,9 +39,13 @@ chain of steps, not only coding *(decided)*.
 
   They do not write code for a new step. A code plugin API waits until a real
   need is not met by prompt, MCP and script steps.
-- **Workflows are shared as JSON** *(decided)*. They are committed to a
-  repository or exported as one file, and they work on another machine after
-  import.
+- **Workflows are shared as JSON files, with anyone** *(decided)*. A workflow
+  is not tied to a project repository: it is one file that people pass around
+  and import. A repository may also keep workflows of its own.
+- **People define nodes and workflows with AI help** *(decided)*. Copilot, or
+  another model, drafts from a description; the person reviews and edits the
+  draft (see AI-assisted authoring).
+- **Sub-workflows come later** *(decided)*.
 - **Setup is visual** *(decided)*: a diagram editor. The JSON is the source of
   truth; the diagram reads it and writes it.
 - **VS Code extension first** *(decided)*. A workflow can later be packaged as
@@ -98,9 +102,16 @@ Each built-in step declares:
 
 ## Workflow JSON
 
-One file per workflow is the unit of sharing:
-`.repository-manager/workflows/<id>.workflow.json` in a repository, or
-exported anywhere.
+One file per workflow, `<id>.workflow.json`, is the unit of sharing. The
+Studio finds workflows in two places:
+
+- **Library:** workflows the person imported or created, kept in the
+  extension's global storage and available in every folder.
+- **Repository:** `.repository-manager/workflows/*.workflow.json` in the open
+  folder, if any.
+
+Import takes a file or a URL. Export writes one file. Both work the same
+whichever place the workflow came from.
 
 ```json
 {
@@ -160,6 +171,40 @@ The Studio opens a workflow in a webview editor:
   either side show on the other.
 - **Run, Dry run, Export, Import.** A dry run executes Read steps only and
   shows what each gate would ask.
+
+## AI-assisted authoring
+
+People describe what they want, and the AI drafts it. Drafting comes in three
+forms:
+
+- **New workflow.** "Every Monday, read the requirements changed last week,
+  compare them with release 3, and draft open points for the PO" becomes a
+  workflow JSON: nodes, edges, prompt steps and schemas.
+- **New node.** "A step that extracts acceptance criteria from a requirement"
+  becomes a prompt step with its instructions, input and output schema.
+- **Change.** "Add a review before the gate" or "loop over each epic" is
+  applied to the open workflow.
+
+How it works:
+
+- **Context.** The model gets the step library, with each step's inputs,
+  outputs and effect, the workflow JSON schema, the open workflow, and the MCP
+  tools this machine has. It only uses steps that exist.
+- **Shown as a change, never applied directly.** The draft runs through the
+  same validator as an imported workflow. It is shown on the canvas as a diff:
+  added nodes, removed nodes, changed fields. The person applies it, edits it
+  or discards it.
+- **Repair.** When validation fails, the errors go back to the model once, as
+  the review engine's repair turn does. If it still fails, the draft is shown
+  with its problems rather than dropped.
+- **Try it.** A drafted prompt step can be run on a sample input in its side
+  panel before it is used.
+- **The engine's gates still apply.** The AI cannot remove them, and a draft
+  that tries to is invalid. A drafted workflow imported by someone else gets
+  the same first-run approval as any import.
+- **Consent and model.** This uses the one consent and model setting the
+  Studio shares with other Copilot features. Nothing is sent without the
+  consent.
 
 ## Safety
 
@@ -230,7 +275,8 @@ Each phase ends with something usable on its own.
 1. **Engine and workflow JSON** (format, validation, runs, gates), with prompt
    and Docs steps. It runs from a command, and its tests run in Node without
    `vscode`. The first workflow is the sample's "Analyze".
-2. **Visual editor**: canvas, side panel, JSON round-trip, problems.
+2. **Visual editor**: canvas, side panel, JSON round-trip, problems, and
+   **AI-assisted authoring** of workflows and prompt steps.
 3. **Sharing**: export and import with the approval list, and the Studio view
    listing workflows and runs.
 4. **Review and Code steps.** The agent harness becomes steps, Review joins
@@ -254,7 +300,4 @@ Each phase ends with something usable on its own.
 
 ## Open questions
 
-1. Where does a shared workflow live for a team: in each project repository,
-   or in a shared repository of workflows that projects import?
-2. Should a workflow be able to call another workflow (sub-workflow) in
-   phase 1, or is that later?
+None for phase 1. The sample workflow keeps its own open points (above).
