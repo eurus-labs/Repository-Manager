@@ -1,0 +1,45 @@
+{
+  "schema": "repository-manager/workflow@1",
+  "id": "analyze-requirements",
+  "version": "1.0.0",
+  "title": "Analyze requirement changes",
+  "description": "Compares the new requirements with the previous ones by ID, asks the model what each change means and which points the PO must clarify, and writes the analysis after you approve it.",
+  "inputs": {
+    "newRequirements": { "type": "folder", "title": "New requirements folder" },
+    "oldRequirements": { "type": "repository", "title": "Previous requirements (repository and revision)" },
+    "output": { "type": "string", "title": "Analysis file", "default": "analysis/requirement-changes.md" }
+  },
+  "types": {
+    "ChangeAnalysis": {
+      "type": "object",
+      "required": ["summary", "impact", "openPoints"],
+      "properties": {
+        "summary": { "type": "string", "description": "What changed and why it matters, in two or three sentences." },
+        "impact": { "type": "array", "items": { "type": "string" }, "description": "Areas, components or tests the change affects." },
+        "openPoints": { "type": "array", "items": { "type": "string" }, "description": "Questions the PO must answer before work starts." }
+      }
+    }
+  },
+  "prompts": {
+    "analyze-change": {
+      "instructions": "You analyze one requirement change for a development team. The input holds the requirement ID, the kind of change (added, removed or changed) and its old and new text. Say what changed and why it matters, list what it affects, and list the open points developers need the PO to clarify. Quote the requirement text when you rely on it. Do not invent requirements that are not in the input.",
+      "output": "ChangeAnalysis"
+    }
+  },
+  "nodes": [
+    { "id": "read-new", "type": "docs.requirements", "title": "Read the new requirements", "with": { "from": "${inputs.newRequirements}" } },
+    { "id": "read-old", "type": "docs.requirements", "title": "Read the previous requirements", "with": { "from": "${inputs.oldRequirements}" } },
+    { "id": "compare", "type": "requirements.compare", "title": "Match them by ID", "with": { "old": "${read-old.output}", "new": "${read-new.output}" } },
+    { "id": "analyze", "type": "prompt", "title": "Analyze each change", "prompt": "analyze-change", "forEach": "${compare.output.changes}", "with": { "input": "${item}" } },
+    { "id": "write", "type": "file.write", "title": "Write the analysis", "with": {
+      "path": "${inputs.output}", "format": "markdown-json", "title": "Requirement changes",
+      "content": { "previous": "${read-old.output.revision}", "counts": "${compare.output.counts}", "changes": "${compare.output.changes}", "analysis": "${analyze.output}" } } }
+  ],
+  "edges": [
+    { "from": "read-new", "to": "compare" },
+    { "from": "read-old", "to": "compare" },
+    { "from": "compare", "to": "analyze", "when": "${compare.output.changes}" },
+    { "from": "analyze", "to": "write" }
+  ],
+  "layout": { "read-new": [0, 0], "read-old": [0, 120], "compare": [260, 60], "analyze": [520, 60], "write": [780, 60] }
+}

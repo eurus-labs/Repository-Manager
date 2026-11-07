@@ -7,7 +7,7 @@
  * engine uses), so it works on every VS Code that has vscode.lm, with or without native tool calls.
  */
 
-import { parseModelJson } from '../services/securityReviewProvider';
+import { parseModelJson } from '../services/modelJson';
 
 export type ContentBlock =
   | { type: 'text'; text: string }
