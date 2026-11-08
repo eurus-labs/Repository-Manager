@@ -22,7 +22,7 @@ class TextDocument {
   constructor(uri, text) { this.uri = uri; this.text = text; this.isDirty = false; }
   getText() { return this.text; }
   get lineCount() { return this.text.split('\n').length; }
-  async save() { this.isDirty = false; return true; }
+  async save() { if (fakeVscode.saveFails) { return false; } this.isDirty = false; return true; }
 }
 let documentInEditor;
 const fakeVscode = {
@@ -209,6 +209,12 @@ async function main() {
     await page.keyboard.press('Delete');
     await until(() => !doc().nodes.some(node => node.id === 'gate-1'), 'the delete');
     assert.equal((doc().edges || []).some(edge => edge.to === 'gate-1'), false);
+    // A save that fails (or is cancelled) does not run the older file on disk.
+    fakeVscode.saveFails = true;
+    await page.click('#run');
+    await page.locator('#notice', { hasText: 'The workflow was not saved, so it was not run.' }).waitFor();
+    assert.equal(executed.length, 0);
+    fakeVscode.saveFails = false;
     await page.click('#json');
     await page.click('#run');
     await until(() => executed.length >= 2, 'the commands');

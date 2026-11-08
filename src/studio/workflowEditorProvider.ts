@@ -80,7 +80,11 @@ export class WorkflowEditorProvider implements vscode.CustomTextEditorProvider {
         case 'edit': queue = queue.then(() => this.edit(document, panel, message.operation)); await queue; return;
         case 'openAsJson': await vscode.commands.executeCommand('vscode.openWith', document.uri, 'default'); return;
         case 'run':
-          if (document.isDirty) { await document.save(); }
+          // Run reads the file from disk: an edit that was not saved must not run the older one.
+          if (document.isDirty && !await document.save()) {
+            void panel.webview.postMessage({ type: 'editFailed', message: 'The workflow was not saved, so it was not run. Save it, then Run.' });
+            return;
+          }
           await vscode.commands.executeCommand('repositoryManager.studio.runWorkflow', document.uri);
           return;
       }
