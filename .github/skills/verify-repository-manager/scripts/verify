@@ -1,0 +1,313 @@
+#!/usr/bin/env node
+// Verification CLI for Repository Manager (see ../SKILL.md). Run from the repository root:
+//   V=.github/skills/verify-repository-manager/scripts/verify
+//   node $V doctor | start | stop | affected [<base>] | check [<name>...] [--affected <base>]
+//        | capture <label> -- <command...> | report
+//
+// What it runs: the repository's own npm scripts (compile, lint, test, test:ui, package) and git.
+// What it writes: .verify/<run-id>/ (captures), .verify/current (the run id), .verify/build.stamp.
+// It starts no server and reaches the network only as those npm scripts do (none of them do by
+// default). The UI tests need Chromium: set PLAYWRIGHT_CHROMIUM_PATH if Playwright does not find it.
+// Node standard library only; it installs nothing.
+'use strict';
+
+const { spawnSync } = require('child_process');
+const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
+
+const ROOT = process.cwd();
+const EVIDENCE = path.join(ROOT, '.verify');
+const FEATURES = path.join(__dirname, '..', 'references', 'features', 'README.md');
+
+// The checks of ../SKILL.md, "## Checks". `applies` lists globs; 'always' applies to every change.
+const CHECKS = [
+  { name: 'compile', kind: 'build', command: ['npm', 'run', '-s', 'compile'], applies: 'always', required: true,
+    passes: 'exit 0 (tsc, strict)' },
+  { name: 'lint', kind: 'lint', command: ['npm', 'run', '-s', 'lint'], applies: ['src/**/*.ts', '.eslintrc.json', 'package.json'], required: true,
+    passes: 'exit 0, no ESLint error' },
+  { name: 'unit', kind: 'tests', command: ['npm', 'test'], applies: 'always', required: true,
+    passes: 'exit 0 (compile, lint, then every suite in package.json "test")' },
+  { name: 'ui', kind: 'tests', command: ['npm', 'run', 'test:ui'], applies: ['resources/**', 'src/webview/**', 'src/handlers/**', 'src/repositoryManagerPanel.ts',
+    'src/repositoryManagerLauncher.ts', 'src/requirements/**', 'src/studio/**', 'src/review*.ts', 'src/test/uiSnapshots.js', 'src/test/requirementEditorUi.js',
+    'src/test/studioEditorUi.js', 'src/test/fixtures/**', 'package.json'], required: true, needs: 'chromium',
+    passes: 'exit 0; all three UI tests print "passed"; screenshots in ui-snapshots/' },
+  { name: 'package', kind: 'build', command: ['npm', 'run', '-s', 'package'], applies: ['package.json', 'package-lock.json', '.vscodeignore', 'resources/**', 'src/**', 'CHANGELOG.md', 'README.md'],
+    required: true, passes: 'exit 0 and "DONE  Packaged: <file>.vsix" with that file present' },
+  { name: 'commits', kind: 'conventions', command: null, applies: 'always', required: true,
+    passes: 'commits since the base: one author/committer line, a GitHub no-reply address, no AI trailers or footers (AGENTS.md)' },
+  { name: 'static-analysis', kind: 'static analysis', command: null, applies: 'always', required: false,
+    passes: 'not run here: CodeQL runs only in GitHub (Analyze jobs on the pull request); TypeScript strict mode is the compile check' }
+];
+
+const fail = message => { process.stderr.write(`verify: ${message}\n`); process.exit(1); };
+const run = (command, args, options = {}) => spawnSync(command, args, { cwd: ROOT, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, ...options });
+const git = (...args) => {
+  const result = run('git', args);
+  if (result.status !== 0) { throw new Error(`git ${args.join(' ')}: ${(result.stderr || '').trim()}`); }
+  return result.stdout;
+};
+
+function globRegex(glob) {
+  const escaped = glob.replace(/[.+^${}()|[\]\\]/g, '\\$&')
+    .replace(/\*\*\//g, '\u0000').replace(/\*\*/g, '\u0001').replace(/\*/g, '[^/]*').replace(/\?/g, '[^/]')
+    .replace(/\u0000/g, '(?:.*/)?').replace(/\u0001/g, '.*');
+  return new RegExp(`^${escaped}$`);
+}
+const matches = (file, globs) => globs.some(glob => globRegex(glob).test(file));
+
+// ---------------------------------------------------------------------------------------- runs
+
+function currentRun(create = true) {
+  const pointer = path.join(EVIDENCE, 'current');
+  if (fs.existsSync(pointer)) {
+    const id = fs.readFileSync(pointer, 'utf8').trim();
+    if (id && fs.existsSync(path.join(EVIDENCE, id))) { return id; }
+  }
+  if (!create) { return undefined; }
+  return newRun();
+}
+
+function newRun() {
+  const id = `${new Date().toISOString().replace(/[:.]/g, '-')}`;
+  fs.mkdirSync(path.join(EVIDENCE, id), { recursive: true });
+  fs.writeFileSync(path.join(EVIDENCE, 'current'), `${id}\n`);
+  return id;
+}
+
+/** The working tree's identity: HEAD plus the diff and the untracked files' content. */
+function treeStamp() {
+  const hash = crypto.createHash('sha256');
+  hash.update(git('rev-parse', 'HEAD'));
+  hash.update(git('diff', 'HEAD', '--binary'));
+  // Not .verify/: the evidence this CLI writes is not part of what is built.
+  for (const file of git('ls-files', '--others', '--exclude-standard', '-z').split('\0').filter(file => file && !file.startsWith('.verify/')).sort()) {
+    hash.update(file);
+    try { hash.update(fs.readFileSync(path.join(ROOT, file))); } catch { hash.update('<unreadable>'); }
+  }
+  return hash.digest('hex');
+}
+
+function capture(label, argv, options = {}) {
+  if (!/^[\w.-]+$/.test(label)) { fail(`"${label}" is not a label (letters, digits, . _ -)`); }
+  const id = currentRun();
+  const dir = path.join(EVIDENCE, id);
+  const started = new Date();
+  const result = run(argv[0], argv.slice(1), { env: options.env ?? process.env, timeout: options.timeoutMs ?? 30 * 60 * 1000 });
+  const record = {
+    label, command: argv.join(' '), exitCode: result.status, signal: result.signal ?? null,
+    error: result.error ? result.error.message : undefined,
+    sha: git('rev-parse', 'HEAD').trim(), dirty: git('status', '--porcelain').trim() !== '',
+    startedAt: started.toISOString(), seconds: Math.round((Date.now() - started.getTime()) / 100) / 10
+  };
+  fs.writeFileSync(path.join(dir, `${label}.out`), result.stdout ?? '');
+  fs.writeFileSync(path.join(dir, `${label}.err`), result.stderr ?? '');
+  fs.writeFileSync(path.join(dir, `${label}.json`), `${JSON.stringify(record, null, 2)}\n`);
+  return { ...record, stdout: result.stdout ?? '', stderr: result.stderr ?? '', files: [`.verify/${id}/${label}.out`, `.verify/${id}/${label}.err`] };
+}
+
+// -------------------------------------------------------------------------------------- doctor
+
+function chromiumPath() {
+  if (process.env.PLAYWRIGHT_CHROMIUM_PATH) { return fs.existsSync(process.env.PLAYWRIGHT_CHROMIUM_PATH) ? process.env.PLAYWRIGHT_CHROMIUM_PATH : undefined; }
+  try {
+    const { chromium } = require(path.join(ROOT, 'node_modules', 'playwright-core'));
+    const found = chromium.executablePath();
+    return found && fs.existsSync(found) ? found : undefined;
+  } catch { return undefined; }
+}
+
+function doctor() {
+  const problems = [];
+  const notes = [];
+  const major = Number(process.versions.node.split('.')[0]);
+  if (major < 20) { problems.push(`Node ${process.versions.node}: CI uses 22`); } else { notes.push(`node ${process.versions.node}`); }
+  for (const tool of ['npm', 'git']) {
+    const result = run(tool, ['--version']);
+    if (result.status !== 0) { problems.push(`${tool} is not on PATH`); } else { notes.push(`${tool} ${result.stdout.trim()}`); }
+  }
+  if (!fs.existsSync(path.join(ROOT, 'package.json')) || JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8')).name !== 'repository-manager') {
+    fail('run from the Repository Manager repository root');
+  }
+  if (!fs.existsSync(path.join(ROOT, 'node_modules', '.bin', 'tsc'))) { problems.push('node_modules is missing: run npm ci'); }
+  const chromium = chromiumPath();
+  notes.push(chromium ? `chromium ${chromium}` : 'chromium: not found (the "ui" check will be "not run"; set PLAYWRIGHT_CHROMIUM_PATH)');
+  try {
+    fs.mkdirSync(EVIDENCE, { recursive: true });
+    fs.accessSync(EVIDENCE, fs.constants.W_OK);
+  } catch { problems.push('.verify/ is not writable'); }
+  if (problems.length) { fail(problems.join('; ')); }
+  // The build must be the working tree's: compile whenever the tree differs from the last build.
+  const stampFile = path.join(EVIDENCE, 'build.stamp');
+  const stamp = treeStamp();
+  const id = newRun();
+  if (!fs.existsSync(stampFile) || fs.readFileSync(stampFile, 'utf8').trim() !== stamp || !fs.existsSync(path.join(ROOT, 'out', 'extension.js'))) {
+    const built = capture('doctor-compile', ['npm', 'run', '-s', 'compile']);
+    if (built.exitCode !== 0) { fail(`the build failed (see ${built.files[1]})`); }
+    fs.writeFileSync(stampFile, `${stamp}\n`);
+    notes.push('build: compiled for the current tree');
+  } else {
+    notes.push('build: out/ matches the current tree');
+  }
+  const dirty = git('status', '--porcelain').trim() !== '';
+  console.log(`ok: run ${id}; HEAD ${git('rev-parse', '--short', 'HEAD').trim()}${dirty ? ' + uncommitted changes' : ''}`);
+  notes.forEach(note => console.log(`  ${note}`));
+}
+
+// ------------------------------------------------------------------------------------ affected
+
+function defaultBase() {
+  for (const candidate of ['origin/main', 'main']) {
+    const result = run('git', ['merge-base', 'HEAD', candidate]);
+    if (result.status === 0) { return result.stdout.trim(); }
+  }
+  fail('no base: pass one, such as origin/main');
+}
+
+function changedFiles(base) {
+  const diff = git('diff', '--name-only', base).split('\n').filter(Boolean);
+  const untracked = git('ls-files', '--others', '--exclude-standard').split('\n').filter(Boolean);
+  return [...new Set([...diff, ...untracked])].filter(file => !file.startsWith('.verify/')).sort();
+}
+
+/** Areas from the feature index: "- [name](file.md) — owns: `glob`, `glob` — …". */
+function areas() {
+  const text = fs.readFileSync(FEATURES, 'utf8');
+  const found = [];
+  for (const line of text.split('\n')) {
+    const match = /^- \[([^\]]+)\]\(([^)]+)\) — owns: (.+?) — /.exec(line);
+    if (match) { found.push({ name: match[1], file: match[2], owns: [...match[3].matchAll(/`([^`]+)`/g)].map(item => item[1]) }); }
+  }
+  if (!found.length) { fail(`no areas in ${path.relative(ROOT, FEATURES)}`); }
+  return found;
+}
+
+function appliesTo(check, files) {
+  if (check.applies === 'always') { return files.length ? true : false; }
+  return files.some(file => matches(file, check.applies));
+}
+
+function affected(base) {
+  const files = changedFiles(base);
+  const all = areas();
+  const features = path.relative(ROOT, path.dirname(FEATURES));
+  console.log(`base ${/^[0-9a-f]{40}$/.test(base) ? base.slice(0, 12) : base}; ${files.length} changed path${files.length === 1 ? '' : 's'}`);
+  const hit = all.filter(area => files.some(file => matches(file, area.owns)));
+  for (const area of hit) {
+    const owned = files.filter(file => matches(file, area.owns));
+    console.log(`feature: ${features}/${area.file} (${area.name}: ${owned.length} path${owned.length === 1 ? '' : 's'})`);
+  }
+  for (const file of files.filter(item => !all.some(area => matches(item, area.owns)))) { console.log(`unmapped: ${file}`); }
+  for (const check of CHECKS.filter(item => appliesTo(item, files))) { console.log(`check: ${check.name}${check.required ? '' : ' (optional)'}`); }
+  return files;
+}
+
+// --------------------------------------------------------------------------------------- check
+
+function commitsCheck(base) {
+  const lines = git('log', `${base}..HEAD`, '--format=%an <%ae> | %cn <%ce>').split('\n').filter(Boolean);
+  if (!lines.length) { return { result: 'not applicable', reason: 'no commits since the base' }; }
+  const identities = [...new Set(lines)];
+  const bodies = git('log', `${base}..HEAD`, '--format=%B%x00');
+  const problems = [];
+  if (identities.length !== 1) { problems.push(`${identities.length} identities: ${identities.join('; ')}`); }
+  for (const identity of identities) {
+    const [author, committer] = identity.split(' | ');
+    if (!/<\d+\+[\w-]+@users\.noreply\.github\.com>$/.test(author) || author !== committer) { problems.push(`not one no-reply identity on both sides: ${identity}`); }
+  }
+  if (/co-authored-by:|generated (with|by)|claude-session:|https:\/\/claude\.ai\/code/i.test(bodies)) { problems.push('a commit message carries an AI trailer, footer or session link'); }
+  return problems.length ? { result: 'failed', reason: problems.join('; ') } : { result: 'passed', reason: `${lines.length} commit${lines.length === 1 ? '' : 's'}, ${identities[0]}` };
+}
+
+function check(names, base) {
+  const files = base ? changedFiles(base) : undefined;
+  const chosen = names.length ? names.map(name => CHECKS.find(item => item.name === name) || fail(`no check "${name}"`))
+    : CHECKS.filter(item => !files || appliesTo(item, files));
+  const rows = [];
+  for (const item of CHECKS) {
+    if (!chosen.includes(item)) {
+      if (files) { rows.push([item.name, 'no', 'not applicable', 'the change touches nothing it covers']); }
+      continue;
+    }
+    if (item.name === 'commits') {
+      const outcome = commitsCheck(base || defaultBase());
+      rows.push([item.name, 'yes', outcome.result, outcome.reason]);
+      continue;
+    }
+    if (!item.command) { rows.push([item.name, 'yes', 'not run', item.passes]); continue; }
+    const env = { ...process.env };
+    if (item.needs === 'chromium') {
+      const chromium = chromiumPath();
+      if (!chromium) { rows.push([item.name, 'yes', 'not run', 'no Chromium: set PLAYWRIGHT_CHROMIUM_PATH']); continue; }
+      env.PLAYWRIGHT_CHROMIUM_PATH = chromium;
+    }
+    const result = capture(`check-${item.name}`, item.command, { env });
+    let verdict = result.exitCode === 0 ? 'passed' : 'failed';
+    let reason = result.exitCode === 0 ? '' : `exit ${result.exitCode ?? result.signal} (${result.files[1]})`;
+    if (verdict === 'passed' && item.name === 'ui') {
+      const passedLines = (result.stdout.match(/UI test passed|UI snapshots written/g) || []).length;
+      if (passedLines < 3) { verdict = 'failed'; reason = `${passedLines} of 3 UI tests reported passing`; }
+    }
+    if (verdict === 'passed' && item.name === 'package') {
+      const vsix = /DONE\s+Packaged:\s+(\S+\.vsix)/.exec(result.stdout);
+      if (!vsix || !fs.existsSync(vsix[1])) { verdict = 'failed'; reason = 'no packaged VSIX reported'; } else { reason = path.relative(ROOT, vsix[1]); }
+    }
+    if (verdict === 'passed' && item.name === 'unit') {
+      reason = `${(result.stdout.match(/passed|: ok/g) || []).length} suites reported passing`;
+    }
+    rows.push([item.name, 'yes', verdict, reason || result.files[0]]);
+  }
+  console.log('check | applies | result | reason');
+  rows.forEach(row => console.log(row.join(' | ')));
+  if (rows.some(row => row[2] === 'failed')) { process.exit(1); }
+}
+
+// -------------------------------------------------------------------------------------- report
+
+function report() {
+  const id = currentRun(false);
+  if (!id) { fail('no run yet: start with doctor'); }
+  const dir = path.join(EVIDENCE, id);
+  const records = fs.readdirSync(dir).filter(name => name.endsWith('.json')).sort()
+    .map(name => JSON.parse(fs.readFileSync(path.join(dir, name), 'utf8')));
+  console.log(`run ${id}`);
+  console.log('label | command | exit | sha | seconds | files');
+  for (const record of records) {
+    console.log([record.label, record.command, record.exitCode ?? record.signal, `${record.sha.slice(0, 7)}${record.dirty ? '+dirty' : ''}`, record.seconds,
+      `.verify/${id}/${record.label}.out .verify/${id}/${record.label}.err`].join(' | '));
+  }
+}
+
+// ---------------------------------------------------------------------------------------- main
+
+const [command, ...rest] = process.argv.slice(2);
+try {
+  switch (command) {
+    case 'doctor': doctor(); break;
+    case 'start':
+      // A VS Code extension: nothing to start here. Live checks run in VS Code, by a person (SKILL.md, "Driving it").
+      console.log('not applicable: the extension runs inside VS Code; nothing is started. Install the VSIX from "check package" in VS Code for a live check.');
+      break;
+    case 'stop': console.log('not applicable: start starts nothing.'); break;
+    case 'affected': affected(rest[0] || defaultBase()); break;
+    case 'check': {
+      const at = rest.indexOf('--affected');
+      const base = at >= 0 ? (rest[at + 1] && !rest[at + 1].startsWith('-') ? rest[at + 1] : defaultBase()) : undefined;
+      const names = rest.filter((item, index) => at < 0 || (index !== at && index !== at + 1));
+      check(names, base);
+      break;
+    }
+    case 'capture': {
+      const dash = rest.indexOf('--');
+      if (dash !== 1 || rest.length < 3) { fail('usage: capture <label> -- <command...>'); }
+      const result = capture(rest[0], rest.slice(2));
+      console.log(`${rest[0]}: exit ${result.exitCode ?? result.signal} -> ${result.files.join(' ')}`);
+      if (result.exitCode !== 0) { process.exit(1); }
+      break;
+    }
+    case 'report': report(); break;
+    default: fail('usage: doctor | start | stop | affected [<base>] | check [<name>...] [--affected <base>] | capture <label> -- <command...> | report');
+  }
+} catch (error) {
+  fail(error instanceof Error ? error.message : String(error));
+}
