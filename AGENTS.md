@@ -66,6 +66,7 @@ Use Problem → Design → Predict → Build → Validate → Learn.
 
 ## Validate and Report
 
+- Before reporting a change done, follow `.github/skills/verify-repository-manager/SKILL.md`.
 - Use tests appropriate to the change. For features and bug fixes, include failure cases and relevant integration behavior, not only happy paths.
 - Run the affected user flow when feasible. Unit tests alone do not establish that the integrated application works.
 - Do not claim commands, tests, or live runs succeeded without observing them. State what was checked, what failed, and what remains unverified.
