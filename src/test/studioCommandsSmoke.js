@@ -27,7 +27,8 @@ const fakeVscode = {
     showInformationMessage: async (message, ...rest) => { asked.push(['info', message]); return answers.info.shift(); },
     showErrorMessage: async message => { asked.push(['error', message]); },
     withProgress: async (_options, task) => task({ report() {} }, { isCancellationRequested: false }),
-    showTextDocument: async () => undefined
+    showTextDocument: async () => undefined,
+    registerCustomEditorProvider: (viewType) => { commands.set(`editor:${viewType}`, true); return { dispose() {} }; }
   },
   workspace: { openTextDocument: async () => ({}) },
   ProgressLocation: { Notification: 15 },
@@ -87,6 +88,14 @@ async function main() {
     await commands.get('repositoryManager.studio.runWorkflow')();
     assert.equal(fs.existsSync(note), false);
     assert.ok(asked.some(entry => entry[0] === 'info' && /^Write a note stopped: Not approved at "write"\./.test(entry[1])));
+    // The editor's Run gives the file: no pick, the same inputs, consent and gate.
+    fs.rmSync(path.join(workspace, 'notes'), { recursive: true, force: true });
+    asked.length = 0;
+    answers.input.push('from the editor');
+    answers.info.push('Run');
+    answers.warning.push('Approve');
+    await commands.get('repositoryManager.studio.runWorkflow')({ fsPath: path.join(workspace, '.repository-manager', 'workflows', 'note.workflow.json') });
+    assert.equal(fs.readFileSync(note, 'utf8'), 'from the editor');
     console.log('Studio commands smoke passed');
   } finally {
     fs.rmSync(base, { recursive: true, force: true });

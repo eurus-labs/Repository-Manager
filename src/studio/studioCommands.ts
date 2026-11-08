@@ -134,7 +134,18 @@ export function registerStudio(context: vscode.ExtensionContext, workspaceRoot: 
   };
 
   context.subscriptions.push(
-    vscode.commands.registerCommand('repositoryManager.studio.runWorkflow', async () => {
+    // From the editor's Run, the workflow's file is given; from the Command Palette it is picked.
+    vscode.commands.registerCommand('repositoryManager.studio.runWorkflow', async (given?: vscode.Uri) => {
+      if (given?.fsPath) {
+        const parsed = await load(given.fsPath);
+        if (!parsed) { return; }
+        const inputs = await askInputs(parsed.workflow);
+        if (!inputs || !await consent(parsed.workflow)) { return; }
+        try { await drive(parsed.workflow, await engine.start(parsed.workflow, parsed.hash, inputs)); } catch (error) {
+          void vscode.window.showErrorMessage(`Could not run the workflow: ${error instanceof Error ? error.message : String(error)}`);
+        }
+        return;
+      }
       const found = [
         ...await workflowFiles(path.join(workspaceRoot, REPOSITORY_FOLDER), 'This folder'),
         ...await workflowFiles(library, 'Library'),

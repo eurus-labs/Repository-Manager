@@ -17,6 +17,7 @@ import { CHANGE_DOCUMENT_SCHEME, ChangeDocumentProvider } from './changeDocument
 import { registerRequirements } from './requirements/requirementsView';
 import { registerAgent } from './agent/agentView';
 import { registerStudio } from './studio/studioCommands';
+import { WorkflowEditorProvider } from './studio/workflowEditorProvider';
 import * as path from 'path';
 import { setUsageLog, UsageLog, usageReport } from './services/usageLog';
 
@@ -60,6 +61,8 @@ export function activate(context: vscode.ExtensionContext) {
   }
   // A clarification file opens in the Requirement editor with or without a folder.
   step('Requirements', () => registerRequirements(context));
+  // A workflow file opens in the Workflow Editor with or without a folder; running it needs one.
+  step('Workflow editor', () => context.subscriptions.push(WorkflowEditorProvider.register(context)));
 
   const declared: string[] = (context.extension?.packageJSON?.contributes?.commands ?? []).map((c: { command: string }) => c.command);
   void Promise.resolve(vscode.commands.getCommands(true)).then(registered => {

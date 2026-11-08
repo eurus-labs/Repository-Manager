@@ -1,0 +1,88 @@
+/* The Studio's visual editor (resources/studioEditor.js), in VS Code's theme colours. */
+:root {
+  --fg: var(--vscode-foreground, #ccc);
+  --muted: var(--vscode-descriptionForeground, #999);
+  --bg: var(--vscode-editor-background, #1e1e1e);
+  --panel: var(--vscode-sideBar-background, #252526);
+  --border: var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
+  --accent: var(--vscode-focusBorder, #3794ff);
+  --node: var(--vscode-editorWidget-background, #2d2d30);
+  --error: var(--vscode-errorForeground, #f48771);
+  --warn: var(--vscode-editorWarning-foreground, #cca700);
+  --input-bg: var(--vscode-input-background, #3c3c3c);
+  --input-fg: var(--vscode-input-foreground, #ccc);
+  --button-bg: var(--vscode-button-secondaryBackground, #3a3d41);
+  --button-fg: var(--vscode-button-secondaryForeground, #fff);
+  --primary-bg: var(--vscode-button-background, #0e639c);
+  --primary-fg: var(--vscode-button-foreground, #fff);
+}
+* { box-sizing: border-box; }
+body { margin: 0; color: var(--fg); background: var(--bg); font: 13px var(--vscode-font-family, system-ui, sans-serif); height: 100vh; display: flex; flex-direction: column; }
+h1 { font-size: 15px; margin: 0; }
+h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); margin: 14px 0 8px; }
+h3 { font-size: 12px; margin: 0 0 6px; }
+code { font-family: var(--vscode-editor-font-family, monospace); font-size: 12px; }
+button { font: inherit; color: var(--button-fg); background: var(--button-bg); border: 1px solid transparent; border-radius: 4px; padding: 4px 10px; cursor: pointer; }
+button:disabled { opacity: 0.5; cursor: default; }
+button:focus-visible, input:focus, textarea:focus, select:focus, .node:focus { outline: 1px solid var(--accent); outline-offset: 1px; }
+button.primary { background: var(--primary-bg); color: var(--primary-fg); }
+button.link { background: none; color: var(--vscode-textLink-foreground, var(--accent)); padding: 0; }
+button.danger { margin-top: 16px; background: none; border-color: var(--error); color: var(--error); }
+input, textarea, select { width: 100%; font: inherit; color: var(--input-fg); background: var(--input-bg); border: 1px solid var(--vscode-input-border, transparent); border-radius: 3px; padding: 4px 6px; }
+textarea { font-family: var(--vscode-editor-font-family, monospace); font-size: 12px; resize: vertical; }
+
+.bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 16px; border-bottom: 1px solid var(--border); }
+.bar p { margin: 2px 0 0; color: var(--muted); font-size: 12px; }
+.actions { display: flex; gap: 6px; }
+#notice { padding: 8px 16px; color: var(--error); border-bottom: 1px solid var(--border); white-space: pre-wrap; }
+#notice[hidden] { display: none; }
+
+.layout { flex: 1; min-height: 0; display: grid; grid-template-columns: 210px minmax(0, 1fr) 320px; }
+.palette, .panel { overflow: auto; padding: 0 12px 16px; background: var(--panel); }
+.palette { border-right: 1px solid var(--border); }
+.panel { border-left: 1px solid var(--border); }
+.palette .step { display: flex; flex-direction: column; align-items: flex-start; width: 100%; margin-bottom: 6px; text-align: left; }
+.palette .step small { color: var(--muted); }
+#problems { list-style: none; margin: 0; padding: 0; }
+#problems li { margin-bottom: 6px; }
+.problem { background: none; color: var(--error); padding: 0; text-align: left; }
+.problem code { color: var(--muted); }
+.muted { color: var(--muted); }
+
+.canvas-wrap { overflow: auto; position: relative; }
+#canvas { display: block; min-width: 100%; }
+.node rect { fill: var(--node); stroke: var(--border); stroke-width: 1; }
+.node { cursor: grab; }
+.node.selected rect { stroke: var(--accent); stroke-width: 2; }
+.node.invalid rect { stroke: var(--error); }
+.node.effect rect { stroke-dasharray: 5 3; }
+.node.gate rect { fill: color-mix(in srgb, var(--warn) 12%, var(--node)); }
+.node text { fill: var(--fg); font-size: 12px; user-select: none; pointer-events: none; }
+.node .title { font-weight: 600; font-size: 13px; }
+.node .kind { fill: var(--muted); }
+.node .lock { fill: var(--warn); font-size: 11px; pointer-events: auto; }
+.node .model { fill: var(--accent); font-weight: 700; font-size: 11px; }
+.node .problem-mark { fill: var(--error); }
+.edge path { fill: none; stroke: var(--muted); stroke-width: 1.5; }
+.edge.near path { stroke: var(--accent); }
+.edge .when { fill: var(--warn); font-size: 11px; }
+
+.field { margin-bottom: 10px; }
+.field label { display: block; margin-bottom: 3px; color: var(--muted); }
+.field small { display: block; margin-top: 3px; color: var(--muted); }
+.required { color: var(--error); }
+.group { border-top: 1px solid var(--border); padding-top: 10px; margin-top: 12px; }
+.item { border: 1px solid var(--border); border-radius: 4px; padding: 8px; margin-bottom: 8px; }
+.item-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
+.item-head h2 { margin: 12px 0 0; text-transform: none; font-size: 14px; color: var(--fg); }
+.adder { display: flex; gap: 6px; }
+.adder button { white-space: nowrap; }
+.kind { color: var(--muted); margin: 2px 0 8px; }
+.locked { color: var(--warn); }
+.node-problems { color: var(--error); padding-left: 18px; }
+.effects { padding-left: 18px; margin: 0; }
+
+@media (max-width: 900px) {
+  .layout { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(240px, 1fr) auto; }
+  .palette, .panel { border: 0; border-top: 1px solid var(--border); }
+}
