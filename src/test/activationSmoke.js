@@ -32,6 +32,7 @@ let errors;
 let output;
 let folders;
 let failIn;
+let customEditors;
 const vscode = withStubs('vscode', {
   commands: withStubs('commands', {
     registerCommand(id, handler) {
@@ -53,7 +54,8 @@ const vscode = withStubs('vscode', {
     showWarningMessage: async () => undefined,
     showInformationMessage: async () => undefined,
     createTreeView(id) { if (failIn === 'requirements' && id.startsWith('repositoryManager.requirements')) { throw new Error('tree view broke'); } return stub('treeView'); },
-    registerWebviewViewProvider: () => ({ dispose() {} })
+    registerWebviewViewProvider: () => ({ dispose() {} }),
+    registerCustomEditorProvider(viewType) { customEditors.push(viewType); return { dispose() {} }; }
   })
 });
 const load = Module._load;
@@ -61,7 +63,7 @@ Module._load = function (request, ...rest) { return request === 'vscode' ? vscod
 const extension = require(path.join(root, 'out', 'extension.js'));
 
 async function activate(options) {
-  commands = new Map(); errors = []; output = [];
+  commands = new Map(); errors = []; output = []; customEditors = [];
   folders = options.folder ? [{ uri: { fsPath: root, toString: () => `file://${root}` }, name: 'repo', index: 0 }] : undefined;
   failIn = options.failIn;
   const state = new Map([['repositoryManager.welcomeShown', true]]);
@@ -91,6 +93,8 @@ const missing = () => declared.filter(id => !commands.has(id));
   await commands.get('repositoryManager.openPanel')();
   assert.deepEqual(errors, [extension.NO_FOLDER_MESSAGE], 'Open Panel without a folder shows an error');
   assert.ok(output.includes('No workspace folder open'));
+  // Its editors open files with or without a folder: a clarification file, a workflow file.
+  assert.deepEqual(customEditors.sort(), ['repositoryManager.requirementEditor', 'repositoryManager.workflowEditor']);
 
   await activate({ folder: true, failIn: 'requirements' });
   assert.ok(commands.has('repositoryManager.openPanel'), 'a Requirements failure keeps the Git commands');

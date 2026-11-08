@@ -54,7 +54,6 @@ const context = () => ({
 async function main() {
   try {
     registerStudio(context(), workspace);
-    assert.ok(commands.has('editor:repositoryManager.workflowEditor'), 'the workflow editor is not registered');
     const note = path.join(workspace, 'notes', 'note.txt');
 
     // Run Workflow…: pick, input, consent; at the gate the dialog is closed, so the run waits.

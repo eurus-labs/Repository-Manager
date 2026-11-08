@@ -33,6 +33,8 @@ const fakeVscode = {
     onDidChangeTextDocument: listener => { changeListeners.push(listener); return { dispose() {} }; },
     // The editor replaces the whole text; that is all this fake needs to apply.
     applyEdit: async edit => {
+      // A slow apply, as VS Code's can be: a second edit sent meanwhile must not start from the old text.
+      if (fakeVscode.slowEdits) { await new Promise(resolve => setTimeout(resolve, 150)); }
       for (const change of edit.edits) {
         assert.equal(change.range.start.line, 0);
         assert.ok(change.range.end.line >= documentInEditor.lineCount - 1, 'the edit does not cover the document');
@@ -147,6 +149,16 @@ async function main() {
     await commit(page, '#f-edge-2-when', '${match.output.counts.changed} > 0');
     await until(() => doc().edges[2].when === '${match.output.counts.changed} > 0', 'the condition');
     await page.waitForFunction(() => [...document.querySelectorAll('#edges .edge title')].some(tip => tip.textContent.endsWith('> 0')));
+
+    // Two edits sent quickly while the first is still being applied: both land.
+    fakeVscode.slowEdits = true;
+    await page.evaluate(() => {
+      window.__postToHost({ type: 'edit', operation: { op: 'setWorkflow', field: 'title', value: 'First' } });
+      window.__postToHost({ type: 'edit', operation: { op: 'setWorkflow', field: 'version', value: '1.1.0' } });
+    });
+    await until(() => doc().version === '1.1.0', 'the second edit');
+    assert.deepEqual([doc().title, doc().version], ['First', '1.1.0'], 'an edit was lost');
+    fakeVscode.slowEdits = false;
 
     // A change made in the JSON editor shows on the page too.
     const changed = doc();

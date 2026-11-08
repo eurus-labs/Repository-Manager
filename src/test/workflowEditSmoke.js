@@ -28,6 +28,11 @@ assert.equal(settingText('plain'), 'plain');
 assert.equal(settingText('12'), '"12"', 'text that reads as a number is shown quoted, so it stays text');
 assert.equal(settingValue(settingText('12')), '12');
 assert.equal(settingText({ a: 1 }), '{\n  "a": 1\n}');
+// Text that starts like JSON but is not ("[note] hello", "{name}") is shown quoted, and stays text.
+for (const text of ['[note] hello', '{name}']) {
+  assert.equal(settingText(text), JSON.stringify(text));
+  assert.equal(settingValue(settingText(text)), text);
+}
 
 // The file as written: stable key order and a final newline; the sample round-trips unchanged.
 const text = serializeWorkflow(sample);
@@ -114,6 +119,16 @@ assert.ok(broken.problems.some(problem => problem.nodes.includes('compare')));
 assert.equal(broken.effects, undefined);
 assert.match(editorState('{ nope', steps).error, /^The file is not valid JSON/);
 assert.match(editorState('[]', steps).error, /not a workflow/);
+// Such a setting does not stop the editor from loading.
+const odd = JSON.parse(serializeWorkflow(sample));
+odd.nodes.find(node => node.id === 'write').with.title = '[note] {draft}';
+assert.equal(editorState(JSON.stringify(odd), steps).settings.write.title, '"[note] {draft}"');
+// A graph the diagram cannot draw is said, with its problems, not drawn.
+for (const bad of [{ nodes: [null] }, { nodes: [{ id: 'a', type: 'gate' }], edges: [null] }, { nodes: [{ id: 'a', type: 'gate' }], layout: [] }]) {
+  const state = editorState(JSON.stringify({ ...sample, ...bad }), steps);
+  assert.equal(state.editable, false);
+  assert.match(state.error, /^The diagram cannot be drawn:\n• /);
+}
 assert.deepEqual(problemNodes(sample, 'edges[2].when'), ['compare', 'analyze']);
 
 console.log('Workflow edit smoke passed');

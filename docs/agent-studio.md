@@ -370,7 +370,9 @@ the page keeps no copy of its own.
    again.
 
 So Undo, Redo, Save, dirty state and hot exit are VS Code's own. The written file has a stable
-key order and two-space indentation.
+key order and two-space indentation. Edits apply one after another, each to the text the one
+before left, so two quick edits never undo each other. The editor is registered with or without a
+folder; running a workflow needs one.
 
 **Edits:**
 
@@ -378,7 +380,8 @@ key order and two-space indentation.
 - add a step (a free id, its required settings empty, a place), remove one (its edges and place go
   too), rename one;
 - step title, prompt and `forEach`;
-- settings: JSON when the text reads as JSON, text otherwise; quote a value to keep it text;
+- settings: JSON when the text reads as JSON, text otherwise; quote a value to keep it text
+  (text that only starts like JSON, such as `[note] hello`, is shown quoted);
 - move a step (only the drop is written), add and remove edges, edge conditions;
 - inputs, prompts and types;
 - **Arrange** lays the steps out again in columns by depth.
@@ -404,7 +407,8 @@ leaves the file alone.
 - **Keyboard:** steps are reachable with Tab; Enter selects and Delete removes.
 - **Open as JSON** opens the text editor. **Run** saves, then runs the file through Run Workflow….
 
-A file that is not JSON, or not a workflow, is said, with only Open as JSON offered.
+A file that is not JSON, not a workflow, or with nodes, edges or a layout the diagram cannot draw,
+is said, with its problems and only Open as JSON offered.
 
 **Tests:**
 

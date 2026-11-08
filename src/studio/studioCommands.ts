@@ -12,7 +12,6 @@ import { readSelectedModel } from '../modelPreferences';
 import { RunState, RunStore, WorkflowEngine, workflowEffects } from './engine';
 import { StepDefinition, stepRegistry, StudioModel } from './steps';
 import { parseWorkflow, Workflow, workflowHash } from './workflow';
-import { WorkflowEditorProvider } from './workflowEditorProvider';
 
 const REPOSITORY_FOLDER = path.join('.repository-manager', 'workflows');
 const SUFFIX = '.workflow.json';
@@ -135,7 +134,6 @@ export function registerStudio(context: vscode.ExtensionContext, workspaceRoot: 
   };
 
   context.subscriptions.push(
-    WorkflowEditorProvider.register(context),
     // From the editor's Run, the workflow's file is given; from the Command Palette it is picked.
     vscode.commands.registerCommand('repositoryManager.studio.runWorkflow', async (given?: vscode.Uri) => {
       if (given?.fsPath) {

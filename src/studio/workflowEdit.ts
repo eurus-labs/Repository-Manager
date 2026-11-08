@@ -59,7 +59,13 @@ export function settingValue(text: string): unknown {
 
 /** How a setting is shown in a form field (the reverse of settingValue). */
 export function settingText(value: unknown): string {
-  return typeof value === 'string' && settingValue(value) === value ? value : JSON.stringify(value, null, 2);
+  if (typeof value === 'string') {
+    // Text that would read as JSON, or fail to ("[note] hello"), is shown quoted so it stays text.
+    let readsAs: unknown;
+    try { readsAs = settingValue(value); } catch { readsAs = undefined; }
+    if (readsAs === value) { return value; }
+  }
+  return JSON.stringify(value, null, 2);
 }
 
 /** Each node's position: the saved one, or a column by depth along the edges and a row in it. */

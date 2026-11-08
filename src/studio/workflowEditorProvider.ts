@@ -30,7 +30,17 @@ export function editorState(text: string, steps: Map<string, StepDefinition>): R
     return { type: 'load', editable: false, error: 'This JSON is not a workflow: it has no "nodes" list. Open it as JSON to fix it.', catalog };
   }
   const workflow = value as Workflow;
-  const problems = validateWorkflow(workflow, steps).map(problem => ({ ...problem, nodes: problemNodes(workflow, problem.where) }));
+  const validated = validateWorkflow(workflow, steps);
+  // Entries the diagram cannot draw (a node without an id, an edge without ends): said, not drawn.
+  const record = (item: unknown): item is Record<string, unknown> => Boolean(item) && typeof item === 'object' && !Array.isArray(item);
+  const unreadable = !workflow.nodes.every(node => record(node) && typeof node.id === 'string' && typeof node.type === 'string')
+    || (workflow.edges !== undefined && !(Array.isArray(workflow.edges) && workflow.edges.every(edge => record(edge) && typeof edge.from === 'string' && typeof edge.to === 'string')))
+    || (workflow.layout !== undefined && !record(workflow.layout));
+  if (unreadable) {
+    return { type: 'load', editable: false, catalog,
+      error: `The diagram cannot be drawn:\n${validated.slice(0, 6).map(problem => `• ${problem.where}: ${problem.message}`).join('\n') || '• a node, an edge or the layout is not in the expected shape.'}\nOpen it as JSON to fix it.` };
+  }
+  const problems = validated.map(problem => ({ ...problem, nodes: problemNodes(workflow, problem.where) }));
   // Settings as the form shows them: text as is, anything else as JSON.
   const settings = Object.fromEntries(workflow.nodes.filter(node => node && typeof node.id === 'string')
     .map(node => [node.id, Object.fromEntries(Object.entries(node.with ?? {}).map(([key, setting]) => [key, settingText(setting)]))]));
@@ -59,12 +69,15 @@ export class WorkflowEditorProvider implements vscode.CustomTextEditorProvider {
       panel.webview.asWebviewUri(vscode.Uri.joinPath(resources, 'studioEditor.css')).toString(),
       panel.webview.cspSource);
     const send = () => { void panel.webview.postMessage(editorState(document.getText(), this.steps)); };
+    // Edits apply one after another, each to the text the one before left: two quick edits must
+    // not both start from the same text and undo each other.
+    let queue: Promise<void> = Promise.resolve();
     const changes = vscode.workspace.onDidChangeTextDocument(event => { if (event.document.uri.toString() === document.uri.toString()) { send(); } });
     panel.onDidDispose(() => changes.dispose());
     panel.webview.onDidReceiveMessage(async (message: { type?: string; operation?: EditOperation }) => {
       switch (message.type) {
         case 'ready': send(); return;
-        case 'edit': await this.edit(document, panel, message.operation); return;
+        case 'edit': queue = queue.then(() => this.edit(document, panel, message.operation)); await queue; return;
         case 'openAsJson': await vscode.commands.executeCommand('vscode.openWith', document.uri, 'default'); return;
         case 'run':
           if (document.isDirty) { await document.save(); }
