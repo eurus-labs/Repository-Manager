@@ -215,7 +215,9 @@ function commitsCheck(base) {
     const [author, committer] = identity.split(' | ');
     if (!/<\d+\+[\w-]+@users\.noreply\.github\.com>$/.test(author) || author !== committer) { problems.push(`not one no-reply identity on both sides: ${identity}`); }
   }
-  if (/co-authored-by:|generated (with|by)|claude-session:|https:\/\/claude\.ai\/code/i.test(bodies)) { problems.push('a commit message carries an AI trailer, footer or session link'); }
+  // Trailers and footers tools add, not prose that mentions generating something.
+  const attribution = /^co-authored-by:|^claude-session:|^generated (with|by) \[|claude\.ai\/code|chatgpt\.com\/codex/im;
+  if (attribution.test(bodies)) { problems.push('a commit message carries an AI trailer, footer or session link'); }
   return problems.length ? { result: 'failed', reason: problems.join('; ') } : { result: 'passed', reason: `${lines.length} commit${lines.length === 1 ? '' : 's'}, ${identities[0]}` };
 }
 
