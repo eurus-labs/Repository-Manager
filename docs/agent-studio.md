@@ -206,6 +206,141 @@ How it works:
   Studio shares with other Copilot features. Nothing is sent without the
   consent.
 
+## Phase 2b design: Studio Chat
+
+Status: **proposed**, from the user's decisions of 2026-11-09. It changes the
+AI-assisted authoring above in one way: drafting happens in a chat, and a
+drafted plan is a workflow that can be run at once, not only a file to edit.
+
+### Decisions *(decided 2026-11-09)*
+
+- **One chat, Copilot-like**, is the way in. A person types a goal; the AI
+  answers with a plan. The plan *is* a workflow: each step is a node. The
+  person changes it by chatting ("split step 2", "add a review before the
+  write") or in the diagram, then runs it. This replaces the Agent view's
+  form (goal and criteria in two input boxes); the Activity Bar's Agent icon
+  becomes **Studio** and opens the chat. Parts of phase 4 move here: see the
+  rounds below.
+- **Only the goal is asked for.** No criteria input. The AI proposes the
+  acceptance criteria with the plan; they are shown on the plan card and the
+  person edits or removes them before Run. From Run on they are frozen in the
+  run state, as the agent's criteria are today.
+- **A model is chosen when the plan is drafted**, in the chat's input bar
+  (the models `vscode.lm` offers). **Each step may choose its own model**; a
+  step without one uses the plan's.
+- **Skills are optional per step**, and come from GitHub repositories such as
+  `eurus-labs/skills`, fetched by the extension with the person's VS Code
+  GitHub sign-in.
+
+### The chat
+
+- A webview view in the Studio container: messages, and an input bar with
+  the model picker and a skill picker (`/` lists skills).
+- An AI reply that drafts or changes a plan carries a **plan card**: the
+  goal, the proposed criteria (editable), and the steps. Each step shows its
+  type, what it does, its effect badge (writes, runs, sends), a model
+  dropdown and its skills as removable chips. Buttons: **Run**, **Open in
+  diagram**, **Save as workflow**.
+- A change to an existing plan is shown as a diff on the card (added,
+  removed, changed steps) and applied only when the person accepts it, as
+  "Shown as a change, never applied directly" above requires.
+- A run's progress, its gates and its result appear in the same thread, so a
+  conversation reads goal → plan → run → result. Gates keep their modal
+  approval: the chat shows them, it does not replace them.
+- Conversations are kept on this machine (workspace storage), like agent
+  tasks. A plan is written to a file only on **Save as workflow**
+  (`.repository-manager/workflows/<id>.workflow.json`) or when the person
+  opens it in the diagram.
+
+### Workflow format additions
+
+All optional, so every 2.19.0 workflow stays valid:
+
+```json
+{
+  "criteria": ["Each changed requirement has an open point or a reason why not"],
+  "defaults": { "model": "copilot:gpt-5" },
+  "nodes": [
+    { "id": "analyze", "type": "prompt", "prompt": "analyze",
+      "model": "copilot:claude-sonnet-4.5",
+      "skills": ["github:eurus-labs/skills/plugins/testing/skills/write-tests@3f2a9c1"] }
+  ]
+}
+```
+
+- **`model`** is `<vendor>:<family>`, matched with
+  `vscode.lm.selectChatModels`. A model this machine does not have is not an
+  error in the file (the file is shared); at Run it is listed, and the
+  person picks a replacement once for the run. The run log records the model
+  that actually answered, as it does today.
+- **`skills`** are references pinned to a commit. A shared workflow then
+  runs with the same skill text everywhere, and a skill that changes upstream
+  changes a workflow only when someone updates the pin (the skill picker
+  offers it).
+- **`criteria`** is the plan's frozen list. Steps that verify (code steps,
+  the review step) receive it; the final summary lists each criterion with
+  the evidence the run has for it, or "not shown".
+
+### Skills from GitHub
+
+- **Sources:** a setting, `repositoryManager.studio.skillSources`, lists
+  repositories (`eurus-labs/skills` by default). The extension asks VS Code
+  for a GitHub session (`repo` scope, so private repositories work), lists
+  the `SKILL.md` files of the default branch through the GitHub API, and
+  reads their front matter (`name`, `description`) for the picker.
+- **Cache:** a skill is downloaded at its pinned commit into global storage
+  (`skills/<owner>/<repo>/<sha>/…`), with its folder's `references/`. A
+  cached commit is never fetched again; nothing is fetched without a
+  session, and the picker says why.
+- **Use:** a step that has skills gets each `SKILL.md` body as instructions,
+  before its own, and may read the skill's references (code steps through
+  their read tool; prompt steps get the files the skill names, within the
+  input limit).
+- **Limits, said plainly in the picker:**
+  - scripts in a skill (`scripts/`, often Python) are **not run**; a skill
+    that depends on them is marked "uses scripts: not run here";
+  - a skill is instructions the model follows, so adding one is trusting its
+    repository. The first use of a source asks once, per source, showing its
+    URL; skills never lift the engine's gates.
+
+### Rounds
+
+Each round ends usable on its own and has its own PR.
+
+1. **2b-1, Chat and plans.** The chat view, model picker, plan card with
+   criteria and per-step model, follow-up changes as a diff, Run in the
+   thread, Save as workflow. Plans use the existing steps (prompt, docs,
+   compare, file.write, gate). The format gains `criteria`, `defaults.model`
+   and `model`.
+2. **2b-2, Skills.** GitHub sources, the picker, pinned references, the
+   cache, per-source consent, and skills in prompt steps.
+3. **2b-3, Code steps and the Agent view.** The agent's step runner becomes a
+   `code` step (tools, branch, the repository's checks, Accept / Retry); the
+   Agent icon becomes Studio; existing agent tasks stay readable but new
+   tasks start in the chat. This is the part of phase 4 the merge pulls in;
+   the review step stays in phase 4.
+
+### Risks and how each is handled
+
+- **The AI uses a step type or a `${…}` reference that does not exist.** The
+  draft goes through `validateWorkflow`; errors go back once (repair turn);
+  a draft still invalid is shown with its problems and cannot run.
+- **A follow-up silently drops steps.** Changes are applied only as a shown
+  diff, and the test drives a reply that removes a node.
+- **Approving a drafted plan without reading it.** Steps that write, run or
+  send keep their engine gates with the exact content; the plan card shows
+  each step's effect badge.
+- **A shared workflow names a model or skill this machine lacks.** Listed at
+  Run with one choice per item, never a silent substitute.
+- **A skill changes behaviour after the fact.** Skills are pinned by commit.
+- **Prompt injection through a skill or a fetched reference.** Skills are
+  trusted only per source after consent; repository text stays data (the
+  agent's rule) and gates still apply.
+- **GitHub API limits or no sign-in.** The cache serves pinned skills
+  offline; the picker shows the error instead of an empty list.
+- **Scope.** Three rounds, each released; the usage log records chat plans
+  run and steps accepted, so round 3 starts only if 2b-1 is used.
+
 ## Safety
 
 The engine places gates by each step's declared effect. A workflow cannot
@@ -427,12 +562,12 @@ Each phase ends with something usable on its own.
 1. **Engine and workflow JSON** (format, validation, runs, gates), with prompt
    and Docs steps. It runs from a command, and its tests run in Node without
    `vscode`. The first workflow is the sample's "Analyze".
-2. **Visual editor**: canvas, side panel, JSON round-trip, problems, and
-   **AI-assisted authoring** of workflows and prompt steps.
+2. **Visual editor**: canvas, side panel, JSON round-trip, problems (2a), and
+   **AI-assisted authoring** as the Studio Chat (2b, see its design).
 3. **Sharing**: export and import with the approval list, and the Studio view
    listing workflows and runs.
-4. **Review and Code steps.** The agent harness becomes steps, Review joins
-   it, and the old Agent view is replaced.
+4. **Review step** and the review history as a Studio view. (Code steps and
+   replacing the Agent view moved to 2b-3.)
 5. **MCP steps**, starting with the sample's Jira workflow.
 6. **Container packaging.**
 
