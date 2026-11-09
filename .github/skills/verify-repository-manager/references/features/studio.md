@@ -29,13 +29,14 @@ with an effect, and edited as a diagram in the Workflow Editor.
 - Comparing requirements refuses a catalog with unread documents. [confirmed: test src/test/studioEngineSmoke.js]
 - The editor's edits go through the text document (undo, save) and two quick edits never undo each other. [confirmed: test src/test/studioEditorUi.js]
 - Run from the editor saves first and does not run when the save fails. [confirmed: test src/test/studioEditorUi.js]
+- Cancel ends a run for good; only a waiting run continues. To pause, stop at a gate. [confirmed: user, 2026-11-09]
+- CI runs `studioEditorUi.js` with the other UI tests. [confirmed: user, 2026-11-09]
 
 ## Suspected bugs
 - None found.
 
 ## Open questions
-- A run stopped by Cancel cannot continue (`src/studio/engine.ts`, `continue` returns for any status but running): should a cancelled run be resumable like a waiting one?
-- `.github/workflows/build-vsix.yml` runs `uiSnapshots.js` and `requirementEditorUi.js` but not `studioEditorUi.js`, which `npm run test:ui` runs: should CI run it?
+- None.
 
 ## Gotchas
 - `docs.requirements` reads a folder chosen as an input anywhere on disk, but a path written in the file must stay in the workspace.

@@ -27,7 +27,7 @@ The CLI is `scripts/verify` (Node, standard library). It runs the repository's o
 | lint | lint | `npm run lint` | `src/**/*.ts`, `.eslintrc.json`, `package.json` changed | yes (CI: `npm test` lints) | exit 0, no ESLint error |
 | static-analysis | static analysis | — (CodeQL runs only in GitHub; strict TypeScript is the compile check) | always | no | read the pull request's CodeQL and Analyze results; locally `not run` |
 | unit | tests | `npm test` | always | yes (CI gate) | exit 0: every suite in package.json `test` passed |
-| ui | tests | `npm run test:ui` (needs Chromium) | `resources/**`, `src/webview/**`, `src/handlers/**`, the panel, launcher, requirements, studio and review host files, the UI tests, `package.json` | yes (CI gate for two of the three; see the feature map's open questions) | exit 0 and all three UI tests print "passed" |
+| ui | tests | `npm run test:ui` (needs Chromium) | `resources/**`, `src/webview/**`, `src/handlers/**`, the panel, launcher, requirements, studio and review host files, the UI tests, `package.json` | yes (CI gate) | exit 0 and all three UI tests print "passed" |
 | package | build | `npm run package` | `package.json`, `package-lock.json`, `.vscodeignore`, `resources/**`, `src/**`, `CHANGELOG.md`, `README.md` | yes (CI gate) | exit 0 and `DONE  Packaged: <file>.vsix` with the file present |
 | commits | conventions | (built into `check`) | commits since the base | yes (AGENTS.md) | one identity, a GitHub no-reply address for author and committer, no AI trailer, footer or session link |
 
