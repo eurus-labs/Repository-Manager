@@ -31,7 +31,7 @@ const CHECKS = [
   { name: 'ui', kind: 'tests', command: ['npm', 'run', 'test:ui'], applies: ['resources/**', 'src/webview/**', 'src/handlers/**', 'src/repositoryManagerPanel.ts',
     'src/repositoryManagerLauncher.ts', 'src/requirements/**', 'src/studio/**', 'src/review*.ts', 'src/test/uiSnapshots.js', 'src/test/requirementEditorUi.js',
     'src/test/studioEditorUi.js', 'src/test/fixtures/**', 'package.json'], required: true, needs: 'chromium',
-    passes: 'exit 0; all three UI tests print "passed"; screenshots in ui-snapshots/' },
+    passes: 'exit 0; every UI test in package.json test:ui prints "passed"; screenshots in ui-snapshots/' },
   { name: 'package', kind: 'build', command: ['npm', 'run', '-s', 'package'], applies: ['package.json', 'package-lock.json', '.vscodeignore', 'resources/**', 'src/**', 'CHANGELOG.md', 'README.md'],
     required: true, passes: 'exit 0 and "DONE  Packaged: <file>.vsix" with that file present' },
   { name: 'commits', kind: 'conventions', command: null, applies: 'always', required: true,
@@ -247,8 +247,11 @@ function check(names, base) {
     let verdict = result.exitCode === 0 ? 'passed' : 'failed';
     let reason = result.exitCode === 0 ? '' : `exit ${result.exitCode ?? result.signal} (${result.files[1]})`;
     if (verdict === 'passed' && item.name === 'ui') {
+      // As many as package.json's test:ui runs, so a new UI test is counted without editing this.
+      const uiScript = String((JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8')).scripts || {})['test:ui'] || '');
+      const expected = (uiScript.match(/src\/test\/[\w.-]+\.js/g) || []).length;
       const passedLines = (result.stdout.match(/UI test passed|UI snapshots written/g) || []).length;
-      if (passedLines < 3) { verdict = 'failed'; reason = `${passedLines} of 3 UI tests reported passing`; }
+      if (passedLines < expected) { verdict = 'failed'; reason = `${passedLines} of ${expected} UI tests reported passing`; }
     }
     if (verdict === 'passed' && item.name === 'package') {
       const vsix = /DONE\s+Packaged:\s+(\S+\.vsix)/.exec(result.stdout);
