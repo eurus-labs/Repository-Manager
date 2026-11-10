@@ -12,7 +12,7 @@ paths it owns, so `verify affected` can map a change to the areas it touches.
 - [review](review.md) — owns: `src/review*.ts`, `src/services/review*.ts`, `src/services/securityReview*.ts`, `src/services/aiDirectedText.ts`, `src/services/modelJson.ts`, `src/commands/reviewCommands.ts`, `src/copilotSettings.ts`, `src/modelPreferences.ts`, `resources/review.js`, `resources/review-skills/**` — the security and compliance review: snapshot, skills, findings, triage, Fix with Copilot, history.
 - [requirements](requirements.md) — owns: `src/requirements/**`, `resources/requirements.js`, `resources/requirements.css`, `resources/requirements/**`, `resources/requirements-icon.svg` — the Requirements view and the Requirement Editor for clarification (DoU) files.
 - [agent](agent.md) — owns: `src/agent/**`, `resources/agent.css`, `resources/agent-icon.svg` — the Agent: tasks, plans, steps run after approval, checks.
-- [studio](studio.md) — owns: `src/studio/**`, `resources/studioEditor.js`, `resources/studioEditor.css`, `resources/studio/**` — Agent Studio: workflow files, the engine and its gates, Run Workflow…, the Workflow Editor.
+- [studio](studio.md) — owns: `src/studio/**`, `resources/studioEditor.js`, `resources/studioEditor.css`, `resources/studioChat.js`, `resources/studioChat.css`, `resources/studio/**` — Agent Studio: workflow files, the engine and its gates, Run Workflow…, the Workflow Editor, the Studio Chat.
 - [usage](usage.md) — owns: `src/services/usageLog.ts` — the usage log and Show Usage Report.
 
 Docs (`docs/**`, `README.md`, `CHANGELOG.md`, `AGENTS.md`) and tests (`src/test/**`) belong to no

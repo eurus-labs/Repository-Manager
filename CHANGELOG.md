@@ -5,6 +5,17 @@ All notable changes to Repository Manager will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Studio Chat**: a chat in the Activity Bar's **Studio** (formerly **Agent**). Type what you want done; Copilot answers with a plan: the steps, and what "done" means, which you can edit. Choose the model that drafts in the chat, and a model for each step on the plan. Ask for changes in the chat: each is shown as a change to accept or discard. **Run** runs the plan, asking before every step that writes, and the result lists what to check it against. **Save as workflow** and **Open in diagram** keep the plan as a workflow file.
+- Workflow files may name a model for the workflow and for each prompt step, and list their criteria. A model this VS Code does not have is replaced for the run after asking.
+
+### Changed
+
+- The **Agent** icon in the Activity Bar is now **Studio**; agent tasks are in its **Tasks** view, below the chat.
+
 ## [2.19.0] - 2026-11-08
 
 ### Added

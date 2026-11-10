@@ -38,6 +38,8 @@ export interface WorkflowNode {
   with?: Record<string, unknown>;
   /** A reference to a list: the node runs once per item, with `${item}` and `${index}`. */
   forEach?: string;
+  /** For steps that use a model: `<vendor>:<family>`, instead of the workflow's default. */
+  model?: string;
 }
 
 export interface WorkflowEdge {
@@ -60,6 +62,9 @@ export interface Workflow {
   edges?: WorkflowEdge[];
   /** Diagram positions only; running ignores them. */
   layout?: Record<string, [number, number]>;
+  /** What "done" means, proposed with a plan and frozen when a run starts. */
+  criteria?: string[];
+  defaults?: { model?: string };
 }
 
 /** What validation needs to know of each step type. */
@@ -69,11 +74,17 @@ export interface StepShape {
   optional?: string[];
   /** Settings that name a path and must stay inside the workspace when written in the file. */
   localPaths?: string[];
+  /** Sends to a model: only such a step may name its own `model`. */
+  usesModel?: boolean;
 }
 
 export interface Problem { where: string; message: string }
 
 const NODE_ID = /^[a-z][a-z0-9-]*$/;
+/** `<vendor>:<family>`, as vscode.lm names a model: matched on the machine that runs it. */
+export const MODEL_SELECTOR = /^[A-Za-z0-9_.-]{1,60}:[A-Za-z0-9_.-]{1,100}$/;
+export const MAX_CRITERIA = 20;
+const MAX_CRITERION_CHARS = 500;
 const RESERVED = new Set(['inputs', 'item', 'index']);
 const record = (value: unknown): value is Record<string, unknown> => Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 
@@ -145,6 +156,20 @@ export function validateWorkflow(value: unknown, steps: Map<string, StepShape>):
   for (const [name, input] of Object.entries(inputs)) {
     if (!record(input) || !['string', 'folder', 'repository'].includes(input.type as string)) {
       add(`inputs.${name}`, 'Each input has a type: string, folder or repository.');
+    }
+  }
+  if (value.criteria !== undefined) {
+    if (!Array.isArray(value.criteria) || value.criteria.some(item => typeof item !== 'string' || !item.trim() || item.length > MAX_CRITERION_CHARS)) {
+      add('criteria', `"criteria" is a list of text, each at most ${MAX_CRITERION_CHARS} characters.`);
+    } else if (value.criteria.length > MAX_CRITERIA) { add('criteria', `At most ${MAX_CRITERIA} criteria.`); }
+  }
+  if (value.defaults !== undefined) {
+    if (!record(value.defaults)) { add('defaults', '"defaults" is an object.'); }
+    else {
+      for (const key of Object.keys(value.defaults)) { if (key !== 'model') { add(`defaults.${key}`, `"defaults" has no setting "${key}".`); } }
+      if (value.defaults.model !== undefined && !(typeof value.defaults.model === 'string' && MODEL_SELECTOR.test(value.defaults.model))) {
+        add('defaults.model', 'Name a model as "<vendor>:<family>", such as "copilot:gpt-4o".');
+      }
     }
   }
   const types = record(value.types) ? value.types : {};
@@ -220,6 +245,10 @@ export function validateWorkflow(value: unknown, steps: Map<string, StepShape>):
       if (literal !== undefined && !literal.includes('${') && !isLocalPath(literal)) {
         add(`${where}.with.${key}`, `"${literal}" must be a path inside the workspace (relative, no "..").`);
       }
+    }
+    if (node.model !== undefined) {
+      if (!(typeof node.model === 'string' && MODEL_SELECTOR.test(node.model))) { add(`${where}.model`, 'Name a model as "<vendor>:<family>", such as "copilot:gpt-4o".'); }
+      else if (!shape.usesModel) { add(`${where}.model`, `"${node.type}" does not use a model.`); }
     }
     if (node.type === 'prompt' && !(typeof node.prompt === 'string' && node.prompt in prompts)) {
       add(`${where}.prompt`, `"${String(node.prompt)}" is not one of the workflow's prompts.`);

@@ -35,6 +35,10 @@ export interface RunState {
   waiting?: Waiting;
   /** A person's answer at each gate, by node id. */
   approvals: Record<string, 'approved' | 'rejected'>;
+  /** The workflow's criteria as they were when the run started. */
+  criteria?: string[];
+  /** Models the workflow names that this machine lacks, and the one the person chose instead. */
+  models?: Record<string, string>;
   error?: string;
 }
 
@@ -101,6 +105,11 @@ export interface EngineOptions {
 /** What a run sends or changes, for the consent asked before it starts. */
 export interface WorkflowEffects { promptNodes: string[]; effects: Array<{ node: string; type: string; effect: string }>; gates: string[] }
 
+/** Every model selector the workflow names (its default and its nodes'), each once. */
+export function workflowModels(workflow: Workflow): string[] {
+  return [...new Set([workflow.defaults?.model, ...workflow.nodes.map(node => node.model)].filter((model): model is string => Boolean(model)))];
+}
+
 export function workflowEffects(workflow: Workflow, steps: Map<string, StepDefinition>): WorkflowEffects {
   const promptNodes: string[] = [];
   const effects: WorkflowEffects['effects'] = [];
@@ -119,7 +128,7 @@ export class WorkflowEngine {
   constructor(private readonly options: EngineOptions) {}
 
   /** A new run, saved before anything runs. Inputs left out take their defaults. */
-  async start(workflow: Workflow, hash: string, inputs: Record<string, unknown>): Promise<RunState> {
+  async start(workflow: Workflow, hash: string, inputs: Record<string, unknown>, models: Record<string, string> = {}): Promise<RunState> {
     const now = new Date().toISOString();
     const given: Record<string, unknown> = {};
     for (const [name, spec] of Object.entries(workflow.inputs ?? {})) {
@@ -132,11 +141,13 @@ export class WorkflowEngine {
       workflow: { id: workflow.id, version: workflow.version, title: workflow.title, hash },
       startedAt: now, updatedAt: now, status: 'running', inputs: given,
       nodes: Object.fromEntries(workflow.nodes.map(node => [node.id, { status: 'pending' as NodeStatus }])),
-      approvals: {}
+      approvals: {},
+      ...(workflow.criteria?.length ? { criteria: [...workflow.criteria] } : {}),
+      ...(Object.keys(models).length ? { models: { ...models } } : {})
     };
     await this.options.store.saveWorkflow(state.id, workflow);
     await this.options.store.save(state);
-    await this.options.store.log(state.id, { type: 'start', workflow: state.workflow, inputs: Object.keys(given) });
+    await this.options.store.log(state.id, { type: 'start', workflow: state.workflow, inputs: Object.keys(given), ...(state.models ? { models: state.models } : {}) });
     return state;
   }
 
@@ -246,8 +257,10 @@ export class WorkflowEngine {
   }
 
   private context(workflow: Workflow, node: WorkflowNode, state: RunState, signal: CancelSignal): StepContext {
+    const named = node.model ?? workflow.defaults?.model;
     return {
       root: this.options.root, model: this.options.model, signal, workflow, node,
+      modelSelector: named ? state.models?.[named] ?? named : undefined,
       log: event => { void this.options.store.log(state.id, event); }
     };
   }

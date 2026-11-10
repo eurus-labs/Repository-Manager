@@ -208,7 +208,8 @@ How it works:
 
 ## Phase 2b design: Studio Chat
 
-Status: **proposed**, from the user's decisions of 2026-11-09. It changes the
+Status: **2b-1 built (2.20.0)**, 2b-2 and 2b-3 proposed; from the user's
+decisions of 2026-11-09 (see "Phase 2b-1 as built" for what the code does). It changes the
 AI-assisted authoring above in one way: drafting happens in a chat, and a
 drafted plan is a workflow that can be run at once, not only a file to edit.
 
@@ -338,8 +339,8 @@ Each round ends usable on its own and has its own PR.
   agent's rule) and gates still apply.
 - **GitHub API limits or no sign-in.** The cache serves pinned skills
   offline; the picker shows the error instead of an empty list.
-- **Scope.** Three rounds, each released; the usage log records chat plans
-  run and steps accepted, so round 3 starts only if 2b-1 is used.
+- **Scope.** Three rounds, each released and tried before the next starts.
+  The usage log does not record chat use yet; whether it should is open.
 
 ## Safety
 
@@ -554,6 +555,62 @@ is said, with its problems and only Open as JSON offered.
   Open as JSON, and Run.
 
 **Not in 2a:** AI-assisted authoring (2b).
+
+## Phase 2b-1 as built: the Studio Chat
+
+What the code does, including choices made while building it. Model paths are
+scripted in the tests; a chat with Copilot in VS Code has not been run yet.
+
+- **Where.** The Activity Bar container formerly named Agent is **Studio**;
+  its first view is **Chat** (a webview view), above the agent's **Tasks**.
+  Its title bar has **New Studio Chat** and **Studio Chat History**. With no
+  folder open the chat drafts plans but cannot run or save them, and says so.
+- **Planner** (`src/studio/chatPlanner.ts`, no `vscode`). One prompt per turn
+  holds the rules, the step catalog (each step's description, settings and
+  effect, from the registry), the format, the current plan, the last 8 turns
+  and the new message. The model answers
+  `{"reply": "…", "workflow": <whole plan> | null}`. The plan is normalized
+  (format, id and version kept from the current plan; `layout` taken from the
+  current plan for nodes that stay, never from the model) and checked with
+  `validateWorkflow` plus two plan rules: at least one criterion, at most 20
+  nodes. One repair turn with the problems; a plan still invalid is shown
+  with them and Run is off.
+- **Conversation rules** (`src/studio/chatSession.ts`). The first plan is the
+  plan. A later plan is a **proposed change** with its diff (nodes added,
+  removed, changed, including a changed prompt; criteria added and removed;
+  title, inputs, prompts, types, defaults); only the latest can be accepted;
+  an earlier one is marked superseded. A plan identical to the current one is
+  a plain reply. The card edits criteria, the plan's default model and a
+  step's model, nothing else (the diagram does the rest).
+- **Models** (`src/studio/studioModels.ts`). Selectors are
+  `<vendor>:<family>` of the Copilot models `vscode.lm` lists, one per family.
+  The composer's choice drafts; without one, the dashboard's model. In a run,
+  a node uses its `model`, else the workflow's `defaults.model`, else the
+  dashboard's model. Before a run, each named model this VS Code lacks is
+  replaced by one the person picks; the choice is stored in the run
+  (`models`) and logged, and the file is not changed.
+- **Criteria.** A run copies the workflow's criteria into its state when it
+  starts. The run's card in the chat lists them under "Check it against" with
+  the files written; the engine does not check them itself.
+- **Files.** Plans live in the conversation (workspace storage,
+  `studio/chats/<id>.json`, saves one after another) until **Save as
+  workflow** writes `.repository-manager/workflows/<id>.workflow.json`, asking
+  before replacing a file it did not write. From then on that file is the
+  plan: it is read back before each turn, edit and run, and an accepted
+  change or a card edit is written to it (through the open document when
+  there is one, so undo works). **Open in diagram** saves, then opens it in
+  the Workflow Editor.
+- **Run** goes through the same path as Run Workflow… (inputs, model
+  replacements, consent, gates); the chat shows the run's status as it
+  changes.
+- **Tests.** `src/test/studioChatSmoke.js` (planner, rules, engine models and
+  criteria, the host with a scripted `vscode.lm`), `src/test/studioChatUi.js`
+  (the page in Chromium; screenshots 40–44).
+
+**Not in 2b-1:** skills (2b-2), code steps and retiring the Agent view (2b-3),
+drafting a single node, trying a prompt step on a sample input, showing a
+proposed change on the diagram, and choosing a step's model in the diagram's
+side panel (the chat's plan card and the JSON do it; the diagram keeps it).
 
 ## Phases
 

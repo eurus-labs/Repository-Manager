@@ -16,14 +16,20 @@ export type Effect = 'read' | 'write' | 'command' | 'external';
 export interface CancelSignal { readonly cancelled: boolean }
 
 export interface StudioModel {
-  /** One prompt in, the model's text out, and the name of the model that answered. */
-  complete(prompt: string, signal: CancelSignal): Promise<{ text: string; model: string }>;
+  /**
+   * One prompt in, the model's text out, and the name of the model that answered. `model` is a
+   * `<vendor>:<family>` selector (the node's, the workflow's default, or the run's replacement);
+   * without one, the model chosen in the dashboard answers.
+   */
+  complete(prompt: string, signal: CancelSignal, model?: string): Promise<{ text: string; model: string }>;
 }
 
 export interface StepContext {
   /** The workspace folder: relative paths start here, and writes stay inside it. */
   root: string;
   model?: StudioModel;
+  /** The selector this node's model calls use, after the run's replacements. */
+  modelSelector?: string;
   signal: CancelSignal;
   workflow: Workflow;
   node: WorkflowNode;
@@ -33,8 +39,8 @@ export interface StepContext {
 export interface StepDefinition extends StepShape {
   title: string;
   effect: Effect;
-  /** Sends what it reads to the model: the run asks for that consent before it starts. */
-  usesModel?: boolean;
+  /** What the step is for, in one sentence: shown in the palette and given to the planner. */
+  description?: string;
   /** What a person approves before a step with an effect runs. */
   preview?(input: Record<string, unknown>, context: StepContext): Promise<string>;
   run(input: Record<string, unknown>, context: StepContext): Promise<unknown>;
@@ -77,6 +83,7 @@ async function insideRoot(root: string, relative: string): Promise<string> {
 const promptStep: StepDefinition = {
   type: 'prompt',
   title: 'Prompt',
+  description: `Asks the model to do one task on its input (with.input) following the prompt's instructions; the reply is one JSON object, of the prompt's output type when it names one.`,
   effect: 'read',
   usesModel: true,
   required: ['input'],
@@ -100,7 +107,7 @@ const promptStep: StepDefinition = {
     let ask = prompt;
     for (let attempt = 0; attempt < 2; attempt++) {
       if (context.signal.cancelled) { throw new StepError('Cancelled'); }
-      const { text: reply, model } = await context.model.complete(ask, context.signal);
+      const { text: reply, model } = await context.model.complete(ask, context.signal, context.modelSelector);
       context.log({ type: 'model', node: context.node.id, model, attempt });
       if (reply.length > MAX_REPLY_CHARS) { throw new StepError('The model\'s reply is longer than a prompt step accepts.'); }
       const parsed = parseModelJson(reply);
@@ -153,6 +160,7 @@ export interface RequirementItem { id: string; title: string; file: string; line
 const docsRequirements: StepDefinition = {
   type: 'docs.requirements',
   title: 'Read requirements',
+  description: `Reads the requirements (RST or Markdown with requirement IDs) in a folder (with.from); with.ref reads them at a Git revision of that folder's repository.`,
   effect: 'read',
   required: ['from'],
   optional: ['ref'],
@@ -202,6 +210,7 @@ const normal = (item: RequirementItem) => `${item.title}\n${item.text}`.replace(
 const requirementsCompare: StepDefinition = {
   type: 'requirements.compare',
   title: 'Compare requirements',
+  description: `Compares two outputs of Read requirements (with.old, with.new) by requirement ID: added, removed and changed requirements.`,
   effect: 'read',
   required: ['old', 'new'],
   async run(input) {
@@ -247,6 +256,7 @@ function rendered(input: Record<string, unknown>): string {
 const fileWrite: StepDefinition = {
   type: 'file.write',
   title: 'Write a file',
+  description: `Writes with.content to a workspace file (with.path); with.format is text (default), json or markdown-json, with.title a heading for markdown-json. Asks before writing.`,
   effect: 'write',
   required: ['path', 'content'],
   optional: ['format', 'title'],
@@ -275,6 +285,7 @@ const fileWrite: StepDefinition = {
 const gate: StepDefinition = {
   type: 'gate',
   title: 'Ask a person',
+  description: `Stops and shows with.show to a person with with.title; the run goes on only when they continue.`,
   effect: 'read',
   required: ['title'],
   optional: ['show'],

@@ -135,6 +135,8 @@ async function main() {
     assert.equal(await page.textContent('#problems'), 'None');
     assert.match(await page.textContent('.effects'), /Sends to the Copilot model: analyze/);
     assert.equal(await page.isDisabled('#run'), false);
+    // Each palette step says what it does (the description the chat's planner is given too).
+    assert.match(await page.getAttribute('.palette .step[data-type="file.write"]', 'title'), /asks before it writes files\nWrites with\.content to a workspace file/);
     await snap(page, '30-studio-editor');
 
     // Select a step, rename it: the document's edges and references follow, and the page redraws.

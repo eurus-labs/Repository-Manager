@@ -10,7 +10,7 @@ with limited tools and checked by the repository's scripts.
 - checks: repository scripts approved once per repository.
 
 ## How to get to it (user POV)
-- Activity Bar → Agent → New task.
+- Activity Bar → Studio → Tasks → New task (the container was named Agent before 2.20.0).
 
 ## Driving it
 - Node: `$V capture agent -- node src/test/agentHarnessSmoke.js`.
