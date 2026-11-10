@@ -318,7 +318,7 @@ The person approves or stops the run. A workflow cannot turn these gates off.
 - `log.jsonl`: start, nodes, model calls, waits, approvals and the finish;
 - `workflow.json`, the workflow as it started.
 
-A waiting run goes on after a restart. The run also records the file's hash and version.
+A waiting run goes on after a restart. The run also records the file's hash and version. A cancelled run does not: Cancel ends it for good, and stopping at a gate is how to pause (decided 2026-11-09).
 
 **Steps:**
 

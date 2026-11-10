@@ -35,13 +35,14 @@ committed from the commit dialog, discarded or stashed.
 - Stash of a selection stashes just those files, new files included, and leaves the other changes. [confirmed: spec CHANGELOG.md 2.19.0]
 - Pop of a `-u` stash restores tracked edits and the new file; a conflicting Pop keeps the stash. [confirmed: test src/test/stashActionSmoke.js]
 - Drop asks first; cancelling changes nothing. [confirmed: test src/test/stashActionSmoke.js]
+- The usage log times a commit from the dialog's last opening; a Copilot draft kept from an earlier opening still counts as Copilot's. [confirmed: user, 2026-11-09]
 - Git arguments are passed with execFile, never through a shell; paths stay repository-relative. [confirmed: spec docs/dashboard-backend.md]
 
 ## Suspected bugs
 - None found.
 
 ## Open questions
-- The usage log times a commit from the dialog's opening, so a dialog reopened later restarts the clock while a Copilot draft kept from before still counts as Copilot's (`resources/webview.js`, `commitOpenedAt`). Is the time to measure the last opening, or the first?
+- None.
 
 ## Gotchas
 - The Side Bar is a mirror of hidden dashboard markup: a click in the Side Bar is replayed on the dashboard (`runSidebarAction`), so tests click `side` and assert on `page`.
