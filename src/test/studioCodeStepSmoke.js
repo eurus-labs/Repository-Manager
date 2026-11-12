@@ -1,7 +1,9 @@
 // The Studio's code step (docs/agent-studio.md, "2b-3") on a real Git repository with a scripted
-// model that calls the agent's tools: the gate before it, the run's branch, the repository's check,
+// model that calls the agent's tools: the gate before it, the branch (the current one unless the plan
+// names a new one), the repository's check,
 // the review with its diff, Retry (undone, then run with what failed), Accept, Stop (undone), and
-// the refusals (uncommitted changes, a script that is not the repository's or not approved).
+// the refusals (a new branch over uncommitted changes, a bad branch name, a script that is not the
+// repository's or not approved).
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -13,7 +15,7 @@ const { RunStore, WorkflowEngine } = out('engine.js');
 const { studioSteps } = out('registry.js');
 const { validateWorkflow } = out('workflow.js');
 const { draftPlan } = out('chatPlanner.js');
-const { lineDiff, runBranch } = out('codeStep.js');
+const { lineDiff, validBranchName } = out('codeStep.js');
 
 const base = fs.mkdtempSync(path.join(os.tmpdir(), 'repository-manager-code-step-'));
 const repo = path.join(base, 'repo');
@@ -97,13 +99,15 @@ async function main() {
     let state = await engine.start(flow, 'hash', {});
     state = await engine.continue(flow, state, never);
     assert.equal(state.waiting.kind, 'effect', 'the engine asks before a code step');
-    assert.match(state.waiting.preview, /Task: Make src\/value\.txt say fixed\nMay change: src\/\nChecks after it: check\nBranch: studio\/fix-value-/);
-    assert.equal(run(['branch', '--show-current']).trim(), 'main', 'nothing happens before the approval');
+    assert.match(state.waiting.preview, /Task: Make src\/value\.txt say fixed\nMay change: src\/\nChecks after it: check\nBranch: the branch the repository is on now \(no new branch\)/);
+    // An uncommitted change elsewhere is fine without a new branch, and is left alone.
+    fs.appendFileSync(path.join(repo, 'check.js'), '// a local edit\n');
 
     state = await engine.answer(state, true);
     state = await engine.continue(flow, state, never);
-    const branch = runBranch('fix-value', state.id);
-    assert.equal(run(['branch', '--show-current']).trim(), branch, 'the run writes on its own branch');
+    const branch = 'main';
+    assert.equal(run(['branch', '--show-current']).trim(), 'main', 'no branch was created');
+    assert.equal(run(['branch', '--list']).trim(), '* main');
     assert.equal(state.data.branch, branch);
     assert.deepEqual(selectors, ['copilot:gpt-4o'], 'the step\'s model is asked for');
     assert.deepEqual(seen[0].tools, ['read_file', 'list_files', 'search_code', 'edit_file', 'create_file', 'run_check']);
@@ -132,9 +136,10 @@ async function main() {
     assert.equal(fs.readFileSync(path.join(repo, 'src', 'value.txt'), 'utf8'), 'value = fixed\n');
     const log = await store.readLog(state.id);
     assert.deepEqual(log.filter(entry => entry.type === 'review').map(entry => entry.decision), ['retry', 'accept']);
-    assert.ok(log.some(entry => entry.type === 'branch' && entry.branch === branch));
+    assert.ok(log.some(entry => entry.type === 'branch' && entry.branch === 'main' && entry.created === false));
+    assert.match(fs.readFileSync(path.join(repo, 'check.js'), 'utf8'), /\/\/ a local edit\n$/, 'the person\'s own change is untouched');
+    run(['checkout', '--', 'check.js']);
     run(['add', '.']); run(['commit', '-q', '-m', 'fixed']);
-    run(['switch', '-q', 'main']);
   }
 
   // ---- Stop at the review undoes the change and ends the run; the attempts are bounded.
@@ -154,23 +159,35 @@ async function main() {
     state.attempts.add = 3;
     state.status = 'waiting'; state.waiting = { node: 'add', kind: 'review', title: '', effect: 'write', preview: '' };
     await assert.rejects(engine.answer(state, 'retry', flow), /already ran 3 times/);
-    run(['switch', '-q', 'main']);
   }
 
-  // ---- Refusals: uncommitted changes; a check that is not a script; a script not approved.
+  // ---- A new branch only when the plan names one; refusals.
   {
-    const engine = new WorkflowEngine({ root: repo, steps, store: new RunStore(path.join(base, 'runs')), code: services([], [], []) });
+    const engine = new WorkflowEngine({ root: repo, steps, store: new RunStore(path.join(base, 'runs')), code: services([{ final: 'Nothing to do.' }], [], []) });
     const go = async flow => engine.continue(flow, await engine.answer(await engine.continue(flow, await engine.start(flow, 'hash', {}), never), true), never);
+    const named = workflow(); named.nodes[0].with.branch = 'fix/value-again';
+    const before = await engine.continue(named, await engine.start(named, 'hash', {}), never);
+    assert.match(before.waiting.preview, /Branch: fix\/value-again \(a new branch, created from the current one\)/);
+    const created = await engine.continue(named, await engine.answer(before, true), never);
+    assert.equal(created.waiting.kind, 'review');
+    assert.equal(run(['branch', '--show-current']).trim(), 'fix/value-again', 'the named branch was created');
+    run(['switch', '-q', 'main']);
+
     fs.appendFileSync(path.join(repo, 'check.js'), '// local edit\n');
-    const dirty = await go(workflow());
-    assert.equal(dirty.status, 'failed');
-    assert.match(dirty.error, /uncommitted changes/);
+    const dirty = workflow(); dirty.nodes[0].with.branch = 'fix/other';
+    const refused = await go(dirty);
+    assert.equal(refused.status, 'failed');
+    assert.match(refused.error, /uncommitted changes\. Commit or stash them first, so fix\/other starts clean/);
     run(['checkout', '--', 'check.js']);
+    const bad = workflow(); bad.nodes[0].with.branch = 'bad..name';
+    assert.match((await engine.continue(bad, await engine.start(bad, 'hash', {}), never)).error, /"bad\.\.name" is not a branch name Git accepts/);
+    assert.deepEqual(['feat/x', 'fix/a.b', 'x..y', '-x', 'a/', '.hidden', 'a.lock'].map(validBranchName), [true, true, false, false, false, false, false]);
     const unknown = workflow(); unknown.nodes[0].with.checks = ['test'];
     assert.match((await go(unknown)).error, /Not scripts of this repository: test/);
     const unapproved = workflow(); unapproved.nodes[0].with.checks = ['deploy'];
     assert.match((await go(unapproved)).error, /not approved for this repository: deploy/);
-    assert.equal(run(['branch', '--show-current']).trim(), 'main', 'a refused step made no branch');
+    assert.equal(run(['branch', '--show-current']).trim(), 'main');
+    assert.equal(run(['branch', '--list', 'fix/other']).trim(), '', 'a refused step made no branch');
   }
 
   // ---- The planner: code steps may only name the repository's scripts as checks.
@@ -181,6 +198,7 @@ async function main() {
     const draft = await draftPlan(model, steps, { message: 'Fix the value', history: [], scripts: ['check', 'deploy'] }, never);
     assert.match(prompts[0], /Repository scripts \(the only names a code step's "checks" may use; prefer lint and tests\): check, deploy/);
     assert.match(prompts[0], /- code: Changes code in this repository/);
+    assert.match(prompts[0], /Set "branch" in a code step's "with" ONLY when the person asks for a new branch/);
     assert.ok(draft.problems.some(problem => /Not scripts of this repository: tests/.test(problem.message)));
     const folderless = await draftPlan(model, steps, { message: 'Fix', history: [] }, never);
     assert.ok(folderless.problems.length);

@@ -1,8 +1,8 @@
 /* eslint-disable @typescript-eslint/naming-convention -- Anthropic-shaped tool messages (tool_use_id, is_error), as the agent router uses. */
 /**
  * The `code` step (docs/agent-studio.md, "2b-3"): the agent harness's step runner as a Studio
- * step. It changes code with the agent's tools, only in the paths it lists, on the run's own
- * branch; then the repository's checks run, and a person reviews the diff: Accept keeps it,
+ * step. It changes code with the agent's tools, only in the paths it lists, on the branch the
+ * repository is on (a new one only when the plan names it); then the repository's checks run, and a person reviews the diff: Accept keeps it,
  * Retry undoes it and runs again with what failed, Stop undoes it. A step passes on its checks,
  * never on the model saying it is done. No `vscode` here.
  */
@@ -46,10 +46,10 @@ export function codeVerification(changes: FileChange[], checks: CheckResult[]): 
   return changes.every(change => isDocumentation(change.path)) ? 'docsOnly' : 'unverified';
 }
 
-/** A branch for the run's code steps: studio/<workflow>-<end of the run id>. */
-export function runBranch(workflowId: string, runId: string): string {
-  const slug = workflowId.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'workflow';
-  return `studio/${slug}-${runId.replace(/[^a-z0-9]/gi, '').slice(-6).toLowerCase()}`;
+/** A name Git accepts for a new branch (a conservative subset of git check-ref-format). */
+export function validBranchName(name: string): boolean {
+  return /^[A-Za-z0-9._][A-Za-z0-9._/-]{0,199}$/.test(name) && !name.includes('..') && !name.includes('//')
+    && !name.endsWith('/') && !name.endsWith('.') && !name.endsWith('.lock') && !name.split('/').some(part => part.startsWith('.'));
 }
 
 /** Lines removed and added, in order (a longest-common-subsequence diff, for review, not patching). */
@@ -128,35 +128,39 @@ async function converse(context: StepContext, system: string, input: string, wor
   }
 }
 
-function settings(input: Record<string, unknown>): { task: string; paths: string[]; checks: string[] } {
+function settings(input: Record<string, unknown>): { task: string; paths: string[]; checks: string[]; branch?: string } {
   const task = typeof input.task === 'string' ? input.task.trim() : '';
   if (!task) { throw new StepError('"task" must say what to change.'); }
   const paths = list(input.paths).map(value => {
     try { return cleanPath(value) + (value.endsWith('/') ? '/' : ''); } catch { throw new StepError(`"${value}" is not a path inside the repository.`); }
   });
   if (!paths.length) { throw new StepError('"paths" must list the files or folders (ending with "/") the step may change.'); }
-  return { task, paths: [...new Set(paths)], checks: [...new Set(list(input.checks))] };
+  const branch = typeof input.branch === 'string' && input.branch.trim() ? input.branch.trim() : undefined;
+  if (input.branch !== undefined && input.branch !== '' && !branch) { throw new StepError('"branch" is the name of a new branch.'); }
+  if (branch && !validBranchName(branch)) { throw new StepError(`"${branch}" is not a branch name Git accepts.`); }
+  return { task, paths: [...new Set(paths)], checks: [...new Set(list(input.checks))], branch };
 }
 
 export const codeStep: StepDefinition = {
   type: 'code',
   title: 'Change code',
-  description: 'Changes code in this repository with the agent\'s tools: does with.task, only in with.paths (files, or folders ending with "/"), then runs with.checks (names of the repository\'s package.json scripts, such as lint and test). Runs on the run\'s own branch; a person reviews the diff and the checks, and may Retry.',
+  description: 'Changes code in this repository with the agent\'s tools: does with.task, only in with.paths (files, or folders ending with "/"), then runs with.checks (names of the repository\'s package.json scripts, such as lint and test). Works on the branch the repository is on; with.branch creates that new branch first, only when the person asks for one. A person reviews the diff and the checks, and may Retry.',
   effect: 'write',
   usesModel: true,
   single: true,
   required: ['task', 'paths'],
-  optional: ['checks'],
+  optional: ['checks', 'branch'],
   pathLists: ['paths'],
 
   async preview(input, context) {
-    const { task, paths, checks } = settings(input);
-    const branch = typeof context.run.data.branch === 'string' ? context.run.data.branch : `${runBranch(context.workflow.id, context.run.id)} (created from the current branch)`;
+    const { task, paths, checks, branch } = settings(input);
+    const shared = typeof context.run.data.branch === 'string' ? context.run.data.branch : undefined;
+    const where = shared ? shared : branch ? `${branch} (a new branch, created from the current one)` : 'the branch the repository is on now (no new branch)';
     return [
       `Task: ${task}`,
       `May change: ${paths.join(', ')}`,
       `Checks after it: ${checks.join(', ') || 'none: a code change it makes can only be accepted as unverified'}`,
-      `Branch: ${branch}`,
+      `Branch: ${where}`,
       'It reads files of this repository and sends what it reads to the model. You review its changes and checks before they are kept.'
     ].join('\n');
   },
@@ -164,7 +168,7 @@ export const codeStep: StepDefinition = {
   async run(input, context) {
     const code = context.code;
     if (!code) { throw new StepError('Code steps run in VS Code only.'); }
-    const { task, paths, checks } = settings(input);
+    const { task, paths, checks, branch: wanted } = settings(input);
     const root = context.root;
     const scripts = code.scripts(root);
     const unknown = checks.filter(check => scripts[check] === undefined);
@@ -172,17 +176,25 @@ export const codeStep: StepDefinition = {
     const unapproved = checks.filter(check => !code.allowedScripts(root).includes(check));
     if (unapproved.length) { throw new StepError(`These scripts are not approved for this repository: ${unapproved.join(', ')}. Run the workflow again to approve them.`); }
 
-    // The run's code steps all write on one branch, created from the current one by the first.
+    // The run's code steps all write on one branch: the one the repository is on when the first
+    // runs, or a new one the plan names (asked for by the person), created from the current one.
+    const current = await code.git.currentBranch(root);
     let branch = typeof context.run.data.branch === 'string' ? context.run.data.branch : '';
+    if (branch && wanted && wanted !== branch) { throw new StepError(`The run's code steps work on ${branch}; this step names ${wanted}. One run uses one branch.`); }
     if (!branch) {
-      if (await code.git.hasChanges(root)) { throw new StepError('The repository has uncommitted changes. Commit or stash them first, so the run\'s branch starts clean.'); }
-      branch = runBranch(context.workflow.id, context.run.id);
-      await code.git.createBranch(root, branch);
+      if (wanted && wanted !== current) {
+        if (await code.git.hasChanges(root)) { throw new StepError(`The repository has uncommitted changes. Commit or stash them first, so ${wanted} starts clean.`); }
+        await code.git.createBranch(root, wanted);
+        context.log({ type: 'branch', node: context.node.id, branch: wanted, created: true });
+        branch = wanted;
+      } else {
+        if (!current) { throw new StepError('The repository is not on a branch (detached HEAD). Check out a branch first.'); }
+        context.log({ type: 'branch', node: context.node.id, branch: current, created: false });
+        branch = current;
+      }
       context.run.data.branch = branch;
-      context.log({ type: 'branch', node: context.node.id, branch });
-    } else {
-      const current = await code.git.currentBranch(root);
-      if (current !== branch) { throw new StepError(`The repository is on ${current || 'no branch'}; switch to ${branch} to go on.`); }
+    } else if (current !== branch) {
+      throw new StepError(`The repository is on ${current || 'no branch'}; switch to ${branch} to go on.`);
     }
 
     const token: CancelToken = { get isCancellationRequested() { return context.signal.cancelled; } };

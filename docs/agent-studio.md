@@ -318,7 +318,7 @@ release, so they ship together in 2.20.0, one commit each.
 2. **2b-2, Skills.** GitHub sources, the picker, pinned references, the
    cache, per-source consent, and skills in prompt steps.
 3. **2b-3, Code steps and the Agent view.** The agent's step runner becomes a
-   `code` step (tools, branch, the repository's checks, Accept / Retry); the
+   `code` step (tools, the repository's checks, Accept / Retry); the
    Agent icon becomes Studio; existing agent tasks stay readable but new
    tasks start in the chat. This is the part of phase 4 the merge pulls in;
    the review step stays in phase 4.
@@ -659,9 +659,13 @@ side panel (the chat's plan card and the JSON do it; the diagram keeps it).
 - **Order of what is asked.** Before the run: the checks' scripts are
   approved per repository (the agent's approvals; a changed command asks
   again). Before the step: the engine's gate shows the task, paths, checks
-  and branch. The first code step of a run needs a clean tree and creates
-  `studio/<workflow>-<run>` from the current branch; later ones must find the
-  repository still on it.
+  and branch. Code steps work on the branch the repository is on *(decided
+  2026-11-12: no branch of their own)*; uncommitted changes elsewhere are
+  left alone (an undo restores each file the step changed to what it was
+  before the step). Only when the person asks for one does the planner set
+  `branch` on the step; the first code step then creates it from the current
+  branch, and only from a clean tree. A run's code steps share one branch;
+  later ones must find the repository still on it.
 - **Review.** After it runs, the engine waits with the result: verdict
   (passed, failed, unverified, documentation only, nothing changed), the
   model's summary, the checks with the end of a failing output, text in the
@@ -681,7 +685,8 @@ side panel (the chat's plan card and the JSON do it; the diagram keeps it).
   (the old New Agent Task command) opens a new chat; the Tasks view keeps
   tasks started before 2.20.0, which still open and run, and its "+" is gone.
 - **Not done here:** undoing a code step's changes when VS Code closes while
-  it runs (the agent does this for its tasks); per-file Diff buttons (the
+  it runs (the agent does this for its tasks; here the files stay as written,
+  on the current branch unless the plan named one); per-file Diff buttons (the
   review shows the diff as text); the review step (phase 4).
 - **Tests.** `src/test/studioCodeStepSmoke.js` (a real Git repository and
   check, scripted tool calls), `src/test/studioSkillsSmoke.js`, and

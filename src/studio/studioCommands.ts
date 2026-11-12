@@ -106,7 +106,7 @@ export function registerStudio(context: vscode.ExtensionContext, workspaceRoot: 
       ...(workflowSkills(workflow).length ? [`Steps follow ${workflowSkills(workflow).length} skill${workflowSkills(workflow).length === 1 ? '' : 's'} from ${skillSources(workflowSkills(workflow)).map(source => `github.com/${source}`).join(', ')} (instructions only; their scripts are not run).`] : []),
       ...effects.effects.map(item => `Asks you before ${item.node} (${item.type}) ${item.effect === 'write' ? 'writes files' : item.effect === 'command' ? 'runs a command' : 'sends to another system'}.`),
       ...effects.gates.map(gate => `Stops for your answer at ${gate}.`),
-      ...(workflow.nodes.some(node => node.type === 'code') ? ['Code steps change files on a new branch of this repository, and wait for you to review each change (Accept, Retry or Stop).'] : [])
+      ...(workflow.nodes.some(node => node.type === 'code') ? ['Code steps change files of this repository on the branch it is on (or a new branch the plan names), and wait for you to review each change (Accept, Retry or Stop).'] : [])
     ];
     const run = 'Run';
     return await vscode.window.showInformationMessage(`Run "${workflow.title}" (${workflow.version})?`, { modal: true, detail: lines.join('\n') }, run) === run;
