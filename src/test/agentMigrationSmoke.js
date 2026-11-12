@@ -1,7 +1,7 @@
-// Moving Agent tasks to the Studio Chat (docs/agent-studio.md, "Agent tasks moved to Studio"):
-// what each kind of task becomes, the task left alone while a step waits for review, the moved
-// task kept on disk but no longer listed, and the moved plan running its next step on the task's
-// branch with a scripted model.
+// Agent tasks become Studio chats when the extension starts (docs/agent-studio.md, "Agent tasks
+// moved to Studio"): what each kind of task becomes (a step under review is named with its files),
+// a task left running settled first (its writes undone), the moved task kept on disk but no longer
+// listed, moving twice moving nothing, and the moved plan running its next step on the task's branch.
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -9,7 +9,7 @@ const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 
 const { TaskStore } = require('../../out/agent/taskStore.js');
-const { taskToConversation, moveBlocker, remainingPlan } = require('../../out/studio/agentMigration.js');
+const { taskToConversation, remainingPlan, moveAgentTasks, settleInterrupted } = require('../../out/studio/agentMigration.js');
 const { ChatStore } = require('../../out/studio/chatStore.js');
 const { studioSteps } = require('../../out/studio/registry.js');
 const { RunStore, WorkflowEngine } = require('../../out/studio/engine.js');
@@ -32,14 +32,18 @@ async function main() {
   const finished = make('Rename module', { status: 'done', branch: 'agent/rename', plan: [step('Rename', { state: 'done', verification: 'failed', acceptedDespite: ['check'] }), step('Docs', { state: 'skipped' })] });
   const reviewing = make('Half done', { status: 'stepReview', current: 0, plan: [step('Change it')] });
 
-  // ---- A task with a step waiting for review stays: its changes are on disk.
-  assert.match(moveBlocker(reviewing), /Step 1 is waiting for your review: Accept, Retry or Stop it in the task first\./);
-  assert.deepEqual(taskToConversation(reviewing, chats, steps), { blocked: moveBlocker(reviewing) });
-  assert.match(moveBlocker({ ...reviewing, status: 'stepRunning' }), /It is running/);
+  // ---- A step waiting for review: its files are named; it is not in the plan to run again.
+  {
+    reviewing.plan[0].result = { summary: '', changes: [{ path: 'src/a.js', before: 'x', after: 'y' }], toolCalls: [], checks: [], aiText: [] };
+    reviewing.plan.push(step('Then this'));
+    const conversation = taskToConversation(reviewing, chats, steps);
+    assert.match(conversation.messages[1].text, /Step 1 "Change it" ran and was waiting for your review\. Its changes are still in these files, not committed: src\/a\.js\. Keep them, or undo them with Git/);
+    assert.deepEqual(conversation.plan.nodes.map(node => node.id), ['step-2']);
+  }
 
   // ---- Midway: the goal and criteria, what was done, and the rest as code steps on its branch.
   {
-    const { conversation } = taskToConversation(midway, chats, steps);
+    const conversation = taskToConversation(midway, chats, steps);
     assert.equal(conversation.title, 'Fix parser');
     assert.equal(conversation.messages[0].role, 'user');
     assert.equal(conversation.messages[0].text, 'Goal of Fix parser\nDone when:\n- It works\n- Tests pass');
@@ -60,26 +64,47 @@ async function main() {
 
   // ---- No plan yet: the goal, and a note to draft one. Finished: history only, no plan.
   {
-    const { conversation } = taskToConversation(fresh, chats, steps);
+    const conversation = taskToConversation(fresh, chats, steps);
     assert.equal(conversation.plan, undefined);
     assert.match(conversation.messages[1].text, /It had no plan yet: send a message to draft one\./);
-    const done = taskToConversation(finished, chats, steps).conversation;
+    const done = taskToConversation(finished, chats, steps);
     assert.equal(done.plan, undefined);
     assert.equal(remainingPlan(finished), undefined);
     assert.match(done.messages[1].text, /It was finished\./);
     assert.match(done.messages[1].text, /1\. Rename: accepted with failing checks \(failing: check\)\n2\. Docs: skipped/);
   }
 
-  // ---- A moved task is kept on disk, with its log, and no longer listed.
+  // ---- A task left running when VS Code closed: its step's writes are undone first.
   {
-    const { conversation } = taskToConversation(midway, chats, steps);
-    await chats.save(conversation);
-    midway.movedTo = conversation.id;
-    tasks.save(midway);
-    assert.deepEqual(tasks.list().map(task => task.title).sort(), ['Add logging', 'Half done', 'Rename module']);
-    assert.equal(tasks.listAll().length, 4);
-    assert.equal(tasks.get(midway.id).movedTo, conversation.id);
-    assert.equal((await chats.load(conversation.id)).plan.nodes.length, 2);
+    const repo = path.join(base, 'settle');
+    fs.mkdirSync(repo, { recursive: true });
+    fs.writeFileSync(path.join(repo, 'a.js'), 'after\n');
+    const running = { status: 'stepRunning', current: 0, repositoryRoot: repo, plan: [step('Run', { result: { changes: [{ path: 'a.js', before: 'before\n', after: 'after\n' }] } })] };
+    assert.deepEqual(settleInterrupted(running, () => false), []);
+    assert.equal(fs.readFileSync(path.join(repo, 'a.js'), 'utf8'), 'before\n');
+    assert.equal(running.status, 'stepReady');
+    assert.equal(running.plan[0].result, undefined);
+    const planning = { status: 'planning' };
+    settleInterrupted(planning, () => false);
+    assert.equal(planning.status, 'new');
+  }
+
+  // ---- On start, every task moves: kept on disk with its log, no longer listed; a second start moves nothing.
+  {
+    const storage = path.join(base, 'storage');
+    const store = new TaskStore(path.join(storage, 'agent'));
+    const one = store.create({ title: 'One', goal: 'g1', criteria: ['c'], repositoryRoot: base });
+    one.status = 'stepReview'; one.current = 0; one.plan = [step('A', { result: { summary: '', changes: [], toolCalls: [], checks: [], aiText: [] } })]; store.save(one);
+    store.create({ title: 'Two', goal: 'g2', criteria: [], repositoryRoot: base });
+    assert.equal(await moveAgentTasks(storage, () => false), 2, 'a task under review moves too');
+    assert.equal(store.list().length, 0, 'no task is listed');
+    assert.equal(store.listAll().length, 2, 'nothing was deleted');
+    const moved = store.get(one.id);
+    const chat = await new ChatStore(path.join(storage, 'studio', 'chats')).load(moved.movedTo);
+    assert.equal(chat.title, 'One');
+    assert.ok(store.readLog(one.id).some(entry => entry.action === 'moveToStudio' && entry.detail === chat.id));
+    assert.equal((await new ChatStore(path.join(storage, 'studio', 'chats')).list()).length, 2);
+    assert.equal(await moveAgentTasks(storage, () => false), 0, 'moved once');
   }
 
   // ---- The moved plan runs on the task's branch: refused until the repository is on it, then works.

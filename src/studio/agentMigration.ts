@@ -2,14 +2,18 @@
  * Moves an Agent task (docs/agent-harness.md) into a Studio Chat conversation (docs/agent-studio.md,
  * "Agent tasks moved to Studio"). The goal and criteria carry over; the steps not done yet become
  * code steps of the conversation's plan, on the task's branch; the steps done are said in the chat.
- * A task with a step waiting for review is not moved: its changes are on disk and only the Agent
- * can accept or undo them. Nothing is deleted. No `vscode` here.
+ * A step that ran and waited for review keeps its changes on disk: the chat names the files, and
+ * the person keeps or undoes them with Git. Nothing is deleted. No `vscode` here.
  */
 import { planProblems } from './chatPlanner';
 import { ChatStore, Conversation, newMessage } from './chatStore';
 import { StepDefinition } from './steps';
 import { Workflow, WORKFLOW_FORMAT } from './workflow';
 import { AgentTask, PlanStep, StepVerification } from '../agent/types';
+import { revertChanges } from '../agent/agentTools';
+import { TaskStore } from '../agent/taskStore';
+import { studioSteps } from './registry';
+import * as path from 'path';
 
 const VERIFIED: Record<StepVerification, string> = {
   passed: 'checks passed', failed: 'accepted with failing checks', unverified: 'accepted as unverified',
@@ -18,16 +22,15 @@ const VERIFIED: Record<StepVerification, string> = {
 
 const slug = (text: string) => text.toLowerCase().normalize('NFKD').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').replace(/^[^a-z]+/, '').slice(0, 40) || 'task';
 
-/** Why a task cannot be moved now; undefined when it can. */
-export function moveBlocker(task: AgentTask): string | undefined {
-  if (task.status === 'stepReview') { return `Step ${task.current + 1} is waiting for your review: Accept, Retry or Stop it in the task first.`; }
-  if (task.status === 'planning' || task.status === 'stepRunning') { return 'It is running: wait for it, or cancel it, first.'; }
-  return undefined;
+/** A step that ran and was waiting for review when the task moved: its changes are still in the files. */
+export function stepUnderReview(task: AgentTask): PlanStep | undefined {
+  return task.status === 'stepReview' ? task.plan?.[task.current] : undefined;
 }
 
 /** The plan of the steps not done yet, as code steps on the task's branch, one after another. */
 export function remainingPlan(task: AgentTask): Workflow | undefined {
-  const remaining = (task.plan ?? []).map((step, index) => ({ step, index })).filter(({ step }) => step.state === 'pending');
+  const reviewed = stepUnderReview(task);
+  const remaining = (task.plan ?? []).map((step, index) => ({ step, index })).filter(({ step }) => step.state === 'pending' && step !== reviewed);
   if (!remaining.length || task.status === 'done' || task.status === 'stopped') { return undefined; }
   const nodes = remaining.map(({ step, index }) => ({
     id: `step-${index + 1}`, type: 'code', title: step.title,
@@ -53,9 +56,7 @@ function doneLine(step: PlanStep, index: number): string {
 }
 
 /** The conversation a task becomes, ready to save; or why it cannot be moved now. */
-export function taskToConversation(task: AgentTask, chats: ChatStore, steps: Map<string, StepDefinition>): { conversation: Conversation } | { blocked: string } {
-  const blocker = moveBlocker(task);
-  if (blocker) { return { blocked: blocker }; }
+export function taskToConversation(task: AgentTask, chats: ChatStore, steps: Map<string, StepDefinition>): Conversation {
   const conversation = chats.create();
   conversation.title = task.title;
   conversation.createdAt = task.createdAt;
@@ -66,6 +67,8 @@ export function taskToConversation(task: AgentTask, chats: ChatStore, steps: Map
   const done = (task.plan ?? []).map((step, index) => ({ step, index })).filter(({ step }) => step.state !== 'pending');
   const plan = remainingPlan(task);
   const status = task.status === 'done' ? 'It was finished.' : task.status === 'stopped' ? 'It was stopped.' : !task.plan?.length ? 'It had no plan yet: send a message to draft one.' : task.status === 'planReview' ? 'Its plan was not approved yet.' : '';
+  const reviewed = stepUnderReview(task);
+  const reviewNote = reviewed ? `Step ${task.current + 1} "${reviewed.title}" ran and was waiting for your review. Its changes are still in these files, not committed: ${(reviewed.result?.changes ?? []).map(change => change.path).join(', ') || 'none'}. Keep them, or undo them with Git; if you undo them, ask here to add that step to the plan again.` : '';
   const retried = plan ? (task.plan ?? []).filter(step => step.state === 'pending' && step.feedback).map(step => `"${step.title}" was retried before: ${step.feedback!.slice(0, 600)}`) : [];
   conversation.messages.push(newMessage({
     role: 'assistant',
@@ -73,11 +76,41 @@ export function taskToConversation(task: AgentTask, chats: ChatStore, steps: Map
       `Moved from the Agent task "${task.title}" (${task.id}, ${task.createdAt.slice(0, 10)}). ${status}`.trim(),
       task.branch ? `Its branch: ${task.branch}.${plan ? ' The steps below work on it: switch to it before Run.' : ''}` : '',
       done.length ? `Done in the Agent:\n${done.map(({ step, index }) => doneLine(step, index)).join('\n')}` : '',
+      reviewNote,
       plan ? `The steps not done yet are the plan below, as code steps you review.` : '',
       ...retried
     ].filter(Boolean).join('\n\n'),
     ...(plan ? { draft: { workflow: plan, problems: planProblems(plan, steps), status: 'current' as const } } : {})
   }));
   if (plan) { conversation.plan = plan; }
-  return { conversation };
+  return conversation;
+}
+
+/** A task left planning or running: where a person decides, with a running step's writes undone. */
+export function settleInterrupted(task: AgentTask, isDirty: (absolutePath: string) => boolean): string[] {
+  if (task.status === 'planning') { task.status = 'new'; return []; }
+  if (task.status !== 'stepRunning') { return []; }
+  const step = task.plan?.[task.current];
+  const kept = revertChanges(task.repositoryRoot, step?.result?.changes ?? [], isDirty);
+  if (step) { step.result = undefined; }
+  task.status = 'stepReady';
+  return kept;
+}
+
+/** Moves every task not moved yet; returns how many moved. */
+export async function moveAgentTasks(storage: string, isDirty: (absolutePath: string) => boolean): Promise<number> {
+  const tasks = new TaskStore(path.join(storage, 'agent'));
+  const chats = new ChatStore(path.join(storage, 'studio', 'chats'));
+  const steps = studioSteps();
+  let moved = 0;
+  for (const task of tasks.list()) {
+    settleInterrupted(task, isDirty);
+    const conversation = taskToConversation(task, chats, steps);
+    await chats.save(conversation);
+    task.movedTo = conversation.id;
+    tasks.log(task.id, { type: 'approval', action: 'moveToStudio', detail: conversation.id });
+    tasks.save(task);
+    moved++;
+  }
+  return moved;
 }

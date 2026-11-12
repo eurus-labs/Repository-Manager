@@ -14,6 +14,9 @@ fs.mkdirSync(workspace, { recursive: true });
 
 // --- the fake `vscode` (used only by the host part at the end) -------------------------------------
 const lmReplies = [];
+// Copilot's models load after the chat opens: empty at first, then announced.
+const availableModels = [];
+const modelListeners = [];
 const lmCalls = [];
 const asked = [];
 const answers = { warning: [], quickPick: [] };
@@ -36,7 +39,10 @@ const fakeVscode = {
   WorkspaceEdit: class { replace() {} },
   CancellationTokenSource: class { constructor() { this.token = { isCancellationRequested: false }; } cancel() { this.token.isCancellationRequested = true; } dispose() {} },
   LanguageModelChatMessage: { User: text => ({ text }) },
-  lm: { selectChatModels: async () => [lmModel('gpt-4o', 'GPT-4o'), lmModel('claude-sonnet', 'Claude Sonnet')] },
+  lm: {
+    selectChatModels: async () => [...availableModels],
+    onDidChangeChatModels: listener => { modelListeners.push(listener); return { dispose() {} }; }
+  },
   workspace: { textDocuments: [], applyEdit: async () => true },
   window: {
     registerWebviewViewProvider: (_id, provider) => { viewProvider = provider; return { dispose() {} }; },
@@ -267,8 +273,18 @@ async function main() {
     const last = () => posted[posted.length - 1];
     const settle = () => new Promise(resolve => setTimeout(resolve, 20));
     await receive({ type: 'ready' }); await settle();
-    assert.deepEqual(last().models.map(model => model.selector), ['copilot:gpt-4o', 'copilot:claude-sonnet']);
+    assert.deepEqual(last().models, [], 'no model yet');
+    assert.equal(last().modelsLoaded, true);
+    assert.equal(last().model, null);
+    // The models load (another vendor's too): the menu follows, and the first drafts.
+    availableModels.push(lmModel('gpt-4o', 'GPT-4o'), lmModel('claude-sonnet', 'Claude Sonnet'), { ...lmModel('llama', 'Llama'), vendor: 'ollama' });
+    modelListeners.forEach(listener => listener()); await settle();
+    assert.deepEqual(last().models.map(model => model.selector), ['copilot:gpt-4o', 'copilot:claude-sonnet', 'ollama:llama']);
     assert.equal(last().model, 'copilot:gpt-4o', 'without a dashboard choice, the first model drafts');
+    // Opening the menu asks again.
+    availableModels.pop();
+    await receive({ type: 'refreshModels' }); await settle();
+    assert.deepEqual(last().models.map(model => model.selector), ['copilot:gpt-4o', 'copilot:claude-sonnet']);
 
     await receive({ type: 'setModel', selector: 'copilot:claude-sonnet' });
     lmReplies.push({ reply: 'A plan.', workflow: plan() });
@@ -329,6 +345,19 @@ async function main() {
     await loneReceive({ type: 'ready' }); await loneReceive({ type: 'run' }); await settle();
     assert.equal(lonePosted[lonePosted.length - 1].folder, false);
     assert.match(lonePosted[lonePosted.length - 1].notice, /Open a folder/);
+  }
+
+  // ---- The manifest: the chat is in the Secondary Side Bar (right, as Copilot's), and nothing of
+  // ---- the old Agent view is left; that location needs VS Code 1.104.
+  {
+    const manifest = JSON.parse(fs.readFileSync(path.resolve(__dirname, '../../package.json'), 'utf8'));
+    const containers = manifest.contributes.viewsContainers;
+    assert.deepEqual(containers.secondarySidebar.map(container => container.id), ['repository-manager-studio']);
+    assert.deepEqual(manifest.contributes.views['repository-manager-studio'].map(view => view.id), ['repositoryManager.studio.chat']);
+    assert.ok(!containers.activitybar.some(container => /agent|studio/.test(container.id)), 'no Activity Bar icon for the Studio');
+    assert.deepEqual(manifest.contributes.commands.filter(command => command.command.startsWith('repositoryManager.agent.')), []);
+    assert.equal(JSON.stringify(manifest.contributes).includes('repositoryManager.agent.'), false);
+    assert.equal(manifest.engines.vscode, '^1.104.0');
   }
 
   console.log('Studio chat smoke passed');

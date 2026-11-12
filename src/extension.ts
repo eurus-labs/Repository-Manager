@@ -15,7 +15,7 @@ import { RepositoryManagerLauncher } from './repositoryManagerLauncher';
 import { RepositoryManagerPanel } from './repositoryManagerPanel';
 import { CHANGE_DOCUMENT_SCHEME, ChangeDocumentProvider } from './changeDocuments';
 import { registerRequirements } from './requirements/requirementsView';
-import { registerAgent } from './agent/agentView';
+import { registerAgentTasksMove } from './agent/agentTasksMove';
 import { registerStudio, StudioRuns } from './studio/studioCommands';
 import { StudioChatProvider } from './studio/studioChat';
 import { WorkflowEditorProvider } from './studio/workflowEditorProvider';
@@ -54,7 +54,6 @@ export function activate(context: vscode.ExtensionContext) {
   let studioRuns: StudioRuns | undefined;
   if (workspaceRoot) {
     step('Git commands', () => registerGit(context, workspaceRoot));
-    step('Agent', () => registerAgent(context));
     step('Studio', () => { studioRuns = registerStudio(context, workspaceRoot); });
   } else {
     // The commands are declared in package.json, so VS Code shows them (and the Activity Bar
@@ -67,6 +66,8 @@ export function activate(context: vscode.ExtensionContext) {
   step('Workflow editor', () => context.subscriptions.push(WorkflowEditorProvider.register(context)));
   // The chat view is declared in package.json, so it is there with no folder too; it says so.
   step('Studio Chat', () => StudioChatProvider.register(context, studioRuns, workspaceRoot));
+  // Agent tasks from before 2.20.0 become Studio chats (the Tasks view is gone).
+  step('Agent tasks', () => { void registerAgentTasksMove(context).catch(error => log.appendLine(`Moving agent tasks failed: ${error instanceof Error ? error.message : String(error)}`)); });
 
   const declared: string[] = (context.extension?.packageJSON?.contributes?.commands ?? []).map((c: { command: string }) => c.command);
   void Promise.resolve(vscode.commands.getCommands(true)).then(registered => {

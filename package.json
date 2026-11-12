@@ -5,7 +5,7 @@
   "version": "2.20.0",
   "publisher": "repository-manager",
   "engines": {
-    "vscode": "^1.74.0"
+    "vscode": "^1.104.0"
   },
   "categories": [
     "SCM Providers",
@@ -170,22 +170,6 @@
         "category": "Repository Manager"
       },
       {
-        "command": "repositoryManager.agent.newTask",
-        "title": "New Task in Studio Chat",
-        "category": "Repository Manager"
-      },
-      {
-        "command": "repositoryManager.agent.openTask",
-        "title": "Open Agent Task",
-        "category": "Repository Manager"
-      },
-      {
-        "command": "repositoryManager.agent.deleteTask",
-        "title": "Delete Agent Task",
-        "category": "Repository Manager",
-        "icon": "$(trash)"
-      },
-      {
         "command": "repositoryManager.requirements.newItemFor",
         "title": "New Clarification for This Requirement",
         "category": "Repository Manager",
@@ -227,12 +211,6 @@
         "title": "Studio Chat History",
         "category": "Repository Manager",
         "icon": "$(history)"
-      },
-      {
-        "command": "repositoryManager.agent.moveToStudio",
-        "title": "Move Agent Tasks to Studio",
-        "category": "Repository Manager",
-        "icon": "$(arrow-up)"
       }
     ],
     "viewsContainers": {
@@ -246,9 +224,11 @@
           "id": "repository-manager-requirements",
           "title": "Requirements",
           "icon": "resources/requirements-icon.svg"
-        },
+        }
+      ],
+      "secondarySidebar": [
         {
-          "id": "repository-manager-agent",
+          "id": "repository-manager-studio",
           "title": "Studio",
           "icon": "resources/agent-icon.svg"
         }
@@ -275,18 +255,12 @@
           "contextualTitle": "Requirements"
         }
       ],
-      "repository-manager-agent": [
+      "repository-manager-studio": [
         {
           "type": "webview",
           "id": "repositoryManager.studio.chat",
           "name": "Chat",
           "contextualTitle": "Studio"
-        },
-        {
-          "id": "repositoryManager.agent.tasks",
-          "name": "Tasks",
-          "contextualTitle": "Agent",
-          "when": "repositoryManager.agent.hasTasks"
         }
       ]
     },
@@ -336,11 +310,6 @@
           "command": "repositoryManager.studio.chatHistory",
           "when": "view == repositoryManager.studio.chat",
           "group": "navigation@2"
-        },
-        {
-          "command": "repositoryManager.agent.moveToStudio",
-          "when": "view == repositoryManager.agent.tasks",
-          "group": "navigation@1"
         }
       ],
       "commandPalette": [
@@ -357,28 +326,12 @@
           "when": "false"
         },
         {
-          "command": "repositoryManager.agent.newTask",
-          "when": "workspaceFolderCount > 0"
-        },
-        {
-          "command": "repositoryManager.agent.openTask",
-          "when": "false"
-        },
-        {
-          "command": "repositoryManager.agent.deleteTask",
-          "when": "false"
-        },
-        {
           "command": "repositoryManager.requirements.newItemFor",
           "when": "false"
         },
         {
           "command": "repositoryManager.deleteBranchFromMenu",
           "when": "false"
-        },
-        {
-          "command": "repositoryManager.agent.moveToStudio",
-          "when": "workspaceFolderCount > 0"
         }
       ],
       "view/item/context": [
@@ -396,11 +349,6 @@
           "command": "repositoryManager.requirements.newFile",
           "when": "view == repositoryManager.requirements && viewItem =~ /^clarificationFile/",
           "group": "1_new"
-        },
-        {
-          "command": "repositoryManager.agent.deleteTask",
-          "when": "view == repositoryManager.agent.tasks && viewItem == agentTask",
-          "group": "9_delete"
         },
         {
           "command": "repositoryManager.requirements.newItemFor",
@@ -518,10 +466,6 @@
       {
         "view": "repositoryManager.requirementsCatalog",
         "contents": "Open a clarification file to see the requirements its items clarify, and which of them are Ready."
-      },
-      {
-        "view": "repositoryManager.agent.tasks",
-        "contents": "Agent tasks started before version 2.20.0. New work starts in the Chat above.\n[Move Agent Tasks to Studio](command:repositoryManager.agent.moveToStudio)"
       }
     ],
     "customEditors": [

@@ -37,7 +37,7 @@
 
   function modelOptions(selected, first) {
     const options = [first];
-    for (const model of state.models) options.push({ value: model.selector, label: model.name });
+    for (const model of state.models) options.push({ value: model.selector, label: model.vendor && model.vendor !== 'copilot' ? `${model.name} · ${model.vendor}` : model.name });
     if (selected && !state.models.some(model => model.selector === selected)) options.push({ value: selected, label: `${selected} (not in this VS Code)` });
     return options.map(option => el('option', { value: option.value, selected: option.value === (selected || '') }, option.label));
   }
@@ -184,7 +184,8 @@
     if (state.busy === 'drafting') thread.append(el('div', { class: 'message assistant thinking', 'data-testid': 'thinking' }, el('p', {}, 'Drafting…')));
     thread.scrollTop = thread.scrollHeight;
 
-    modelSelect.replaceChildren(...modelOptions(state.model, { value: '', label: state.models.length ? 'Dashboard model' : 'No Copilot model' }));
+    modelSelect.replaceChildren(...modelOptions(state.model, { value: '', label: state.models.length ? 'Dashboard model' : state.modelsLoaded ? 'No model yet: sign in to Copilot' : 'Loading models…' }));
+    modelSelect.title = state.models.length ? 'The model that drafts the plan' : 'No chat model is available yet. Sign in to GitHub Copilot; the list fills in when the models load.';
     send.textContent = state.busy === 'drafting' ? 'Stop' : 'Send';
     send.disabled = state.busy === 'running';
     input.disabled = Boolean(state.busy);
@@ -204,6 +205,9 @@
     if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); form.requestSubmit(); }
   });
   modelSelect.addEventListener('change', () => vscode.postMessage({ type: 'setModel', selector: modelSelect.value }));
+  // Opening the menu asks VS Code again: the models may have loaded since the chat opened.
+  modelSelect.addEventListener('mousedown', () => vscode.postMessage({ type: 'refreshModels' }));
+  modelSelect.addEventListener('focus', () => vscode.postMessage({ type: 'refreshModels' }));
   window.addEventListener('message', event => {
     if (event.data && event.data.type === 'state') { state = event.data; render(); }
   });

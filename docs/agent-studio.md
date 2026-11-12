@@ -563,9 +563,12 @@ is said, with its problems and only Open as JSON offered.
 What the code does, including choices made while building it. Model paths are
 scripted in the tests; a chat with Copilot in VS Code has not been run yet.
 
-- **Where.** The Activity Bar container formerly named Agent is **Studio**;
-  its first view is **Chat** (a webview view), above the agent's **Tasks**.
-  Its title bar has **New Studio Chat** and **Studio Chat History**. With no
+- **Where.** **Studio**, a container in the Secondary Side Bar (on the
+  right, as Copilot's chat; `viewsContainers.secondarySidebar`, which needs
+  VS Code 1.104, so the extension requires it), holds one view, **Chat** (a
+  webview view). Its title bar has **New Studio Chat** and **Studio Chat
+  History**. (Before 2026-11-12 it was the Agent's Activity Bar container,
+  above Tasks.) With no
   folder open the chat drafts plans but cannot run or save them, and says so.
 - **Planner** (`src/studio/chatPlanner.ts`, no `vscode`). One prompt per turn
   holds the rules, the step catalog (each step's description, settings and
@@ -585,7 +588,12 @@ scripted in the tests; a chat with Copilot in VS Code has not been run yet.
   a plain reply. The card edits criteria, the plan's default model and a
   step's model, nothing else (the diagram does the rest).
 - **Models** (`src/studio/studioModels.ts`). Selectors are
-  `<vendor>:<family>` of the Copilot models `vscode.lm` lists, one per family.
+  `<vendor>:<family>` of every chat model `vscode.lm` lists (Copilot's and
+  other vendors'), one per family. The menu is read again when VS Code says
+  the models changed and when the person opens it: Copilot's models load
+  after VS Code starts, and a list read once at start can stay empty
+  (reported by the user, 2026-11-12). It says "Loading models…" or "No model
+  yet: sign in to Copilot" while there is none.
   The composer's choice drafts; without one, the dashboard's model. In a run,
   a node uses its `model`, else the workflow's `defaults.model`, else the
   dashboard's model. Before a run, each named model this VS Code lacks is
@@ -681,9 +689,10 @@ side panel (the chat's plan card and the JSON do it; the diagram keeps it).
 - **Planner.** It is told the repository's scripts (the only checks a code
   step may name; another is a problem) and to plan code changes as code
   steps; with no folder open, a code step is a problem.
-- **Agent view.** The container is **Studio**. **New Task in Studio Chat**
-  (the old New Agent Task command) opens a new chat. The Tasks view shows
-  only while it has tasks, and its "+" is gone (see below).
+- **Agent view.** Removed *(decided 2026-11-12)*: no Activity Bar icon,
+  Tasks view, task page or agent commands. Its runner, tools and script
+  approvals stay: the code step uses them (`src/agent/repositoryScripts.ts`
+  holds the scripts and Git helpers).
 - **Not done here:** undoing a code step's changes when VS Code closes while
   it runs (the agent does this for its tasks; here the files stay as written,
   on the current branch unless the plan named one); per-file Diff buttons (the
@@ -694,26 +703,29 @@ side panel (the chat's plan card and the JSON do it; the diagram keeps it).
 
 ## Agent tasks moved to Studio
 
-*(decided 2026-11-12: move the old tasks into the Studio.)* **Move Agent Tasks
-to Studio** (Tasks view title bar, Command Palette) turns each task into a
-Studio Chat conversation, after one confirmation that lists what moves and
-what stays (`src/studio/agentMigration.ts`, no `vscode`):
+*(decided 2026-11-12: move the old tasks into the Studio, and remove the
+Tasks view.)* When 2.20.0 starts in a workspace, every agent task not moved
+yet becomes a Studio Chat conversation (`src/studio/agentMigration.ts`, no
+`vscode`; started from `src/agent/agentTasksMove.ts`), and one message says
+how many moved, with **Open Chat History**:
 
+- A task left planning or running when VS Code closed is first settled as the
+  agent did: a running step's writes are undone, and the task waits again.
 - The person's message is the task's goal and its criteria.
 - A note says where it came from, its branch, the steps done in the Agent
   (with how each was accepted, failing checks named), and earlier retries'
   feedback.
+- A step that ran and waited for review keeps its changes in the files: the
+  note names them and says to keep or undo them with Git; it is not in the
+  plan, so it does not run again over them.
 - The steps not done yet become the plan: one code step each (`task` from
   the step's intent, its paths and checks, `branch` set to the task's
   branch), in order, with the task's criteria. The person switches to that
   branch before Run; until then the step says so.
 - A task with no plan becomes the goal and a note to draft a plan; a done or
   stopped task becomes history with no plan.
-- A task whose step waits for review (its changes are on disk), or that is
-  running, is not moved: the Agent accepts or undoes that step first.
-- Nothing is deleted: a moved task gets `movedTo` (the conversation id),
-  keeps its file and run log, and leaves the list. The Tasks view hides when
-  no task is left (`repositoryManager.agent.hasTasks`).
+- Nothing is deleted: a moved task gets `movedTo` (the conversation id) and
+  keeps its file and run log; it is not moved again.
 - Tested by `src/test/agentMigrationSmoke.js`, including the moved plan's
   next step running on the task's branch.
 

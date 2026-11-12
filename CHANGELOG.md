@@ -9,14 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Studio Chat**: a chat in the Activity Bar's **Studio** (formerly **Agent**). Type what you want done; Copilot answers with a plan: the steps, and what "done" means, which you can edit. Choose the model that drafts in the chat, and a model for each step on the plan. Ask for changes in the chat: each is shown as a change to accept or discard. **Run** runs the plan, asking before every step that writes, and the result lists what to check it against. **Save as workflow** and **Open in diagram** keep the plan as a workflow file.
+- **Studio Chat**: a chat in the Secondary Side Bar (on the right, beside Copilot's chat), under **Studio**. Type what you want done; Copilot answers with a plan: the steps, and what "done" means, which you can edit. Choose the model that drafts in the chat, and a model for each step on the plan, from every chat model VS Code offers (Copilot's and others'); the menu fills in when the models load. Ask for changes in the chat: each is shown as a change to accept or discard. **Run** runs the plan, asking before every step that writes, and the result lists what to check it against. **Save as workflow** and **Open in diagram** keep the plan as a workflow file.
 - Workflow files may name a model for the workflow and for each prompt step, and list their criteria. A model this VS Code does not have is replaced for the run after asking.
 - **Skills** for steps that use a model: **+ Skill** on a plan step lists the skills (folders with a `SKILL.md`) of the GitHub repositories in `repositoryManager.studio.skillSources` (default `eurus-labs/skills`), read with your VS Code GitHub sign-in. A skill is pinned to the commit you picked it at, kept on this machine, and asked about once per repository before it is used. Skills are instructions only: their scripts are never run, and such skills are marked.
 - **Code steps**: a plan step that changes code in this repository, on the branch you are on (a new branch only when you ask for one in the chat), only in the paths it lists, followed by the repository's scripts as checks (approved once per repository). You review each change, with its diff and checks: Accept (Accept Anyway or Accept as Unverified when a check failed or none ran), Retry with what failed, or Stop, which undoes it.
 
 ### Changed
 
-- The **Agent** icon in the Activity Bar is now **Studio**. New work starts in its chat: **New Agent Task** is now **New Task in Studio Chat**, and the goal and criteria boxes are gone. **Move Agent Tasks to Studio** turns your earlier agent tasks into chats: the goal and criteria, what was done, and the steps left as a plan of code steps on the task's branch. A task whose step waits for your review stays until you finish that step. The **Tasks** view shows only while it has tasks.
+- Repository Manager now needs VS Code 1.104 or newer, for the chat's place in the Secondary Side Bar.
+
+### Removed
+
+- The **Agent** icon, its **Tasks** view and the task pages: new work starts in the Studio chat. Your earlier agent tasks become Studio chats the first time 2.20.0 starts: the goal and criteria, what was done, and the steps left as a plan of code steps on the task's branch. A step that was waiting for your review keeps its changes in the files, and its chat names them. Nothing is deleted.
 
 ## [2.19.0] - 2026-11-08
 

@@ -14,10 +14,10 @@ import { ChatRun, ChatStore, Conversation, newMessage } from './chatStore';
 import { RunState } from './engine';
 import { CancelSignal, StepDefinition } from './steps';
 import { studioSteps } from './registry';
-import { dashboardSelector, listModels, ModelChoice, studioModel } from './studioModels';
+import { dashboardSelector, listModels, ModelChoice, onModelsChanged, studioModel } from './studioModels';
 import { StudioSkills, studioSkills } from './githubSkills';
 import { SkillSummary } from './skills';
-import { readScripts } from '../agent/agentView';
+import { readScripts } from '../agent/repositoryScripts';
 import { StudioRuns } from './studioCommands';
 import { EditOperation, serializeWorkflow } from './workflowEdit';
 import { WORKFLOW_EDITOR } from './workflowEditorProvider';
@@ -31,12 +31,13 @@ type Incoming =
   | { type: 'ready' } | { type: 'send'; text: string } | { type: 'cancel' }
   | { type: 'setModel'; selector: string } | { type: 'accept'; id: string } | { type: 'discard'; id: string }
   | { type: 'edit'; operation: EditOperation } | { type: 'run' } | { type: 'save' } | { type: 'openDiagram' }
-  | { type: 'addSkill'; id: string };
+  | { type: 'addSkill'; id: string } | { type: 'refreshModels' };
 
 export class StudioChatProvider implements vscode.WebviewViewProvider {
   private view?: vscode.WebviewView;
   private conversation?: Conversation;
   private models: ModelChoice[] = [];
+  private modelsLoaded = false;
   private busy: 'drafting' | 'running' | undefined;
   private cancelled = false;
   private notice = '';
@@ -71,6 +72,17 @@ export class StudioChatProvider implements vscode.WebviewViewProvider {
       view.webview.asWebviewUri(vscode.Uri.joinPath(resources, 'studioChat.css')).toString(),
       view.webview.cspSource);
     view.webview.onDidReceiveMessage((message: Incoming) => { void this.receive(message); });
+    // Copilot's models load after VS Code starts, and models come and go: the menu follows.
+    const changed = onModelsChanged(() => { void this.refreshModels(); });
+    if (changed) { this.context.subscriptions.push(changed); }
+  }
+
+  /** The models VS Code offers now; the drafting model is set once there is one. */
+  private async refreshModels(): Promise<void> {
+    this.models = await listModels().catch(() => [] as ModelChoice[]);
+    this.modelsLoaded = true;
+    if (this.conversation && !this.conversation.model) { this.conversation.model = this.defaultSelector(); }
+    this.post();
   }
 
   async newChat(): Promise<void> {
@@ -112,6 +124,7 @@ export class StudioChatProvider implements vscode.WebviewViewProvider {
       switch (message.type) {
         case 'ready':
           this.models = await listModels().catch(() => []);
+          this.modelsLoaded = true;
           await this.cachedSkills();
           await this.ensureConversation();
           this.post();
@@ -150,6 +163,7 @@ export class StudioChatProvider implements vscode.WebviewViewProvider {
         case 'run': return await this.run();
         case 'save': await this.save(); return;
         case 'addSkill': await this.addSkill(message.id); return;
+        case 'refreshModels': await this.refreshModels(); return;
         case 'openDiagram': {
           const file = await this.save();
           if (file) { await vscode.commands.executeCommand('vscode.openWith', vscode.Uri.file(file), WORKFLOW_EDITOR); }
@@ -329,7 +343,7 @@ export class StudioChatProvider implements vscode.WebviewViewProvider {
     this.notice = '';
     void this.view.webview.postMessage({
       type: 'state', notice, busy: this.busy ?? null, folder: Boolean(this.root),
-      models: this.models.map(model => ({ selector: model.selector, name: model.name })),
+      models: this.models.map(model => ({ selector: model.selector, name: model.name, vendor: model.vendor })), modelsLoaded: this.modelsLoaded,
       skills: Object.fromEntries([...this.skillNames.values()].map(skill => [skill.ref, { name: skill.name, usesScripts: skill.usesScripts }])),
       model: conversation.model ?? null, file: conversation.file ?? null, title: conversation.title,
       messages: conversation.messages.map(message => ({

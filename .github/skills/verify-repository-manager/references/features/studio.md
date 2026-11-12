@@ -10,12 +10,12 @@ with an effect, edited as a diagram in the Workflow Editor, and drafted from a g
 - skills: SKILL.md folders from GitHub sources, pinned to a commit, cached, trusted once per source.
 - commands: Run Workflow… (library, folder, samples, or a given file), Show Workflow Runs.
 - editor: the Workflow Editor for `*.workflow.json`.
-- chat: the Studio Chat view (Activity Bar **Studio** → Chat): goal → plan card (criteria, steps, per-step model) → proposed changes as a diff → Run, Save as workflow, Open in diagram.
+- chat: the Studio Chat view (Secondary Side Bar **Studio** → Chat, on the right): goal → plan card (criteria, steps, per-step model) → proposed changes as a diff → Run, Save as workflow, Open in diagram.
 
 ## How to get to it (user POV)
 - Command Palette → Repository Manager: Run Workflow… → pick a workflow → inputs → consent → gates.
 - Open any `*.workflow.json` → Workflow Editor; **Open as JSON** for the text.
-- Activity Bar **Studio** → **Chat**: type a goal; **New Studio Chat** and **Studio Chat History** are on the view's title bar.
+- Secondary Side Bar (right) **Studio** → **Chat**: type a goal; **New Studio Chat** and **Studio Chat History** are on the view's title bar.
 
 ## Driving it
 - Node: `studioEngineSmoke.js` (the sample on a real Git repository with a scripted model), `studioCommandsSmoke.js`
@@ -46,8 +46,9 @@ with an effect, edited as a diagram in the Workflow Editor, and drafted from a g
 - A code step works on the current branch; it creates a branch only when the plan names one (asked for by the person), and only from a clean tree. [confirmed: user, 2026-11-12]
 - A code step changes only its paths, runs only approved scripts as checks, and waits for review; Retry and Stop undo its changes. [confirmed: test src/test/studioCodeStepSmoke.js]
 - A failed or unverified code step is never accepted by a plain Accept: the button says Accept Anyway or Accept as Unverified. [observed: src/studio/studioCommands.ts, drive]
-- New work starts in the Studio chat. [confirmed: user, 2026-11-09]
-- Earlier agent tasks move to Studio chats on request: remaining steps become code steps on the task's branch; a task with a step under review stays; nothing is deleted. [confirmed: user, 2026-11-12; test src/test/agentMigrationSmoke.js]
+- New work starts in the Studio chat, in the Secondary Side Bar on the right, as Copilot's; the Agent's Tasks view is gone. [confirmed: user, 2026-11-12]
+- The chat's model menu lists every chat model VS Code offers and fills in when they load (it was empty when read only at start). [confirmed: user, 2026-11-12; test src/test/studioChatSmoke.js]
+- Earlier agent tasks become Studio chats when 2.20.0 starts: remaining steps become code steps on the task's branch; a step under review keeps its changes and is named; nothing is deleted. [confirmed: user, 2026-11-12; test src/test/agentMigrationSmoke.js]
 - Once saved as a workflow file, the file is the plan: edits there show in the chat, and an accepted change is written to it. [confirmed: test src/test/studioChatSmoke.js]
 
 ## Suspected bugs
