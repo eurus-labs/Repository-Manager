@@ -107,6 +107,8 @@ export interface AgentTask {
   current: number;
   /** The model the last call used. */
   modelId?: string;
+  /** The Studio Chat conversation the task was moved to: no longer listed here, kept on disk. */
+  movedTo?: string;
 }
 
 /** One line of a task's run log (append-only, on this machine). */

@@ -8,7 +8,8 @@ const { execFileSync } = require('node:child_process');
 // The agent harness without VS Code: the Copilot router's JSON protocol, the step tools and their
 // limits, and a whole task on a real Git repository with scripted models: plan, approval (scripts,
 // clean tree, branch), a step whose check fails, Retry (undone, failure sent back), Accept, the
-// run log, recovery after a closed window, and the task page.
+// run log, and recovery after a closed window. (The task page is gone since 3.0.0: the Studio's
+// code step runs this loop; src/test/studioCodeStepSmoke.js covers its review.)
 // Only the approval question is used from VS Code here; the answer is scripted.
 const asked = [];
 const fakeVscode = { window: { showWarningMessage: async (message, options, ...choices) => { asked.push(options.detail); return asked.answer ?? choices[0]; } } };
@@ -22,9 +23,8 @@ const { CopilotRouter } = require(path.join(out, 'lmRouter'));
 const { StepWorkspace, revertChanges, cleanPath, pathAllowed } = require(path.join(out, 'agentTools'));
 const { AgentRunner, parsePlan, branchName, stepVerification, isDocumentation, MAX_ATTEMPTS } = require(path.join(out, 'agentRunner'));
 const { TaskStore } = require(path.join(out, 'taskStore'));
-const { renderTaskBody } = require(path.join(out, 'agentPage'));
 const { taskGroup } = require(path.join(out, 'types'));
-const { ScriptApprovals, scriptCommand, describeScript, AgentController } = require(path.join(out, 'agentView'));
+const { ScriptApprovals, scriptCommand, describeScript, approveScripts } = require(path.join(out, 'repositoryScripts'));
 
 const token = { isCancellationRequested: false };
 const git = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
@@ -247,11 +247,6 @@ async function wholeTask() {
   assert.equal(result.toolCalls[1].ok, false);
   assert.equal(result.checks[0].passed, false);
   await assert.rejects(runner.accept(task.id), /Checks failed: test/);
-  const page = renderTaskBody(current, store.readLog(task.id), 'Model <b>');
-  assert.match(page, /data-action="accept" disabled title="A check failed"/);
-  assert.match(page, /Model &lt;b&gt;/);
-  assert.match(page, /✗ test/);
-  assert.match(page, /data-action="acceptAnyway"/, 'a failed check offers Accept anyway');
 
   // Retry: the change is undone and the failure goes to the next run.
   runner.retry(task.id);
@@ -321,7 +316,6 @@ async function failuresAndRecovery({ root, store, runner, turns, host, approve }
   assert.equal(current.current, 1);
   turns.push({ final: { summary: 'Nothing to do.' } });
   await runner.runStep(task.id, token);
-  assert.match(renderTaskBody(store.get(task.id), [], 'm'), /No check ran: nothing verified this step/);
   runner.stop(task.id);
   assert.equal(store.get(task.id).status, 'stopped');
 
@@ -337,12 +331,10 @@ async function failuresAndRecovery({ root, store, runner, turns, host, approve }
     if (run < MAX_ATTEMPTS - 1) { runner.retry(third.id); }
   }
   assert.throws(() => runner.retry(third.id), /already ran 3 times/);
-  assert.doesNotMatch(renderTaskBody(store.get(third.id), [], 'm'), /acceptAnyway/, 'no Accept anyway without a failed check');
 
   // Accept anyway: a check that already failed before the task (this test always fails).
   await runner.accept(third.id);
   assert.equal(store.get(third.id).plan[0].verification, 'noChanges');
-  assert.doesNotMatch(renderTaskBody(store.get(third.id), [], 'm'), /checks passed/);
   git(root, 'switch', '-q', 'main');
   fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({ scripts: { test: 'node -e "process.exit(1)"' } }));
   git(root, 'commit', '-q', '-am', 'a failing test');
@@ -363,7 +355,6 @@ async function failuresAndRecovery({ root, store, runner, turns, host, approve }
   assert.equal(fs.readFileSync(path.join(root, 'src', 'retry.js'), 'utf8'), 'module.exports = { attempts: 4 };\n', 'the change is kept');
   const anyway = store.readLog(fifth.id).find(entry => entry.action === 'acceptAnyway');
   assert.equal(anyway.detail, 'failing: test');
-  assert.match(renderTaskBody(accepted, [], 'm'), /failing: test/);
   assert.equal(accepted.plan[0].verification, 'failed');
 
   // Issue #138: an unknown check name is kept and blocks approval, never silently dropped.
@@ -378,28 +369,21 @@ async function failuresAndRecovery({ root, store, runner, turns, host, approve }
   await runner.plan(seventh.id, token);
   let planned = store.get(seventh.id);
   assert.deepEqual(planned.plan[0].checks, []);
-  assert.match(renderTaskBody(planned, [], 'm'), /Not scripts of this repository: <code>missing-check<\/code>/);
   await assert.rejects(runner.approvePlan(seventh.id), /step 1 \(missing-check\)\. Edit those steps' checks first/);
   // Choosing the checks (here: none) settles it; the step can then only be accepted as unverified.
   runner.editStep(seventh.id, 0, { checks: [] });
   planned = store.get(seventh.id);
   assert.equal(planned.plan[0].unknownChecks, undefined);
-  assert.match(renderTaskBody(planned, [], 'm'), /code change it makes can only be accepted as unverified/);
   await runner.approvePlan(seventh.id);
   turns.push({ tool: 'edit_file', input: { path: 'src/retry.js', oldText: 'attempts: 1', newText: 'attempts: 5' } }, { final: { summary: 'done, trust me' } });
   await runner.runStep(seventh.id, token);
   const unverifiedReview = store.get(seventh.id);
   assert.equal(stepVerification(unverifiedReview.plan[0]), 'unverified');
-  const reviewPage = renderTaskBody(unverifiedReview, [], 'm');
-  assert.match(reviewPage, /data-action="accept"[^>]*disabled/, 'plain Accept is off for an unverified change');
-  assert.match(reviewPage, /data-action="acceptUnverified"/);
-  assert.doesNotMatch(reviewPage, /data-action="acceptAnyway"/);
   await assert.rejects(runner.accept(seventh.id), /no check ran, so nothing verified it/);
   await runner.accept(seventh.id, { anyway: true });
   const unverified = store.get(seventh.id);
   assert.equal(unverified.plan[0].verification, 'unverified');
   assert.equal(unverified.plan[0].acceptedDespite, undefined);
-  assert.match(renderTaskBody(unverified, [], 'm'), />unverified</);
   const unverifiedLog = store.readLog(seventh.id).find(entry => entry.action === 'acceptUnverified');
   assert.equal(unverifiedLog.detail, 'no check ran; changed: src/retry.js');
 
@@ -412,9 +396,7 @@ async function failuresAndRecovery({ root, store, runner, turns, host, approve }
   assert.equal(isDocumentation('src/docs/x.ts'), false, 'only the top-level docs/ folder');
   const docsTask = { ...JSON.parse(JSON.stringify(unverifiedReview)), status: 'stepReview', current: 0, plan: [{ title: 'Docs', intent: 'd', tools: ['edit_file'], paths: ['README.md'], checks: [], state: 'pending', attempts: 1,
     result: { summary: '', changes: [{ path: 'README.md', before: 'a', after: 'b' }], toolCalls: [], checks: [], aiText: [] } }] };
-  assert.doesNotMatch(renderTaskBody(docsTask, [], 'm'), /data-action="accept"[^>]*disabled/, 'a docs-only step is accepted plainly');
   docsTask.plan[0].state = 'done'; docsTask.plan[0].verification = 'docsOnly'; docsTask.status = 'done';
-  assert.match(renderTaskBody(docsTask, [], 'm'), />docs only</);
   assert.equal(stepVerification({ result: { changes: [{ path: 'a' }], checks: [{ passed: true }] } }), 'passed');
   assert.equal(stepVerification({ result: { changes: [], checks: [{ passed: true }, { passed: false }] } }), 'failed');
 
@@ -478,19 +460,19 @@ async function failuresAndRecovery({ root, store, runner, turns, host, approve }
 
   // A check added after the plan was approved, or whose command changed, is asked about where it
   // happens (Edit, Run): only the scripts not approved yet, and a refusal approves nothing.
-  const asking = { approvals: hooked };
+  const ask = async (_question, detail) => { asked.push(detail); return asked.answer === undefined; };
   const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-approve-'));
   fs.writeFileSync(path.join(repo, 'package.json'), JSON.stringify({ scripts: { lint: 'eslint .', test: 'jest', pretest: 'tsc' } }));
   await hooked.approve(repo, { lint: 'eslint .' }, ['lint']);
   asked.length = 0;
   asked.answer = undefined;
-  assert.equal(await AgentController.prototype.approveScripts.call(asking, repo, ['lint']), true);
+  assert.equal(await approveScripts(hooked, repo, ['lint'], ask), true);
   assert.equal(asked.length, 0, 'an approved script was asked about again');
   asked.answer = 'no';
-  assert.equal(await AgentController.prototype.approveScripts.call(asking, repo, ['lint', 'test']), false);
+  assert.equal(await approveScripts(hooked, repo, ['lint', 'test'], ask), false);
   assert.deepEqual(hooked.allowed(repo, { lint: 'eslint .', test: 'jest', pretest: 'tsc' }), ['lint']);
   asked.answer = undefined;
-  assert.equal(await AgentController.prototype.approveScripts.call(asking, repo, ['lint', 'test']), true);
+  assert.equal(await approveScripts(hooked, repo, ['lint', 'test'], ask), true);
   assert.equal(asked.at(-1), 'npm run test  →  jest\n    with pretest: tsc');
   assert.deepEqual(hooked.allowed(repo, { lint: 'eslint .', test: 'jest', pretest: 'tsc' }), ['lint', 'test']);
 

@@ -275,7 +275,7 @@
 
     $('palette').replaceChildren(...(data.catalog || []).map(step => el('button', {
       type: 'button', class: 'step', disabled: !data.editable, 'data-type': step.type,
-      title: `${step.type}${step.asks ? ` · asks before it ${step.asks}` : ''}${step.usesModel ? ' · uses the model' : ''}`,
+      title: `${step.type}${step.asks ? ` · asks before it ${step.asks}` : ''}${step.usesModel ? ' · uses the model' : ''}${step.description ? `\n${step.description}` : ''}`,
       onclick: () => send({ op: 'addNode', type: step.type })
     }, el('strong', { text: step.title }), el('small', { text: step.type }))));
 

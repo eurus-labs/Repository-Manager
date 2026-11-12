@@ -14,7 +14,10 @@ export type EditOperation =
   | { op: 'addNode'; type: string; at?: [number, number] }
   | { op: 'removeNode'; id: string }
   | { op: 'renameNode'; id: string; to: string }
-  | { op: 'setNode'; id: string; field: 'title' | 'prompt' | 'forEach'; value: string }
+  | { op: 'setNode'; id: string; field: 'title' | 'prompt' | 'forEach' | 'model'; value: string }
+  | { op: 'setDefaultModel'; value: string }
+  | { op: 'setCriteria'; criteria: string[] }
+  | { op: 'setSkills'; id: string; skills: string[] }
   | { op: 'setSetting'; id: string; key: string; value: string }
   | { op: 'move'; id: string; at: [number, number] }
   | { op: 'addEdge'; from: string; to: string }
@@ -39,7 +42,7 @@ const ROW = 120;
 /** The file as the editor writes it: two-space JSON and a final newline, keys in a stable order. */
 export function serializeWorkflow(workflow: Workflow): string {
   const ordered: Record<string, unknown> = {};
-  for (const key of ['schema', 'id', 'version', 'title', 'description', 'inputs', 'types', 'prompts', 'nodes', 'edges', 'layout']) {
+  for (const key of ['schema', 'id', 'version', 'title', 'description', 'criteria', 'defaults', 'inputs', 'types', 'prompts', 'nodes', 'edges', 'layout']) {
     const value = (workflow as unknown as Record<string, unknown>)[key];
     if (value !== undefined) { ordered[key] = value; }
   }
@@ -170,6 +173,23 @@ export function applyEdit(source: Workflow, operation: EditOperation, settings: 
     case 'setNode': {
       const node = nodeOf(workflow, operation.id);
       if (operation.value.trim()) { node[operation.field] = operation.value; } else { delete node[operation.field]; }
+      break;
+    }
+    case 'setDefaultModel':
+      if (operation.value.trim()) { workflow.defaults = { ...workflow.defaults, model: operation.value.trim() }; }
+      else if (workflow.defaults) { delete workflow.defaults.model; if (!Object.keys(workflow.defaults).length) { delete workflow.defaults; } }
+      break;
+    case 'setCriteria': {
+      if (!Array.isArray(operation.criteria)) { throw new EditError('Criteria are a list.'); }
+      const criteria = operation.criteria.map(item => String(item).trim()).filter(Boolean);
+      if (criteria.length) { workflow.criteria = criteria; } else { delete workflow.criteria; }
+      break;
+    }
+    case 'setSkills': {
+      const node = nodeOf(workflow, operation.id);
+      if (!Array.isArray(operation.skills)) { throw new EditError('Skills are a list.'); }
+      const skills = [...new Set(operation.skills.map(String))];
+      if (skills.length) { node.skills = skills; } else { delete node.skills; }
       break;
     }
     case 'setSetting': {

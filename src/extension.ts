@@ -15,8 +15,9 @@ import { RepositoryManagerLauncher } from './repositoryManagerLauncher';
 import { RepositoryManagerPanel } from './repositoryManagerPanel';
 import { CHANGE_DOCUMENT_SCHEME, ChangeDocumentProvider } from './changeDocuments';
 import { registerRequirements } from './requirements/requirementsView';
-import { registerAgent } from './agent/agentView';
-import { registerStudio } from './studio/studioCommands';
+import { registerAgentTasksMove } from './agent/agentTasksMove';
+import { registerStudio, StudioRuns } from './studio/studioCommands';
+import { StudioChatProvider } from './studio/studioChat';
 import { WorkflowEditorProvider } from './studio/workflowEditorProvider';
 import * as path from 'path';
 import { setUsageLog, UsageLog, usageReport } from './services/usageLog';
@@ -50,10 +51,10 @@ export function activate(context: vscode.ExtensionContext) {
   const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
   log.appendLine(workspaceRoot ? `Workspace folder: ${workspaceRoot}` : 'No workspace folder open');
 
+  let studioRuns: StudioRuns | undefined;
   if (workspaceRoot) {
     step('Git commands', () => registerGit(context, workspaceRoot));
-    step('Agent', () => registerAgent(context));
-    step('Studio', () => registerStudio(context, workspaceRoot));
+    step('Studio', () => { studioRuns = registerStudio(context, workspaceRoot); });
   } else {
     // The commands are declared in package.json, so VS Code shows them (and the Activity Bar
     // shows the launcher) with no folder too: register them to say why they cannot run.
@@ -63,6 +64,10 @@ export function activate(context: vscode.ExtensionContext) {
   step('Requirements', () => registerRequirements(context));
   // A workflow file opens in the Workflow Editor with or without a folder; running it needs one.
   step('Workflow editor', () => context.subscriptions.push(WorkflowEditorProvider.register(context)));
+  // The chat view is declared in package.json, so it is there with no folder too; it says so.
+  step('Studio Chat', () => StudioChatProvider.register(context, studioRuns, workspaceRoot));
+  // Agent tasks from before 3.0.0 become Studio chats (the Tasks view is gone).
+  step('Agent tasks', () => { void registerAgentTasksMove(context).catch(error => log.appendLine(`Moving agent tasks failed: ${error instanceof Error ? error.message : String(error)}`)); });
 
   const declared: string[] = (context.extension?.packageJSON?.contributes?.commands ?? []).map((c: { command: string }) => c.command);
   void Promise.resolve(vscode.commands.getCommands(true)).then(registered => {
@@ -170,7 +175,9 @@ function registerUsage(context: vscode.ExtensionContext): void {
 /** With no folder open, every Git and Agent command shows an error instead of being "not found". */
 function registerWithoutFolder(context: vscode.ExtensionContext): void {
   const declared: string[] = (context.extension?.packageJSON?.contributes?.commands ?? []).map((c: { command: string }) => c.command);
-  for (const id of declared.filter(id => !id.startsWith('repositoryManager.requirements.'))) {
+  // Requirements and the Studio Chat register their own commands, with or without a folder.
+  const ownRegistration = (id: string) => id.startsWith('repositoryManager.requirements.') || ['repositoryManager.studio.newChat', 'repositoryManager.studio.chatHistory', 'repositoryManager.studio.manageSkillSources'].includes(id);
+  for (const id of declared.filter(id => !ownRegistration(id))) {
     context.subscriptions.push(vscode.commands.registerCommand(id, () => vscode.window.showErrorMessage(NO_FOLDER_MESSAGE)));
   }
 }
