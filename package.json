@@ -227,6 +227,12 @@
         "title": "Studio Chat History",
         "category": "Repository Manager",
         "icon": "$(history)"
+      },
+      {
+        "command": "repositoryManager.agent.moveToStudio",
+        "title": "Move Agent Tasks to Studio",
+        "category": "Repository Manager",
+        "icon": "$(arrow-up)"
       }
     ],
     "viewsContainers": {
@@ -279,7 +285,8 @@
         {
           "id": "repositoryManager.agent.tasks",
           "name": "Tasks",
-          "contextualTitle": "Agent"
+          "contextualTitle": "Agent",
+          "when": "repositoryManager.agent.hasTasks"
         }
       ]
     },
@@ -329,6 +336,11 @@
           "command": "repositoryManager.studio.chatHistory",
           "when": "view == repositoryManager.studio.chat",
           "group": "navigation@2"
+        },
+        {
+          "command": "repositoryManager.agent.moveToStudio",
+          "when": "view == repositoryManager.agent.tasks",
+          "group": "navigation@1"
         }
       ],
       "commandPalette": [
@@ -363,6 +375,10 @@
         {
           "command": "repositoryManager.deleteBranchFromMenu",
           "when": "false"
+        },
+        {
+          "command": "repositoryManager.agent.moveToStudio",
+          "when": "workspaceFolderCount > 0"
         }
       ],
       "view/item/context": [
@@ -505,7 +521,7 @@
       },
       {
         "view": "repositoryManager.agent.tasks",
-        "contents": "Agent tasks started before version 2.20.0 are listed here, and still open and run.\nNew work starts in the Chat above: type a goal, and changes to code run as code steps you review.\n[Open Studio Chat](command:repositoryManager.agent.newTask)"
+        "contents": "Agent tasks started before version 2.20.0. New work starts in the Chat above.\n[Move Agent Tasks to Studio](command:repositoryManager.agent.moveToStudio)"
       }
     ],
     "customEditors": [
@@ -538,7 +554,7 @@
     "watch": "tsc -watch -p ./",
     "pretest": "npm run compile && npm run lint",
     "lint": "eslint src --ext ts",
-    "test": "node ./out/test/runTest.js && node ./src/test/summaryWebviewSmoke.js && node ./src/test/historyActionHandlerSmoke.js && node ./src/test/historyRewriteHandlerSmoke.js && node ./src/test/conflictPredictionSmoke.js && node ./src/test/conflictExplanationSmoke.js && node ./src/test/conflictResolutionSmoke.js && node ./src/test/naturalUndoSmoke.js && node ./src/test/syncRecordedHandlerSmoke.js && node ./src/test/pullChangesSmoke.js && node ./src/test/autoFetchPanelSmoke.js && node ./src/test/backgroundFetchSmoke.js && node ./src/test/summaryProviderSmoke.js && node ./src/test/reviewSnapshotSmoke.js && node ./src/test/securityReviewSmoke.js && node ./src/test/securityReviewFindingsSmoke.js && node ./src/test/reviewReportSmoke.js && node ./src/test/reviewControllerSmoke.js && node ./src/test/reviewConsentSmoke.js && node ./src/test/reviewFixSmoke.js && node ./src/test/reviewLimitationsSmoke.js && node ./src/test/historyUpstreamSmoke.js && node ./src/test/reviewHistorySmoke.js && node ./src/test/reviewConversationSmoke.js && node ./src/test/historySearchSmoke.js && node ./src/test/repositoryListSmoke.js && node ./src/test/branchDeleteHandlerSmoke.js && node ./src/test/sidebarViewSmoke.js && node ./src/test/reviewResumeSmoke.js && node ./src/test/reviewSkillsSmoke.js && node ./src/test/reviewTriageCarrySmoke.js && node ./src/test/reviewBridgeSmoke.js && node ./src/test/commitHandlerSmoke.js && node ./src/test/commitMessageSmoke.js && node ./src/test/usageLogSmoke.js && node ./src/test/liveChangesSmoke.js && node ./src/test/reviewFileCoverageSmoke.js && node ./src/test/reviewExplainSmoke.js && node ./src/test/aiDirectedTextSmoke.js && node ./src/test/reviewRetrySmoke.js && node ./src/test/reviewSnapshotKeepSmoke.js && node ./src/test/stashSmoke.js && node ./src/test/stashActionSmoke.js && node ./src/test/discardSmoke.js && node ./src/test/changeDocumentsSmoke.js && node ./src/test/dashboardOpenSmoke.js && node ./src/test/pushCreatedBranchesSmoke.js && node ./src/test/modelPreferencesSmoke.js && node ./src/test/requirementsParserSmoke.js && node ./src/test/requirementsViewSmoke.js && node ./src/test/activationSmoke.js && node ./src/test/agentHarnessSmoke.js && node ./src/test/studioEngineSmoke.js && node ./src/test/studioCommandsSmoke.js && node ./src/test/workflowEditSmoke.js && node ./src/test/studioChatSmoke.js && node ./src/test/studioSkillsSmoke.js && node ./src/test/studioCodeStepSmoke.js",
+    "test": "node ./out/test/runTest.js && node ./src/test/summaryWebviewSmoke.js && node ./src/test/historyActionHandlerSmoke.js && node ./src/test/historyRewriteHandlerSmoke.js && node ./src/test/conflictPredictionSmoke.js && node ./src/test/conflictExplanationSmoke.js && node ./src/test/conflictResolutionSmoke.js && node ./src/test/naturalUndoSmoke.js && node ./src/test/syncRecordedHandlerSmoke.js && node ./src/test/pullChangesSmoke.js && node ./src/test/autoFetchPanelSmoke.js && node ./src/test/backgroundFetchSmoke.js && node ./src/test/summaryProviderSmoke.js && node ./src/test/reviewSnapshotSmoke.js && node ./src/test/securityReviewSmoke.js && node ./src/test/securityReviewFindingsSmoke.js && node ./src/test/reviewReportSmoke.js && node ./src/test/reviewControllerSmoke.js && node ./src/test/reviewConsentSmoke.js && node ./src/test/reviewFixSmoke.js && node ./src/test/reviewLimitationsSmoke.js && node ./src/test/historyUpstreamSmoke.js && node ./src/test/reviewHistorySmoke.js && node ./src/test/reviewConversationSmoke.js && node ./src/test/historySearchSmoke.js && node ./src/test/repositoryListSmoke.js && node ./src/test/branchDeleteHandlerSmoke.js && node ./src/test/sidebarViewSmoke.js && node ./src/test/reviewResumeSmoke.js && node ./src/test/reviewSkillsSmoke.js && node ./src/test/reviewTriageCarrySmoke.js && node ./src/test/reviewBridgeSmoke.js && node ./src/test/commitHandlerSmoke.js && node ./src/test/commitMessageSmoke.js && node ./src/test/usageLogSmoke.js && node ./src/test/liveChangesSmoke.js && node ./src/test/reviewFileCoverageSmoke.js && node ./src/test/reviewExplainSmoke.js && node ./src/test/aiDirectedTextSmoke.js && node ./src/test/reviewRetrySmoke.js && node ./src/test/reviewSnapshotKeepSmoke.js && node ./src/test/stashSmoke.js && node ./src/test/stashActionSmoke.js && node ./src/test/discardSmoke.js && node ./src/test/changeDocumentsSmoke.js && node ./src/test/dashboardOpenSmoke.js && node ./src/test/pushCreatedBranchesSmoke.js && node ./src/test/modelPreferencesSmoke.js && node ./src/test/requirementsParserSmoke.js && node ./src/test/requirementsViewSmoke.js && node ./src/test/activationSmoke.js && node ./src/test/agentHarnessSmoke.js && node ./src/test/studioEngineSmoke.js && node ./src/test/studioCommandsSmoke.js && node ./src/test/workflowEditSmoke.js && node ./src/test/studioChatSmoke.js && node ./src/test/studioSkillsSmoke.js && node ./src/test/studioCodeStepSmoke.js && node ./src/test/agentMigrationSmoke.js",
     "test:ui": "npm run compile && node ./src/test/uiSnapshots.js && node ./src/test/requirementEditorUi.js && node ./src/test/studioEditorUi.js && node ./src/test/studioChatUi.js",
     "package": "vsce package",
     "bench:load": "node ./src/test/loadBench.js"

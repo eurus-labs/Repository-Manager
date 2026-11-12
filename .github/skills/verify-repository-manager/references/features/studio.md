@@ -21,7 +21,7 @@ with an effect, edited as a diagram in the Workflow Editor, and drafted from a g
 - Node: `studioEngineSmoke.js` (the sample on a real Git repository with a scripted model), `studioCommandsSmoke.js`
   (the commands with a scripted vscode), `workflowEditSmoke.js`, `studioChatSmoke.js` (planner, conversation rules, per-step
   models, and the chat host with a scripted `vscode.lm`), `studioSkillsSmoke.js` (a scripted GitHub), `studioCodeStepSmoke.js`
-  (a real Git repository and check, scripted tool calls) — `$V capture <label> -- node src/test/<name>`.
+  (a real Git repository and check, scripted tool calls), `agentMigrationSmoke.js` (agent tasks to Studio chats) — `$V capture <label> -- node src/test/<name>`.
 - Chromium: `src/test/studioEditorUi.js` (real page and provider, fake text document); screenshots `ui-snapshots/30*`–`32*`.
   `src/test/studioChatUi.js` (real chat page and provider, scripted `vscode.lm`); screenshots `ui-snapshots/40*`–`45*`.
 
@@ -46,7 +46,8 @@ with an effect, edited as a diagram in the Workflow Editor, and drafted from a g
 - A code step works on the current branch; it creates a branch only when the plan names one (asked for by the person), and only from a clean tree. [confirmed: user, 2026-11-12]
 - A code step changes only its paths, runs only approved scripts as checks, and waits for review; Retry and Stop undo its changes. [confirmed: test src/test/studioCodeStepSmoke.js]
 - A failed or unverified code step is never accepted by a plain Accept: the button says Accept Anyway or Accept as Unverified. [observed: src/studio/studioCommands.ts, drive]
-- New work starts in the Studio chat; the Tasks view keeps earlier agent tasks. [confirmed: user, 2026-11-09]
+- New work starts in the Studio chat. [confirmed: user, 2026-11-09]
+- Earlier agent tasks move to Studio chats on request: remaining steps become code steps on the task's branch; a task with a step under review stays; nothing is deleted. [confirmed: user, 2026-11-12; test src/test/agentMigrationSmoke.js]
 - Once saved as a workflow file, the file is the plan: edits there show in the chat, and an accepted change is written to it. [confirmed: test src/test/studioChatSmoke.js]
 
 ## Suspected bugs

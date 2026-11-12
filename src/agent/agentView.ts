@@ -14,6 +14,9 @@ import { CancelToken, CopilotApi, CopilotChatModel, CopilotRouter } from './lmRo
 import { renderTaskBody, renderTaskPage } from './agentPage';
 import { TaskStore } from './taskStore';
 import { AgentTask, AgentToolName, CheckResult, TaskGroup, taskGroup, WRITE_TOOLS } from './types';
+import { taskToConversation } from '../studio/agentMigration';
+import { ChatStore, Conversation } from '../studio/chatStore';
+import { studioSteps } from '../studio/registry';
 import { readSelectedModel } from '../modelPreferences';
 import { askBeforeSending } from '../copilotSettings';
 import { ReviewConsentStore } from '../reviewConsent';
@@ -402,6 +405,49 @@ export class AgentController {
     return change?.before ?? '';
   }
 
+  /**
+   * Moves the tasks to the Studio Chat: each becomes a conversation (its remaining steps a plan of
+   * code steps). Tasks with a step waiting for review stay. Nothing is deleted: a moved task is
+   * marked, no longer listed, and its file and run log stay.
+   */
+  async moveToStudio(): Promise<void> {
+    const tasks = this.store.list();
+    if (!tasks.length) { void vscode.window.showInformationMessage('There are no agent tasks to move.'); return; }
+    const chats = new ChatStore(path.join((this.context.storageUri ?? this.context.globalStorageUri).fsPath, 'studio', 'chats'));
+    const steps = studioSteps();
+    const planned = tasks.map(task => ({ task, result: taskToConversation(task, chats, steps) }));
+    const movable = planned.filter(item => 'conversation' in item.result);
+    const blocked = planned.filter(item => 'blocked' in item.result).map(item => `• ${item.task.title}: ${(item.result as { blocked: string }).blocked}`);
+    if (!movable.length) {
+      void vscode.window.showWarningMessage('No agent task can be moved now.', { modal: true, detail: blocked.join('\n') });
+      return;
+    }
+    const move = 'Move';
+    const answer = await vscode.window.showInformationMessage(`Move ${movable.length} agent task${movable.length === 1 ? '' : 's'} to the Studio chat?`, {
+      modal: true,
+      detail: [
+        'Each becomes a chat: its goal and criteria, what was done, and the steps not done yet as a plan of code steps on the task\'s branch, which you run and review there.',
+        'The tasks leave this list; their files and run logs stay on this machine.',
+        blocked.length ? `\nNot moved now:\n${blocked.join('\n')}` : ''
+      ].filter(Boolean).join('\n')
+    }, move);
+    if (answer !== move) { return; }
+    for (const { task, result } of movable) {
+      const conversation = (result as { conversation: Conversation }).conversation;
+      await chats.save(conversation);
+      task.movedTo = conversation.id;
+      this.store.log(task.id, { type: 'approval', action: 'moveToStudio', detail: conversation.id });
+      this.store.save(task);
+      TaskPage.close(task.id);
+    }
+    const open = 'Open Studio Chat History';
+    const done = await vscode.window.showInformationMessage(`Moved ${movable.length} task${movable.length === 1 ? '' : 's'} to the Studio chat.${blocked.length ? ` ${blocked.length} stayed: see the Tasks view.` : ''}`, open);
+    if (done === open) {
+      await vscode.commands.executeCommand('repositoryManager.studio.chat.focus');
+      await vscode.commands.executeCommand('repositoryManager.studio.chatHistory');
+    }
+  }
+
   async deleteTask(id: string): Promise<void> {
     const task = this.store.get(id);
     if (!task) { return; }
@@ -430,6 +476,8 @@ export function registerAgent(context: vscode.ExtensionContext): void {
       status.hide();
     }
     TaskPage.updateAll();
+    // The Tasks view shows only while it has tasks: new work starts in the Studio chat.
+    void vscode.commands.executeCommand('setContext', 'repositoryManager.agent.hasTasks', agent.store.list().length > 0);
   };
   agent.store.onDidChange(refresh);
   refresh();
@@ -440,6 +488,7 @@ export function registerAgent(context: vscode.ExtensionContext): void {
       await vscode.commands.executeCommand('repositoryManager.studio.chat.focus');
       await vscode.commands.executeCommand('repositoryManager.studio.newChat');
     }),
+    vscode.commands.registerCommand('repositoryManager.agent.moveToStudio', () => agent.moveToStudio()),
     vscode.commands.registerCommand('repositoryManager.agent.openTask', (id?: string | Node) => {
       const taskId = typeof id === 'string' ? id : id?.kind === 'task' ? id.task.id : undefined;
       if (taskId) { TaskPage.show(taskId, agent); }

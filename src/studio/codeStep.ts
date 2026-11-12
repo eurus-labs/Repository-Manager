@@ -184,7 +184,14 @@ export const codeStep: StepDefinition = {
     if (!branch) {
       if (wanted && wanted !== current) {
         if (await code.git.hasChanges(root)) { throw new StepError(`The repository has uncommitted changes. Commit or stash them first, so ${wanted} starts clean.`); }
-        await code.git.createBranch(root, wanted);
+        try {
+          await code.git.createBranch(root, wanted);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          // A branch that exists (a task moved from the Agent works on its own) is switched to by the person.
+          if (/already exists/i.test(message)) { throw new StepError(`The branch ${wanted} exists: switch to it to go on (the repository is on ${current || 'no branch'}).`); }
+          throw new StepError(`Could not create the branch ${wanted}: ${message}`);
+        }
         context.log({ type: 'branch', node: context.node.id, branch: wanted, created: true });
         branch = wanted;
       } else {

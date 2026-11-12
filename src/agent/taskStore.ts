@@ -27,7 +27,13 @@ export class TaskStore {
     return path.join(this.folder, 'runs', `${id}.jsonl`);
   }
 
+  /** The tasks listed in the Tasks view: every task not moved to the Studio. */
   list(): AgentTask[] {
+    return this.listAll().filter(task => !task.movedTo);
+  }
+
+  /** Every task on disk, the ones moved to the Studio included. */
+  listAll(): AgentTask[] {
     const folder = path.join(this.folder, 'tasks');
     if (!fs.existsSync(folder)) { return []; }
     const tasks: AgentTask[] = [];

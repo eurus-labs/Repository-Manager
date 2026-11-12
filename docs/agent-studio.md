@@ -682,8 +682,8 @@ side panel (the chat's plan card and the JSON do it; the diagram keeps it).
   step may name; another is a problem) and to plan code changes as code
   steps; with no folder open, a code step is a problem.
 - **Agent view.** The container is **Studio**. **New Task in Studio Chat**
-  (the old New Agent Task command) opens a new chat; the Tasks view keeps
-  tasks started before 2.20.0, which still open and run, and its "+" is gone.
+  (the old New Agent Task command) opens a new chat. The Tasks view shows
+  only while it has tasks, and its "+" is gone (see below).
 - **Not done here:** undoing a code step's changes when VS Code closes while
   it runs (the agent does this for its tasks; here the files stay as written,
   on the current branch unless the plan named one); per-file Diff buttons (the
@@ -691,6 +691,31 @@ side panel (the chat's plan card and the JSON do it; the diagram keeps it).
 - **Tests.** `src/test/studioCodeStepSmoke.js` (a real Git repository and
   check, scripted tool calls), `src/test/studioSkillsSmoke.js`, and
   screenshot 45 of `src/test/studioChatUi.js`.
+
+## Agent tasks moved to Studio
+
+*(decided 2026-11-12: move the old tasks into the Studio.)* **Move Agent Tasks
+to Studio** (Tasks view title bar, Command Palette) turns each task into a
+Studio Chat conversation, after one confirmation that lists what moves and
+what stays (`src/studio/agentMigration.ts`, no `vscode`):
+
+- The person's message is the task's goal and its criteria.
+- A note says where it came from, its branch, the steps done in the Agent
+  (with how each was accepted, failing checks named), and earlier retries'
+  feedback.
+- The steps not done yet become the plan: one code step each (`task` from
+  the step's intent, its paths and checks, `branch` set to the task's
+  branch), in order, with the task's criteria. The person switches to that
+  branch before Run; until then the step says so.
+- A task with no plan becomes the goal and a note to draft a plan; a done or
+  stopped task becomes history with no plan.
+- A task whose step waits for review (its changes are on disk), or that is
+  running, is not moved: the Agent accepts or undoes that step first.
+- Nothing is deleted: a moved task gets `movedTo` (the conversation id),
+  keeps its file and run log, and leaves the list. The Tasks view hides when
+  no task is left (`repositoryManager.agent.hasTasks`).
+- Tested by `src/test/agentMigrationSmoke.js`, including the moved plan's
+  next step running on the task's branch.
 
 ## Phases
 

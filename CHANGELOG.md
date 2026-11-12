@@ -16,7 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- The **Agent** icon in the Activity Bar is now **Studio**. New work starts in its chat: **New Agent Task** is now **New Task in Studio Chat**, and the goal and criteria boxes are gone. Tasks started before stay in the **Tasks** view, below the chat, and still open and run.
+- The **Agent** icon in the Activity Bar is now **Studio**. New work starts in its chat: **New Agent Task** is now **New Task in Studio Chat**, and the goal and criteria boxes are gone. **Move Agent Tasks to Studio** turns your earlier agent tasks into chats: the goal and criteria, what was done, and the steps left as a plan of code steps on the task's branch. A task whose step waits for your review stays until you finish that step. The **Tasks** view shows only while it has tasks.
 
 ## [2.19.0] - 2026-11-08
 
