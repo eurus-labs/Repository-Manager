@@ -6,7 +6,8 @@ with an effect, edited as a diagram in the Workflow Editor, and drafted from a g
 ## Sub-features
 - workflow-file: the `repository-manager/workflow@1` format and its validation.
 - engine: dependency order, `when`, `forEach`, gates, runs kept and resumed.
-- steps: prompt, docs.requirements, requirements.compare, file.write, gate.
+- steps: prompt, docs.requirements, requirements.compare, file.write, gate, code (reviewed after it runs).
+- skills: SKILL.md folders from GitHub sources, pinned to a commit, cached, trusted once per source.
 - commands: Run Workflow… (library, folder, samples, or a given file), Show Workflow Runs.
 - editor: the Workflow Editor for `*.workflow.json`.
 - chat: the Studio Chat view (Activity Bar **Studio** → Chat): goal → plan card (criteria, steps, per-step model) → proposed changes as a diff → Run, Save as workflow, Open in diagram.
@@ -19,9 +20,10 @@ with an effect, edited as a diagram in the Workflow Editor, and drafted from a g
 ## Driving it
 - Node: `studioEngineSmoke.js` (the sample on a real Git repository with a scripted model), `studioCommandsSmoke.js`
   (the commands with a scripted vscode), `workflowEditSmoke.js`, `studioChatSmoke.js` (planner, conversation rules, per-step
-  models, and the chat host with a scripted `vscode.lm`) — `$V capture <label> -- node src/test/<name>`.
+  models, and the chat host with a scripted `vscode.lm`), `studioSkillsSmoke.js` (a scripted GitHub), `studioCodeStepSmoke.js`
+  (a real Git repository and check, scripted tool calls) — `$V capture <label> -- node src/test/<name>`.
 - Chromium: `src/test/studioEditorUi.js` (real page and provider, fake text document); screenshots `ui-snapshots/30*`–`32*`.
-  `src/test/studioChatUi.js` (real chat page and provider, scripted `vscode.lm`); screenshots `ui-snapshots/40*`–`44*`.
+  `src/test/studioChatUi.js` (real chat page and provider, scripted `vscode.lm`); screenshots `ui-snapshots/40*`–`45*`.
 
 ## Expected behavior
 - Workflows are user-defined, declarative and shared as one JSON file; the visual editor writes that file. [confirmed: user, 2026-11-07]
@@ -39,6 +41,11 @@ with an effect, edited as a diagram in the Workflow Editor, and drafted from a g
 - A model is chosen for drafting in the composer, and per step on the plan card; a model the file names that this VS Code lacks is replaced for the run only, after asking. [confirmed: user, 2026-11-09]
 - A change the AI proposes to an existing plan is shown as a diff and changes nothing until Accept; a dropped step shows as removed. [confirmed: test src/test/studioChatSmoke.js]
 - A plan with problems (no criteria, unknown step, broken reference) cannot run; the planner gets one repair turn. [confirmed: test src/test/studioChatSmoke.js]
+- Skills come from GitHub repositories, pinned to a commit and cached; a source is trusted once before use; their scripts are never run, and skills that use scripts are marked. [confirmed: user, 2026-11-09]
+- The planner may attach only skills it was offered or the plan already had. [confirmed: test src/test/studioSkillsSmoke.js]
+- A code step runs on the run's own branch from a clean tree, changes only its paths, runs only approved scripts as checks, and waits for review; Retry and Stop undo its changes. [confirmed: test src/test/studioCodeStepSmoke.js]
+- A failed or unverified code step is never accepted by a plain Accept: the button says Accept Anyway or Accept as Unverified. [observed: src/studio/studioCommands.ts, drive]
+- New work starts in the Studio chat; the Tasks view keeps earlier agent tasks. [confirmed: user, 2026-11-09]
 - Once saved as a workflow file, the file is the plan: edits there show in the chat, and an accepted change is written to it. [confirmed: test src/test/studioChatSmoke.js]
 
 ## Suspected bugs

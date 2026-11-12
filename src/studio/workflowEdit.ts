@@ -17,6 +17,7 @@ export type EditOperation =
   | { op: 'setNode'; id: string; field: 'title' | 'prompt' | 'forEach' | 'model'; value: string }
   | { op: 'setDefaultModel'; value: string }
   | { op: 'setCriteria'; criteria: string[] }
+  | { op: 'setSkills'; id: string; skills: string[] }
   | { op: 'setSetting'; id: string; key: string; value: string }
   | { op: 'move'; id: string; at: [number, number] }
   | { op: 'addEdge'; from: string; to: string }
@@ -182,6 +183,13 @@ export function applyEdit(source: Workflow, operation: EditOperation, settings: 
       if (!Array.isArray(operation.criteria)) { throw new EditError('Criteria are a list.'); }
       const criteria = operation.criteria.map(item => String(item).trim()).filter(Boolean);
       if (criteria.length) { workflow.criteria = criteria; } else { delete workflow.criteria; }
+      break;
+    }
+    case 'setSkills': {
+      const node = nodeOf(workflow, operation.id);
+      if (!Array.isArray(operation.skills)) { throw new EditError('Skills are a list.'); }
+      const skills = [...new Set(operation.skills.map(String))];
+      if (skills.length) { node.skills = skills; } else { delete node.skills; }
       break;
     }
     case 'setSetting': {

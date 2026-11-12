@@ -10,7 +10,7 @@ with limited tools and checked by the repository's scripts.
 - checks: repository scripts approved once per repository.
 
 ## How to get to it (user POV)
-- Activity Bar → Studio → Tasks → New task (the container was named Agent before 2.20.0).
+- Activity Bar → Studio → Tasks: tasks started before 2.20.0 (open one to go on). New work starts in the Studio chat; **New Task in Studio Chat** opens it.
 
 ## Driving it
 - Node: `$V capture agent -- node src/test/agentHarnessSmoke.js`.
@@ -27,7 +27,7 @@ with limited tools and checked by the repository's scripts.
 - None found.
 
 ## Open questions
-- docs/agent-studio.md plans to replace the Agent view with Studio steps (phase 4); until then both exist.
+- Should tasks started before 2.20.0 be moved into Studio runs, or the Tasks view removed once none are left? Undecided.
 
 ## Gotchas
 - Tasks and run logs live in the extension's workspace storage, not in the repository.

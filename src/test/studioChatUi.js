@@ -16,6 +16,8 @@ const outputDir = path.join(root, 'ui-snapshots');
 const base = fs.mkdtempSync(path.join(os.tmpdir(), 'repository-manager-studio-chat-ui-'));
 const workspace = path.join(base, 'workspace');
 fs.mkdirSync(workspace, { recursive: true });
+// The repository's scripts: the only checks a code step may name.
+fs.writeFileSync(path.join(workspace, 'package.json'), JSON.stringify({ scripts: { test: 'node test.js' } }));
 
 // --- the fake `vscode` ------------------------------------------------------------------------------
 const replies = [];
@@ -40,7 +42,10 @@ const fakeVscode = {
   LanguageModelChatMessage: { User: text => ({ text }) },
   lm: { selectChatModels: async () => [lmModel('gpt-4o', 'GPT-4o'), lmModel('claude-sonnet', 'Claude Sonnet')] },
   workspace: { textDocuments: [] },
-  window: { registerWebviewViewProvider: (_id, provider) => { viewProvider = provider; return { dispose() {} }; }, showWarningMessage: async () => undefined },
+  window: {
+    registerWebviewViewProvider: (_id, provider) => { viewProvider = provider; return { dispose() {} }; }, showWarningMessage: async () => undefined,
+    showQuickPick: async items => items[0]
+  },
   commands: { registerCommand: () => ({ dispose() {} }), executeCommand: async () => undefined }
 };
 const originalLoad = Module._load;
@@ -49,7 +54,7 @@ Module._load = function (request, parent, isMain) {
   return originalLoad.call(this, request, parent, isMain);
 };
 const { StudioChatProvider } = require('../../out/studio/studioChat.js');
-const { stepRegistry } = require('../../out/studio/steps.js');
+const { studioSteps } = require('../../out/studio/registry.js');
 Module._load = originalLoad;
 
 const plan = () => ({
@@ -92,8 +97,14 @@ async function main() {
   const memento = () => { const values = new Map(); return { get: key => values.get(key), update: async (key, value) => { values.set(key, value); } }; };
 
   const ran = [];
+  const commit = 'c'.repeat(40);
+  const skillList = [{ ref: `github:acme/skills/plugins/testing/skills/write-tests@${commit}`, name: 'write-tests', description: 'Tests first.', usesScripts: true }];
   const runs = {
-    steps: stepRegistry(),
+    steps: studioSteps(),
+    skills: {
+      sources: () => ['acme/skills'], ensureTrusted: async () => true, cached: async () => [],
+      index: async () => ({ commit, skills: skillList }), load: async () => { throw new Error('not in this test'); }
+    },
     run: async (workflow, _hash, onUpdate) => {
       ran.push(workflow);
       const state = { id: 'run-1', status: 'running', nodes: {}, criteria: workflow.criteria };
@@ -208,6 +219,26 @@ async function main() {
     assert.match(await page.textContent('.card.run'), /It names the source text/);
     await snap(page, '43-studio-chat-run');
 
+    // A plan with a code step (changes code, you review) and a skill added to its prompt step.
+    const coding = await open({ height: 760 });
+    const codePlan = plan();
+    codePlan.nodes.push({ id: 'fix', type: 'code', title: 'Fix the parser', with: { task: 'Fix the parser', paths: ['src/'], checks: ['test'] } });
+    codePlan.edges.push({ from: 'write', to: 'fix' });
+    replies.push({ reply: 'Summarize, write, then fix the code.', workflow: codePlan });
+    await coding.fill('#message', 'Summarize and fix the parser');
+    await coding.press('#message', 'Enter');
+    const codeCard = coding.locator('.card[data-card="current"]');
+    await codeCard.waitFor();
+    assert.equal(await codeCard.locator('.step[data-step="fix"] .badge.write').textContent(), 'changes code · you review');
+    assert.equal(await codeCard.locator('.step[data-step="fix"] select').count(), 1, 'a code step uses a model, so it has a model choice');
+    await codeCard.locator('[data-skills="summarize"] button.link').click();
+    await coding.locator('[data-skills="summarize"] .chip').waitFor();
+    assert.match(await coding.locator('[data-skills="summarize"] .chip').textContent(), /^write-tests ⚠×$/);
+    assert.match(await coding.locator('[data-skills="summarize"] .chip').getAttribute('title'), /Uses scripts: they are not run here\./);
+    await snap(coding, '45-studio-chat-code-skills');
+    await coding.locator('[data-skills="summarize"] .chip button').click();
+    await coding.locator('[data-skills="summarize"] .chip').waitFor({ state: 'detached' });
+
     // Light theme, no folder: nothing to run or save, and the page says so.
     const lone = await open({ theme: 'light', folder: false });
     assert.match(await lone.textContent('.empty'), /Open a folder to run or save a plan/);
@@ -219,7 +250,7 @@ async function main() {
     await snap(lone, '44-studio-chat-light');
 
     assert.deepEqual(errors, []);
-    console.log('Studio chat UI test passed; screenshots in ui-snapshots/40-44');
+    console.log('Studio chat UI test passed; screenshots in ui-snapshots/40-45');
   } finally {
     await browser.close();
     server.close();

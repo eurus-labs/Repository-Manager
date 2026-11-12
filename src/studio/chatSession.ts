@@ -79,8 +79,8 @@ export function discardDraft(conversation: Conversation, id: string): void {
 /** An edit on the plan card (a criterion, a step's model): applied to the plan and its card. */
 export function editPlan(conversation: Conversation, operation: EditOperation, steps: Map<string, StepDefinition>): Workflow {
   if (!conversation.plan) { throw new ChatError('There is no plan to edit yet.'); }
-  if (!['setCriteria', 'setDefaultModel', 'setNode'].includes(operation.op) || (operation.op === 'setNode' && operation.field !== 'model')) {
-    throw new ChatError('The plan card changes criteria and models; open the plan in the diagram for anything else.');
+  if (!['setCriteria', 'setDefaultModel', 'setNode', 'setSkills'].includes(operation.op) || (operation.op === 'setNode' && operation.field !== 'model')) {
+    throw new ChatError('The plan card changes criteria, models and skills; open the plan in the diagram for anything else.');
   }
   const plan = applyEdit(conversation.plan, operation, type => steps.get(type)?.required ?? []);
   setPlan(conversation, plan, steps);
@@ -111,9 +111,10 @@ export interface StepView {
   title: string;
   type: string;
   /** What the engine will ask before it: a gate waits; write, command and external ask first. */
-  effect: 'read' | 'write' | 'command' | 'external' | 'gate' | 'unknown';
+  effect: 'read' | 'write' | 'command' | 'external' | 'gate' | 'code' | 'unknown';
   usesModel: boolean;
   model?: string;
+  skills: string[];
 }
 
 /** A plan as its card shows it: the steps in the order they run, with what each one asks. */
@@ -130,8 +131,9 @@ export function planView(plan: Workflow, steps: Map<string, StepDefinition>): { 
       const step = steps.get(node.type);
       return {
         id: node.id, title: node.title || step?.title || node.id, type: node.type,
-        effect: !step ? 'unknown' : node.type === 'gate' ? 'gate' : step.effect,
-        usesModel: Boolean(step?.usesModel), model: node.model
+        effect: !step ? 'unknown' : node.type === 'gate' ? 'gate' : step.review ? 'code' : step.effect,
+        usesModel: Boolean(step?.usesModel), model: node.model,
+        skills: Array.isArray(node.skills) ? node.skills.filter(ref => typeof ref === 'string') : []
       };
     })
   };

@@ -7,8 +7,11 @@
 import * as vscode from 'vscode';
 import { promises as fs } from 'fs';
 import * as path from 'path';
-import { RunState, RunStore, WorkflowEngine, workflowEffects, workflowModels } from './engine';
-import { StepDefinition, stepRegistry } from './steps';
+import { RunState, RunStore, WorkflowEngine, workflowEffects, workflowModels, workflowSkills } from './engine';
+import { skillSources, StudioSkills, studioSkills } from './githubSkills';
+import { approveChecks, codeServices } from './codeHost';
+import { StepDefinition } from './steps';
+import { studioSteps } from './registry';
 import { listModels, resolveSelector, studioModel } from './studioModels';
 import { parseWorkflow, Workflow, workflowHash } from './workflow';
 
@@ -25,15 +28,17 @@ async function workflowFiles(folder: string, where: string): Promise<Found[]> {
 /** What the Studio Chat uses to run a plan the way Run Workflow… runs a file. */
 export interface StudioRuns {
   steps: Map<string, StepDefinition>;
+  skills: StudioSkills;
   /** Asks the inputs, the models to use instead of missing ones, and the consent; then runs. Undefined when the person cancelled first. */
   run(workflow: Workflow, hash: string, onUpdate?: (state: RunState) => void): Promise<RunState | undefined>;
 }
 
 export function registerStudio(context: vscode.ExtensionContext, workspaceRoot: string): StudioRuns {
-  const steps = stepRegistry();
+  const steps = studioSteps();
   const library = path.join(context.globalStorageUri.fsPath, 'studio', 'workflows');
   const store = new RunStore(path.join(context.storageUri?.fsPath ?? context.globalStorageUri.fsPath, 'studio', 'runs'));
-  const engine = new WorkflowEngine({ root: workspaceRoot, steps, store, model: studioModel(context) });
+  const skills = studioSkills(context);
+  const engine = new WorkflowEngine({ root: workspaceRoot, steps, store, model: studioModel(context), skills, code: codeServices(context) });
   const samples = path.join(context.extensionUri.fsPath, 'resources', 'studio', 'samples');
   const load = async (file: string): Promise<{ workflow: Workflow; hash: string } | undefined> => {
     const text = await fs.readFile(file, 'utf8');
@@ -98,8 +103,10 @@ export function registerStudio(context: vscode.ExtensionContext, workspaceRoot: 
     const named = workflowModels(workflow).map(selector => models[selector] ? `${selector} (instead: ${models[selector]})` : selector);
     const lines = [
       effects.promptNodes.length ? `Sends the input of ${effects.promptNodes.length} prompt step${effects.promptNodes.length === 1 ? '' : 's'} (${effects.promptNodes.join(', ')}) to ${named.length ? `Copilot: ${named.join(', ')}${workflow.defaults?.model ? '' : ', and the selected model for the others'}` : 'the selected Copilot model'}.` : 'Sends nothing to a model.',
+      ...(workflowSkills(workflow).length ? [`Steps follow ${workflowSkills(workflow).length} skill${workflowSkills(workflow).length === 1 ? '' : 's'} from ${skillSources(workflowSkills(workflow)).map(source => `github.com/${source}`).join(', ')} (instructions only; their scripts are not run).`] : []),
       ...effects.effects.map(item => `Asks you before ${item.node} (${item.type}) ${item.effect === 'write' ? 'writes files' : item.effect === 'command' ? 'runs a command' : 'sends to another system'}.`),
-      ...effects.gates.map(gate => `Stops for your answer at ${gate}.`)
+      ...effects.gates.map(gate => `Stops for your answer at ${gate}.`),
+      ...(workflow.nodes.some(node => node.type === 'code') ? ['Code steps change files on a new branch of this repository, and wait for you to review each change (Accept, Retry or Stop).'] : [])
     ];
     const run = 'Run';
     return await vscode.window.showInformationMessage(`Run "${workflow.title}" (${workflow.version})?`, { modal: true, detail: lines.join('\n') }, run) === run;
@@ -118,21 +125,29 @@ export function registerStudio(context: vscode.ExtensionContext, workspaceRoot: 
         continue;
       }
       if (!current.waiting) { break; }
-      const approve = current.waiting.kind === 'gate' ? 'Continue' : 'Approve';
+      const waiting = current.waiting;
+      const review = waiting.kind === 'review';
+      // A review's Accept says what it accepts: a failed or unverified change is never plain "Accept".
+      const approve = !review ? (waiting.kind === 'gate' ? 'Continue' : 'Approve')
+        : waiting.verdict === 'failed' ? 'Accept Anyway' : waiting.verdict === 'unverified' ? 'Accept as Unverified' : 'Accept';
+      const retry = review && (waiting.attempts ?? 0) < (waiting.maxAttempts ?? 0) ? `Retry (${(waiting.attempts ?? 0) + 1}/${waiting.maxAttempts})` : undefined;
       const show = 'Show in Editor';
       const stop = 'Stop Run';
       let answer: string | undefined;
       do {
-        answer = await vscode.window.showWarningMessage(current.waiting.title, { modal: true,
-          detail: current.waiting.preview.length > 1500 ? `${current.waiting.preview.slice(0, 1500)}\n… (Show in Editor for all of it)` : current.waiting.preview }, approve, show, stop);
+        answer = await vscode.window.showWarningMessage(waiting.title, { modal: true,
+          detail: waiting.preview.length > 1500 ? `${waiting.preview.slice(0, 1500)}\n… (Show in Editor for all of it)` : waiting.preview },
+          ...[approve, retry, show, stop].filter((item): item is string => Boolean(item)));
         if (answer === show) {
-          const document = await vscode.workspace.openTextDocument({ content: current.waiting.preview, language: 'markdown' });
+          const document = await vscode.workspace.openTextDocument({ content: waiting.preview, language: 'markdown' });
           await vscode.window.showTextDocument(document, { preview: true });
         }
       } while (answer === show);
       // Closing the dialog leaves the run waiting (Show Workflow Runs takes it up again).
       if (answer === undefined) { return current; }
-      current = await engine.answer(current, answer === approve);
+      current = review
+        ? await engine.answer(current, answer === approve ? 'accept' : answer === retry ? 'retry' : 'stop', workflow)
+        : await engine.answer(current, answer === approve);
       onUpdate?.(current);
     }
     if (current.status === 'done') {
@@ -154,7 +169,13 @@ export function registerStudio(context: vscode.ExtensionContext, workspaceRoot: 
     const inputs = await askInputs(workflow);
     if (!inputs) { return undefined; }
     const models = await replacements(workflow);
-    if (!models || !await consent(workflow, models)) { return undefined; }
+    if (!models) { return undefined; }
+    // The checks code steps will run are approved first, as the agent asks.
+    const checks = workflow.nodes.filter(node => node.type === 'code').flatMap(node => Array.isArray(node.with?.checks) ? node.with!.checks.filter((check): check is string => typeof check === 'string') : []);
+    if (checks.length && !await approveChecks(context, workspaceRoot, checks)) { return undefined; }
+    // Skills from a source not trusted yet (a workflow someone shared) are asked about first.
+    if (!await skills.ensureTrusted(skillSources(workflowSkills(workflow)))) { return undefined; }
+    if (!await consent(workflow, models)) { return undefined; }
     try {
       return await drive(workflow, await engine.start(workflow, hash, inputs, models), onUpdate);
     } catch (error) {
@@ -195,5 +216,5 @@ export function registerStudio(context: vscode.ExtensionContext, workspaceRoot: 
       await vscode.window.showTextDocument(document, { preview: true });
     })
   );
-  return { steps, run };
+  return { steps, skills, run };
 }

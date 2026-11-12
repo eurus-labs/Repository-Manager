@@ -208,7 +208,7 @@ async function main() {
     assert.deepEqual(conversation.plan.criteria, ['The summary has 3 lines']);
     assert.equal(conversation.plan.nodes[0].model, 'copilot:claude-sonnet');
     assert.deepEqual(currentCard(conversation).draft.problems, []);
-    assert.throws(() => editPlan(conversation, { op: 'removeNode', id: 'write' }, steps), /criteria and models/);
+    assert.throws(() => editPlan(conversation, { op: 'removeNode', id: 'write' }, steps), /criteria, models and skills/);
     editPlan(conversation, { op: 'setCriteria', criteria: [] }, steps);
     assert.ok(currentCard(conversation).draft.problems.some(problem => problem.where === 'criteria'), 'removing every criterion stops Run');
     editPlan(conversation, { op: 'setCriteria', criteria: ['The summary has 3 lines'] }, steps);

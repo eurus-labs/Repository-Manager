@@ -1,6 +1,7 @@
 # Agent Studio
 
-Status: **proposal**. Nothing here is built. Items marked *(decided)* come
+Status: phases **1, 2a and 2b are built** (2.19.0, 2.20.0); later phases are
+proposals. The "as built" sections record what the code does. Items marked *(decided)* come
 from the user. Items marked *(proposed)* wait for the user's decision.
 Items marked *(open)* need an answer before the phase that depends on them.
 
@@ -208,8 +209,8 @@ How it works:
 
 ## Phase 2b design: Studio Chat
 
-Status: **2b-1 built (2.20.0)**, 2b-2 and 2b-3 proposed; from the user's
-decisions of 2026-11-09 (see "Phase 2b-1 as built" for what the code does). It changes the
+Status: **built (2.20.0)**, from the user's decisions of 2026-11-09; the
+"as built" sections for 2b-1, 2b-2 and 2b-3 say what the code does. It changes the
 AI-assisted authoring above in one way: drafting happens in a chat, and a
 drafted plan is a workflow that can be run at once, not only a file to edit.
 
@@ -306,7 +307,8 @@ All optional, so every 2.19.0 workflow stays valid:
 
 ### Rounds
 
-Each round ends usable on its own and has its own PR.
+Each round ends usable on its own. The user asked for all three before the
+release, so they ship together in 2.20.0, one commit each.
 
 1. **2b-1, Chat and plans.** The chat view, model picker, plan card with
    criteria and per-step model, follow-up changes as a diff, Run in the
@@ -607,10 +609,83 @@ scripted in the tests; a chat with Copilot in VS Code has not been run yet.
   criteria, the host with a scripted `vscode.lm`), `src/test/studioChatUi.js`
   (the page in Chromium; screenshots 40–44).
 
-**Not in 2b-1:** skills (2b-2), code steps and retiring the Agent view (2b-3),
+**Not in 2b-1** (skills and code steps came in 2b-2 and 2b-3, below):
 drafting a single node, trying a prompt step on a sample input, showing a
 proposed change on the diagram, and choosing a step's model in the diagram's
 side panel (the chat's plan card and the JSON do it; the diagram keeps it).
+
+## Phase 2b-2 as built: skills
+
+- **Format.** A step that uses a model (prompt, code) may list up to 5
+  `skills`, each `github:<owner>/<repo>/<folder>@<40-character commit>`; the
+  folder holds a `SKILL.md`. Anything else is a validation problem.
+- **Library** (`src/studio/skills.ts`, no `vscode`). Listing a source reads
+  its default branch's commit, its file tree, and every `SKILL.md` (front
+  matter `name` and `description`); folders starting with `_` (templates) are
+  left out; at most 200. A skill is marked "uses scripts" when its folder has
+  `scripts/` or its text names a script file. Each commit's listing and each
+  skill (with up to 5 files of its `references/`) are cached in global
+  storage (`studio/skills/<owner>/<repo>/<commit>/`); a cached commit is never
+  fetched again, so pinned skills work offline.
+- **GitHub** (`src/studio/githubSkills.ts`). The REST API with the VS Code
+  GitHub session (`repo` scope; without one, public repositories only).
+  Sources come from `repositoryManager.studio.skillSources` (default
+  `eurus-labs/skills`). Trust is asked once per source, before it is listed
+  and before a run uses a skill from a source not trusted yet (a shared
+  workflow).
+- **Use.** The engine loads a node's skills before it runs (a skill that
+  cannot be read fails the node, nothing is sent) and logs them. A prompt
+  step sends them before its instructions, a code step after its rules; the
+  references a skill names are included; all of it within 60,000 characters,
+  and what does not fit is listed as left out. The text says skills cannot
+  override the data rule or approve anything. Scripts are never run.
+- **Chat.** Each step that uses a model has **+ Skill** on the plan card:
+  the listing of every trusted source, pinned to the commit listed now; a
+  chip per skill (⚠ when it uses scripts), removable. The planner is offered
+  the skills listed before (from the cache, no request) and may attach only
+  those or ones the plan already has; another is a problem and gets the
+  repair turn. A newer commit of a skill is taken by adding it again.
+
+## Phase 2b-3 as built: code steps, and the Agent view
+
+- **`code` step** (`src/studio/codeStep.ts`, no `vscode`; registered by
+  `src/studio/registry.ts`). Settings: `task`, `paths` (files, or folders
+  ending with `/`, inside the workspace), `checks` (package.json script
+  names). It is the agent's step runner: the agent's tools
+  (`src/agent/agentTools.ts`, read tools always, `edit_file` and
+  `create_file`, `run_check` only with checks), at most 25 tool calls, the
+  same system rules, the workflow's title and description as the goal and the
+  run's frozen criteria. It cannot loop (`forEach`).
+- **Order of what is asked.** Before the run: the checks' scripts are
+  approved per repository (the agent's approvals; a changed command asks
+  again). Before the step: the engine's gate shows the task, paths, checks
+  and branch. The first code step of a run needs a clean tree and creates
+  `studio/<workflow>-<run>` from the current branch; later ones must find the
+  repository still on it.
+- **Review.** After it runs, the engine waits with the result: verdict
+  (passed, failed, unverified, documentation only, nothing changed), the
+  model's summary, the checks with the end of a failing output, text in the
+  repository that speaks to an AI, and a line diff of each file (400 lines
+  shown). **Accept** keeps it; for a failed or unverified result the button
+  says **Accept Anyway** or **Accept as Unverified**. **Retry** undoes the
+  change and runs it again with the summary and failing output (3 runs in
+  all). **Stop Run** undoes it and ends the run. Closing the dialog leaves the
+  review waiting; Show Workflow Runs asks it again, even after a restart.
+  A run that fails or is cancelled undoes what the step wrote.
+- **Engine.** Any step may declare a review (`StepReview`); the run keeps
+  `data` its steps share (the branch), `attempts` and `feedback` per node.
+- **Planner.** It is told the repository's scripts (the only checks a code
+  step may name; another is a problem) and to plan code changes as code
+  steps; with no folder open, a code step is a problem.
+- **Agent view.** The container is **Studio**. **New Task in Studio Chat**
+  (the old New Agent Task command) opens a new chat; the Tasks view keeps
+  tasks started before 2.20.0, which still open and run, and its "+" is gone.
+- **Not done here:** undoing a code step's changes when VS Code closes while
+  it runs (the agent does this for its tasks); per-file Diff buttons (the
+  review shows the diff as text); the review step (phase 4).
+- **Tests.** `src/test/studioCodeStepSmoke.js` (a real Git repository and
+  check, scripted tool calls), `src/test/studioSkillsSmoke.js`, and
+  screenshot 45 of `src/test/studioChatUi.js`.
 
 ## Phases
 

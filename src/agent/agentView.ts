@@ -79,19 +79,19 @@ export function statusText(task: AgentTask): string {
   }
 }
 
-function git(root: string, args: string[]): Promise<string> {
+export function git(root: string, args: string[]): Promise<string> {
   return new Promise((resolve, reject) => execFile('git', ['-c', 'core.longpaths=true', ...args], { cwd: root, maxBuffer: 4 * 1024 * 1024 },
     (error, stdout, stderr) => error ? reject(new Error((stderr || error.message).trim())) : resolve(stdout)));
 }
 
 /** A path compared as the file it names: links resolved, and case ignored where the file system does. */
-function samePathKey(file: string): string {
+export function samePathKey(file: string): string {
   let real: string;
   try { real = fs.realpathSync.native(file); } catch { real = path.resolve(file); }
   return process.platform === 'win32' || process.platform === 'darwin' ? real.toLowerCase() : real;
 }
 
-function readScripts(root: string): Record<string, string> {
+export function readScripts(root: string): Record<string, string> {
   try {
     const scripts = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).scripts;
     if (!scripts || typeof scripts !== 'object') { return {}; }
@@ -101,7 +101,7 @@ function readScripts(root: string): Record<string, string> {
   }
 }
 
-function runNpmScript(root: string, script: string, token?: CancelToken): Promise<CheckResult> {
+export function runNpmScript(root: string, script: string, token?: CancelToken): Promise<CheckResult> {
   const started = Date.now();
   return new Promise(resolve => {
     if (token?.isCancellationRequested) { resolve({ script, passed: false, exitCode: null, output: 'Cancelled', durationMs: 0 }); return; }
@@ -402,31 +402,6 @@ export class AgentController {
     return change?.before ?? '';
   }
 
-  async newTask(): Promise<void> {
-    const folders = vscode.workspace.workspaceFolders ?? [];
-    const picked = folders.length > 1
-      ? await vscode.window.showQuickPick(folders.map(folder => ({ label: folder.name, description: folder.uri.fsPath, folder })), { title: 'New agent task: repository' })
-      : folders[0] && { folder: folders[0] };
-    if (!picked) { return; }
-    let root: string;
-    try {
-      root = (await git(picked.folder.uri.fsPath, ['rev-parse', '--show-toplevel'])).trim();
-    } catch {
-      void vscode.window.showErrorMessage(`${picked.folder.name} is not a Git repository; the agent works on a branch of one.`);
-      return;
-    }
-    const goal = await vscode.window.showInputBox({ title: 'New agent task (1/2): goal', prompt: 'What should the agent do?', placeHolder: 'Add a retry with backoff to the upload client',
-      validateInput: value => value.trim() ? undefined : 'Describe the goal' });
-    if (!goal) { return; }
-    const criteria = await vscode.window.showInputBox({ title: 'New agent task (2/2): acceptance criteria', prompt: 'How will you know it is done? Separate criteria with ";".',
-      placeHolder: 'A failed upload is retried 3 times; the tests cover the retry',
-      validateInput: value => value.split(';').some(item => item.trim()) ? undefined : 'Give at least one criterion' });
-    if (!criteria) { return; }
-    const title = goal.trim().length > 80 ? `${goal.trim().slice(0, 79)}…` : goal.trim();
-    const task = this.store.create({ title, goal: goal.trim(), criteria: criteria.split(';').map(item => item.trim()).filter(Boolean), repositoryRoot: root });
-    TaskPage.show(task.id, this);
-  }
-
   async deleteTask(id: string): Promise<void> {
     const task = this.store.get(id);
     if (!task) { return; }
@@ -460,7 +435,11 @@ export function registerAgent(context: vscode.ExtensionContext): void {
   refresh();
   context.subscriptions.push(view, status,
     vscode.workspace.registerTextDocumentContentProvider(DIFF_SCHEME, { provideTextDocumentContent: uri => agent.before(uri) }),
-    vscode.commands.registerCommand('repositoryManager.agent.newTask', () => agent.newTask()),
+    // New tasks start in the Studio chat (2.20.0): a goal there becomes a plan whose code steps do what tasks did.
+    vscode.commands.registerCommand('repositoryManager.agent.newTask', async () => {
+      await vscode.commands.executeCommand('repositoryManager.studio.chat.focus');
+      await vscode.commands.executeCommand('repositoryManager.studio.newChat');
+    }),
     vscode.commands.registerCommand('repositoryManager.agent.openTask', (id?: string | Node) => {
       const taskId = typeof id === 'string' ? id : id?.kind === 'task' ? id.task.id : undefined;
       if (taskId) { TaskPage.show(taskId, agent); }

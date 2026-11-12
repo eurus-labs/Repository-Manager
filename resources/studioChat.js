@@ -28,7 +28,7 @@
 
   const EFFECT = {
     read: null, gate: ['waits for you', 'gate'], write: ['writes · asks first', 'write'],
-    command: ['runs · asks first', 'write'], external: ['sends · asks first', 'external'], unknown: ['unknown step', 'problem']
+    command: ['runs · asks first', 'write'], code: ['changes code · you review', 'write'], external: ['sends · asks first', 'external'], unknown: ['unknown step', 'problem']
   };
   const STATUS = { current: 'Plan', proposed: 'Proposed change', superseded: 'Earlier plan', discarded: 'Discarded', accepted: 'Accepted' };
   const RUN = { running: 'Running…', waiting: 'Waiting for your answer', done: 'Done', failed: 'Failed', stopped: 'Stopped' };
@@ -70,6 +70,27 @@
       editable ? el('button', { type: 'button', class: 'link', onclick: () => save([...items, 'New criterion']) }, '+ Add criterion') : null);
   }
 
+  /** A skill's name when it was listed; otherwise its folder and short commit. */
+  function skillLabel(ref) {
+    const known = state.skills && state.skills[ref];
+    if (known) return known.name;
+    const match = /\/([^/@]+)@([0-9a-f]{7})/.exec(ref);
+    return match ? `${match[1]}@${match[2]}` : ref;
+  }
+
+  function skillChips(step, editable) {
+    if (!step.usesModel || (!step.skills.length && !editable)) return null;
+    const set = skills => vscode.postMessage({ type: 'edit', operation: { op: 'setSkills', id: step.id, skills } });
+    return el('div', { class: 'skills', 'data-skills': step.id },
+      step.skills.map(ref => {
+        const scripts = state.skills && state.skills[ref] && state.skills[ref].usesScripts;
+        return el('span', { class: 'chip', title: `${ref}${scripts ? '\nUses scripts: they are not run here.' : ''}` },
+          skillLabel(ref), scripts ? el('span', { class: 'chip-warning', 'aria-label': 'uses scripts, not run here' }, ' ⚠') : null,
+          editable ? el('button', { type: 'button', class: 'icon', 'aria-label': `Remove skill ${skillLabel(ref)}`, onclick: () => set(step.skills.filter(other => other !== ref)) }, '×') : null);
+      }),
+      editable ? el('button', { type: 'button', class: 'link', onclick: () => vscode.postMessage({ type: 'addSkill', id: step.id }) }, '+ Skill') : null);
+  }
+
   function stepsBlock(view, editable, diff) {
     return el('ol', { class: 'steps' }, view.steps.map(step => {
       const badge = EFFECT[step.effect];
@@ -84,7 +105,7 @@
       return el('li', { class: `step ${mark}`, 'data-step': step.id },
         el('div', { class: 'step-head' }, el('strong', {}, step.title), el('code', {}, step.type),
           badge ? el('span', { class: `badge ${badge[1]}` }, badge[0]) : null, step.usesModel ? el('span', { class: 'badge model' }, 'model') : null),
-        model);
+        model, skillChips(step, editable));
     }), diff ? diff.removed.map(id => el('li', { class: 'step removed' }, el('div', { class: 'step-head' }, el('strong', {}, id), el('span', { class: 'badge' }, 'removed')))) : []);
   }
 

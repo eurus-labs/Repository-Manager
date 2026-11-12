@@ -8,7 +8,8 @@
 import * as vscode from 'vscode';
 import { randomBytes } from 'crypto';
 import { workflowEffects } from './engine';
-import { StepDefinition, stepRegistry } from './steps';
+import { StepDefinition } from './steps';
+import { studioSteps } from './registry';
 import { validateWorkflow, Workflow } from './workflow';
 import { applyEdit, EditError, EditOperation, positions, problemNodes, serializeWorkflow, settingText } from './workflowEdit';
 
@@ -52,7 +53,7 @@ export function editorState(text: string, steps: Map<string, StepDefinition>): R
 }
 
 export class WorkflowEditorProvider implements vscode.CustomTextEditorProvider {
-  private readonly steps = stepRegistry();
+  private readonly steps = studioSteps();
 
   constructor(private readonly extensionUri: vscode.Uri) {}
 

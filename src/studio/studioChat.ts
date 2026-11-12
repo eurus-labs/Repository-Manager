@@ -12,8 +12,12 @@ import { draftPlan, planProblems } from './chatPlanner';
 import { acceptDraft, addDraft, addRun, addUserMessage, ChatError, currentCard, discardDraft, editPlan, history, planView, setPlan } from './chatSession';
 import { ChatRun, ChatStore, Conversation, newMessage } from './chatStore';
 import { RunState } from './engine';
-import { CancelSignal, StepDefinition, stepRegistry } from './steps';
+import { CancelSignal, StepDefinition } from './steps';
+import { studioSteps } from './registry';
 import { dashboardSelector, listModels, ModelChoice, studioModel } from './studioModels';
+import { StudioSkills, studioSkills } from './githubSkills';
+import { SkillSummary } from './skills';
+import { readScripts } from '../agent/agentView';
 import { StudioRuns } from './studioCommands';
 import { EditOperation, serializeWorkflow } from './workflowEdit';
 import { WORKFLOW_EDITOR } from './workflowEditorProvider';
@@ -26,7 +30,8 @@ const WORKFLOW_FOLDER = path.join('.repository-manager', 'workflows');
 type Incoming =
   | { type: 'ready' } | { type: 'send'; text: string } | { type: 'cancel' }
   | { type: 'setModel'; selector: string } | { type: 'accept'; id: string } | { type: 'discard'; id: string }
-  | { type: 'edit'; operation: EditOperation } | { type: 'run' } | { type: 'save' } | { type: 'openDiagram' };
+  | { type: 'edit'; operation: EditOperation } | { type: 'run' } | { type: 'save' } | { type: 'openDiagram' }
+  | { type: 'addSkill'; id: string };
 
 export class StudioChatProvider implements vscode.WebviewViewProvider {
   private view?: vscode.WebviewView;
@@ -37,10 +42,14 @@ export class StudioChatProvider implements vscode.WebviewViewProvider {
   private notice = '';
   private readonly store: ChatStore;
   private readonly steps: Map<string, StepDefinition>;
+  private readonly skills: StudioSkills;
+  /** Names of the skills seen in listings, by reference, for the plan card's chips. */
+  private readonly skillNames = new Map<string, SkillSummary>();
 
   constructor(private readonly context: vscode.ExtensionContext, private readonly runs: StudioRuns | undefined, private readonly root: string | undefined) {
     this.store = new ChatStore(path.join(context.storageUri?.fsPath ?? context.globalStorageUri.fsPath, 'studio', 'chats'));
-    this.steps = runs?.steps ?? stepRegistry();
+    this.steps = runs?.steps ?? studioSteps();
+    this.skills = runs?.skills ?? studioSkills(context);
   }
 
   static register(context: vscode.ExtensionContext, runs: StudioRuns | undefined, root: string | undefined): StudioChatProvider {
@@ -103,6 +112,7 @@ export class StudioChatProvider implements vscode.WebviewViewProvider {
       switch (message.type) {
         case 'ready':
           this.models = await listModels().catch(() => []);
+          await this.cachedSkills();
           await this.ensureConversation();
           this.post();
           return;
@@ -139,6 +149,7 @@ export class StudioChatProvider implements vscode.WebviewViewProvider {
         }
         case 'run': return await this.run();
         case 'save': await this.save(); return;
+        case 'addSkill': await this.addSkill(message.id); return;
         case 'openDiagram': {
           const file = await this.save();
           if (file) { await vscode.commands.executeCommand('vscode.openWith', vscode.Uri.file(file), WORKFLOW_EDITOR); }
@@ -164,7 +175,9 @@ export class StudioChatProvider implements vscode.WebviewViewProvider {
     const stopped = () => this.cancelled;
     const signal: CancelSignal = { get cancelled() { return stopped(); } };
     try {
-      const draft = await draftPlan(studioModel(this.context), this.steps, { message: text, current: conversation.plan, history: earlier, model: conversation.model }, signal);
+      const skills = await this.cachedSkills();
+      const scripts = this.root ? Object.keys(readScripts(this.root)) : undefined;
+      const draft = await draftPlan(studioModel(this.context), this.steps, { message: text, current: conversation.plan, history: earlier, model: conversation.model, skills, scripts }, signal);
       addDraft(conversation, draft);
       if (currentCard(conversation)?.draft?.workflow === draft.workflow) { await this.writeFile(); }
     } catch (error) {
@@ -208,6 +221,41 @@ export class StudioChatProvider implements vscode.WebviewViewProvider {
       await this.saveConversation();
       this.post();
     }
+  }
+
+  /** Skills listed before (no network): offered to the planner and named on the card. */
+  private async cachedSkills(): Promise<SkillSummary[]> {
+    const cached = await this.skills.cached().catch(() => [] as SkillSummary[]);
+    for (const skill of cached) { this.skillNames.set(skill.ref, skill); }
+    return cached;
+  }
+
+  /** "+ Skill" on a step: the skills of the trusted sources, newest commit; the pick is pinned. */
+  private async addSkill(id: string): Promise<void> {
+    const conversation = await this.ensureConversation();
+    await this.syncFromFile();
+    const node = conversation.plan?.nodes.find(candidate => candidate.id === id);
+    if (!node) { this.say('That step is no longer in the plan.'); return; }
+    const sources = this.skills.sources();
+    if (!sources.length) { this.say('No skill repositories are set. Add one to the setting repositoryManager.studio.skillSources (owner/name).'); return; }
+    if (!await this.skills.ensureTrusted(sources)) { return; }
+    const listed: SkillSummary[] = [];
+    const failed: string[] = [];
+    for (const source of sources) {
+      try { listed.push(...(await this.skills.index(source)).skills); } catch (error) { failed.push(`${source}: ${error instanceof Error ? error.message : String(error)}`); }
+    }
+    for (const skill of listed) { this.skillNames.set(skill.ref, skill); }
+    if (!listed.length) { this.say(failed.length ? `No skills could be listed. ${failed.join(' ')}` : 'The skill repositories have no SKILL.md.'); return; }
+    const present = new Set(node.skills ?? []);
+    const picked = await vscode.window.showQuickPick(listed.filter(skill => !present.has(skill.ref)).map(skill => ({
+      label: skill.name, description: skill.ref.replace(/^github:/, '').replace(/@([0-9a-f]{7})[0-9a-f]+$/, '@$1'),
+      detail: `${skill.description}${skill.usesScripts ? ' · uses scripts: not run here' : ''}`, skill
+    })), { title: `Add a skill to "${node.title ?? node.id}"`, placeHolder: failed.length ? `Some sources could not be read: ${failed.join(' ')}` : 'Pinned to the commit listed now', matchOnDetail: true });
+    if (!picked) { return; }
+    editPlan(conversation, { op: 'setSkills', id, skills: [...present, picked.skill.ref] }, this.steps);
+    await this.writeFile();
+    await this.saveConversation();
+    this.post();
   }
 
   /** Saves the plan as a workflow file in the folder; from then on the file is the plan. */
@@ -282,6 +330,7 @@ export class StudioChatProvider implements vscode.WebviewViewProvider {
     void this.view.webview.postMessage({
       type: 'state', notice, busy: this.busy ?? null, folder: Boolean(this.root),
       models: this.models.map(model => ({ selector: model.selector, name: model.name })),
+      skills: Object.fromEntries([...this.skillNames.values()].map(skill => [skill.ref, { name: skill.name, usesScripts: skill.usesScripts }])),
       model: conversation.model ?? null, file: conversation.file ?? null, title: conversation.title,
       messages: conversation.messages.map(message => ({
         id: message.id, role: message.role, text: message.text, model: message.model ?? null, run: message.run ?? null,

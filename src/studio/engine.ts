@@ -8,21 +8,32 @@ import { randomUUID } from 'crypto';
 import { promises as fs } from 'fs';
 import * as path from 'path';
 import { condition, resolve, Scope } from './expressions';
-import { CancelSignal, StepContext, StepDefinition, StepError, StudioModel } from './steps';
+import { CancelSignal, CodeServices, StepContext, StepDefinition, StepError, StudioModel } from './steps';
 import { runOrder, Workflow, WorkflowNode } from './workflow';
+import { LoadedSkill } from './skills';
 
 export type RunStatus = 'running' | 'waiting' | 'done' | 'failed' | 'stopped';
 export type NodeStatus = 'pending' | 'done' | 'skipped' | 'failed';
 
 export interface Waiting {
   node: string;
-  /** gate: the workflow's own gate. effect: the engine's, before a step that writes, runs or sends. */
-  kind: 'gate' | 'effect';
+  /**
+   * gate: the workflow's own gate. effect: the engine's, before a step that writes, runs or sends.
+   * review: after a step a person reviews (a code step), with its result.
+   */
+  kind: 'gate' | 'effect' | 'review';
   title: string;
   effect: string;
   /** Exactly what will happen, for the person to read before approving. */
   preview: string;
+  /** For a review: how the result was verified, and how many runs are left for Retry. */
+  verdict?: string;
+  attempts?: number;
+  maxAttempts?: number;
 }
+
+/** A person's answer: true/false for a gate (approve/reject); for a review, accept, retry or stop. */
+export type Decision = boolean | 'accept' | 'retry' | 'stop';
 
 export interface RunState {
   id: string;
@@ -39,6 +50,11 @@ export interface RunState {
   criteria?: string[];
   /** Models the workflow names that this machine lacks, and the one the person chose instead. */
   models?: Record<string, string>;
+  /** Values the run's steps share, such as the branch code steps write on. */
+  data?: Record<string, unknown>;
+  /** Runs of each reviewed step, and what its next attempt is told. */
+  attempts?: Record<string, number>;
+  feedback?: Record<string, string>;
   error?: string;
 }
 
@@ -100,10 +116,19 @@ export interface EngineOptions {
   steps: Map<string, StepDefinition>;
   store: RunStore;
   model?: StudioModel;
+  /** Reads a skill at its pinned commit (from the cache, or GitHub once). */
+  skills?: { load(ref: string): Promise<LoadedSkill> };
+  /** For code steps: the model with tools, Git, scripts. */
+  code?: CodeServices;
 }
 
 /** What a run sends or changes, for the consent asked before it starts. */
 export interface WorkflowEffects { promptNodes: string[]; effects: Array<{ node: string; type: string; effect: string }>; gates: string[] }
+
+/** Every skill the workflow's steps use, each once. */
+export function workflowSkills(workflow: Workflow): string[] {
+  return [...new Set(workflow.nodes.flatMap(node => Array.isArray(node.skills) ? node.skills : []))];
+}
 
 /** Every model selector the workflow names (its default and its nodes'), each once. */
 export function workflowModels(workflow: Workflow): string[] {
@@ -151,14 +176,51 @@ export class WorkflowEngine {
     return state;
   }
 
-  /** The person's answer to what the run waits for; continue() then goes on (or stops). */
-  async answer(state: RunState, approved: boolean): Promise<RunState> {
+  /**
+   * The person's answer to what the run waits for; continue() then goes on (or stops). A review
+   * needs the workflow: Retry and Stop undo what the step changed.
+   */
+  async answer(state: RunState, decision: Decision, workflow?: Workflow): Promise<RunState> {
     if (state.status !== 'waiting' || !state.waiting) { return state; }
-    const node = state.waiting.node;
-    state.approvals[node] = approved ? 'approved' : 'rejected';
-    await this.options.store.log(state.id, { type: 'approval', node, kind: state.waiting.kind, approved });
+    const waiting = state.waiting;
+    const id = waiting.node;
+    if (waiting.kind === 'review') { return this.review(state, decision === true ? 'accept' : decision === false ? 'stop' : decision, workflow); }
+    const approved = decision === true || decision === 'accept';
+    state.approvals[id] = approved ? 'approved' : 'rejected';
+    await this.options.store.log(state.id, { type: 'approval', node: id, kind: waiting.kind, approved });
     state.waiting = undefined;
-    if (approved) { state.status = 'running'; } else { state.status = 'stopped'; state.error = `Not approved at "${node}".`; }
+    if (approved) { state.status = 'running'; } else { state.status = 'stopped'; state.error = `Not approved at "${id}".`; }
+    await this.save(state);
+    return state;
+  }
+
+  private async review(state: RunState, decision: 'accept' | 'retry' | 'stop', workflow: Workflow | undefined): Promise<RunState> {
+    const id = state.waiting!.node;
+    const node = workflow?.nodes.find(candidate => candidate.id === id);
+    const step = node ? this.options.steps.get(node.type) : undefined;
+    if (!workflow || !node || !step?.review) { throw new StepError(`The step "${id}" cannot be reviewed here.`); }
+    const output = state.nodes[id]?.output;
+    const attempts = state.attempts?.[id] ?? 0;
+    if (decision === 'retry' && attempts >= step.review.maxAttempts) { throw new StepError(`"${id}" already ran ${attempts} times.`); }
+    await this.options.store.log(state.id, { type: 'review', node: id, decision, verdict: state.waiting!.verdict });
+    state.waiting = undefined;
+    if (decision === 'accept') {
+      state.nodes[id] = { status: 'done', output };
+      state.status = 'running';
+      await this.save(state);
+      return state;
+    }
+    const kept = await step.review.undo(output, this.context(workflow, node, state, { cancelled: false }));
+    const note = kept.length ? ` Left as they are (changed since the step): ${kept.join(', ')}.` : '';
+    state.nodes[id] = { status: 'pending' };
+    if (decision === 'retry') {
+      state.feedback = { ...state.feedback, [id]: step.review.feedback(output) };
+      state.status = 'running';
+      state.error = note ? note.trim() : undefined;
+    } else {
+      state.status = 'stopped';
+      state.error = `Stopped at the review of "${id}"; its changes were undone.${note}`;
+    }
     await this.save(state);
     return state;
   }
@@ -229,6 +291,15 @@ export class WorkflowEngine {
           return state;
         }
 
+        if (node.skills?.length) {
+          if (!this.options.skills) { return await this.fail(state, id, 'Skills cannot be read here.'); }
+          try {
+            context.skills = await Promise.all(node.skills.map(ref => this.options.skills!.load(ref)));
+          } catch (error) {
+            return await this.fail(state, id, `A skill could not be read: ${error instanceof Error ? error.message : String(error)}`);
+          }
+          await store.log(state.id, { type: 'skills', node: id, skills: context.skills.map(skill => skill.ref) });
+        }
         await store.log(state.id, { type: 'node', node: id, step: node.type, runs: runs.length });
         const outputs: unknown[] = [];
         for (const run of runs) {
@@ -240,6 +311,20 @@ export class WorkflowEngine {
             if (signal.cancelled || message === 'Cancelled') { return await this.stop(state, 'Cancelled'); }
             return await this.fail(state, id, items ? `Item ${run.index + 1}: ${message}` : message);
           }
+        }
+        if (step.review && !items) {
+          const attempts = (state.attempts?.[id] ?? 0) + 1;
+          state.attempts = { ...state.attempts, [id]: attempts };
+          state.nodes[id] = { status: 'pending', output: outputs[0] };
+          if (state.feedback) { delete state.feedback[id]; }
+          state.status = 'waiting';
+          state.waiting = {
+            node: id, kind: 'review', title: `Review: ${node.title ?? id}`, effect: step.effect,
+            preview: step.review.preview(outputs[0]), verdict: step.review.verdict(outputs[0]), attempts, maxAttempts: step.review.maxAttempts
+          };
+          await store.log(state.id, { type: 'waiting', node: id, kind: 'review', verdict: state.waiting.verdict });
+          await this.save(state);
+          return state;
         }
         state.nodes[id] = { status: 'done', output: items ? outputs : outputs[0] };
         await store.log(state.id, { type: 'done', node: id });
@@ -258,9 +343,12 @@ export class WorkflowEngine {
 
   private context(workflow: Workflow, node: WorkflowNode, state: RunState, signal: CancelSignal): StepContext {
     const named = node.model ?? workflow.defaults?.model;
+    state.data = state.data ?? {};
     return {
-      root: this.options.root, model: this.options.model, signal, workflow, node,
+      root: this.options.root, model: this.options.model, signal, workflow, node, code: this.options.code,
       modelSelector: named ? state.models?.[named] ?? named : undefined,
+      run: { id: state.id, data: state.data, criteria: state.criteria ?? [] },
+      feedback: state.feedback?.[node.id],
       log: event => { void this.options.store.log(state.id, event); }
     };
   }

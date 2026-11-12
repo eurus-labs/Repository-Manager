@@ -1,6 +1,9 @@
 # Agent harness
 
-Status: **phase 1 implemented (2.16.0)**; phases 2-4 are proposals. Decisions
+Status: **phase 1 implemented (2.16.0)**; since 2.20.0 new work starts in the
+Studio chat, whose `code` step runs this harness's step loop
+(docs/agent-studio.md, "Phase 2b-3 as built"); tasks started before stay
+in the Tasks view. Phases 2-4 below are superseded by the Studio. Decisions
 made by the user are marked *(decided)*. "Phase 1 as built" below records what
 the code does, including choices made while building it; the model paths have
 not been run against Copilot in VS Code yet.

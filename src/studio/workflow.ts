@@ -8,6 +8,7 @@ import { createHash } from 'crypto';
 import * as path from 'path';
 import { ExpressionError, parsePath, referencesIn } from './expressions';
 import { JsonSchema, schemaProblems } from './jsonSchema';
+import { MAX_NODE_SKILLS, SKILL_REF } from './skills';
 
 export const WORKFLOW_FORMAT = 'repository-manager/workflow@1';
 
@@ -40,6 +41,8 @@ export interface WorkflowNode {
   forEach?: string;
   /** For steps that use a model: `<vendor>:<family>`, instead of the workflow's default. */
   model?: string;
+  /** For steps that use a model: skills pinned to a commit (`github:<owner>/<repo>/<folder>@<commit>`). */
+  skills?: string[];
 }
 
 export interface WorkflowEdge {
@@ -76,6 +79,10 @@ export interface StepShape {
   localPaths?: string[];
   /** Sends to a model: only such a step may name its own `model`. */
   usesModel?: boolean;
+  /** Settings that are lists of paths that must each stay inside the workspace. */
+  pathLists?: string[];
+  /** Runs once: no `forEach` (a step a person reviews after it runs). */
+  single?: boolean;
 }
 
 export interface Problem { where: string; message: string }
@@ -246,9 +253,23 @@ export function validateWorkflow(value: unknown, steps: Map<string, StepShape>):
         add(`${where}.with.${key}`, `"${literal}" must be a path inside the workspace (relative, no "..").`);
       }
     }
+    for (const key of shape.pathLists ?? []) {
+      const setting = settings[key];
+      if (setting === undefined || (typeof setting === 'string' && setting.includes('${'))) { continue; }
+      if (!Array.isArray(setting) || !setting.length || setting.some(item => typeof item !== 'string' || (!item.includes('${') && !isLocalPath(item.replace(/\/$/, ''))))) {
+        add(`${where}.with.${key}`, `"${key}" is a list of paths inside the workspace (relative, no ".."; a folder ends with "/").`);
+      }
+    }
+    if (shape.single && node.forEach !== undefined) { add(`${where}.forEach`, `"${node.type}" is reviewed after it runs, so it cannot loop.`); }
     if (node.model !== undefined) {
       if (!(typeof node.model === 'string' && MODEL_SELECTOR.test(node.model))) { add(`${where}.model`, 'Name a model as "<vendor>:<family>", such as "copilot:gpt-4o".'); }
       else if (!shape.usesModel) { add(`${where}.model`, `"${node.type}" does not use a model.`); }
+    }
+    if (node.skills !== undefined) {
+      if (!Array.isArray(node.skills) || node.skills.some(ref => typeof ref !== 'string' || !SKILL_REF.test(ref))) {
+        add(`${where}.skills`, 'Skills are a list of references: github:<owner>/<repo>/<folder>@<40-character commit>.');
+      } else if (node.skills.length > MAX_NODE_SKILLS) { add(`${where}.skills`, `At most ${MAX_NODE_SKILLS} skills on a step.`); }
+      else if (!shape.usesModel) { add(`${where}.skills`, `"${node.type}" does not use a model, so it cannot follow skills.`); }
     }
     if (node.type === 'prompt' && !(typeof node.prompt === 'string' && node.prompt in prompts)) {
       add(`${where}.prompt`, `"${String(node.prompt)}" is not one of the workflow's prompts.`);
