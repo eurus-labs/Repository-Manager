@@ -48,7 +48,7 @@ with an effect, edited as a diagram in the Workflow Editor, and drafted from a g
 - A failed or unverified code step is never accepted by a plain Accept: the button says Accept Anyway or Accept as Unverified. [observed: src/studio/studioCommands.ts, drive]
 - New work starts in the Studio chat, in the Secondary Side Bar on the right, as Copilot's; the Agent's Tasks view is gone. [confirmed: user, 2026-11-12]
 - The chat's model menu lists every chat model VS Code offers and fills in when they load (it was empty when read only at start). [confirmed: user, 2026-11-12; test src/test/studioChatSmoke.js]
-- Earlier agent tasks become Studio chats when 2.20.0 starts: remaining steps become code steps on the task's branch; a step under review keeps its changes and is named; nothing is deleted. [confirmed: user, 2026-11-12; test src/test/agentMigrationSmoke.js]
+- Earlier agent tasks become Studio chats when 3.0.0 starts: remaining steps become code steps on the task's branch; a step under review keeps its changes and is named; nothing is deleted. [confirmed: user, 2026-11-12; test src/test/agentMigrationSmoke.js]
 - Once saved as a workflow file, the file is the plan: edits there show in the chat, and an accepted change is written to it. [confirmed: test src/test/studioChatSmoke.js]
 
 ## Suspected bugs

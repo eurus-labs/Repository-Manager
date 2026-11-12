@@ -1,5 +1,5 @@
 /**
- * The repository's own scripts and Git, for the Studio's code steps (and, before 2.20.0, the agent's
+ * The repository's own scripts and Git, for the Studio's code steps (and, before 3.0.0, the agent's
  * tasks): reading package.json scripts, running one with npm, and the per-repository approval of
  * the scripts a step may run as checks (a changed command, or its pre/post hooks, asks again).
  */

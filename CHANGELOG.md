@@ -20,7 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
-- The **Agent** icon, its **Tasks** view and the task pages: new work starts in the Studio chat. Your earlier agent tasks become Studio chats the first time 2.20.0 starts: the goal and criteria, what was done, and the steps left as a plan of code steps on the task's branch. A step that was waiting for your review keeps its changes in the files, and its chat names them. Nothing is deleted.
+- The **Agent** icon, its **Tasks** view and the task pages: new work starts in the Studio chat. Your earlier agent tasks become Studio chats the first time 3.0.0 starts: the goal and criteria, what was done, and the steps left as a plan of code steps on the task's branch. A step that was waiting for your review keeps its changes in the files, and its chat names them. Nothing is deleted.
 
 ## [2.19.0] - 2026-11-08
 

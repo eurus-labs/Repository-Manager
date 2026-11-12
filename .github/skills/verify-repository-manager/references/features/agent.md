@@ -2,7 +2,7 @@
 
 The agent harness under the Studio's code steps: the Copilot router, the step tools limited to a
 step's paths, and the repository's scripts as checks, approved per repository. Its own view, tasks
-and task pages were removed in 2.20.0; earlier tasks become Studio chats on start.
+and task pages were removed in 3.0.0; earlier tasks become Studio chats on start.
 
 ## Sub-features
 - runner: the task loop (plan, steps, accept / retry), kept for its tests; no UI drives it now.

@@ -66,7 +66,7 @@ export function activate(context: vscode.ExtensionContext) {
   step('Workflow editor', () => context.subscriptions.push(WorkflowEditorProvider.register(context)));
   // The chat view is declared in package.json, so it is there with no folder too; it says so.
   step('Studio Chat', () => StudioChatProvider.register(context, studioRuns, workspaceRoot));
-  // Agent tasks from before 2.20.0 become Studio chats (the Tasks view is gone).
+  // Agent tasks from before 3.0.0 become Studio chats (the Tasks view is gone).
   step('Agent tasks', () => { void registerAgentTasksMove(context).catch(error => log.appendLine(`Moving agent tasks failed: ${error instanceof Error ? error.message : String(error)}`)); });
 
   const declared: string[] = (context.extension?.packageJSON?.contributes?.commands ?? []).map((c: { command: string }) => c.command);

@@ -8,7 +8,7 @@ const { execFileSync } = require('node:child_process');
 // The agent harness without VS Code: the Copilot router's JSON protocol, the step tools and their
 // limits, and a whole task on a real Git repository with scripted models: plan, approval (scripts,
 // clean tree, branch), a step whose check fails, Retry (undone, failure sent back), Accept, the
-// run log, and recovery after a closed window. (The task page is gone since 2.20.0: the Studio's
+// run log, and recovery after a closed window. (The task page is gone since 3.0.0: the Studio's
 // code step runs this loop; src/test/studioCodeStepSmoke.js covers its review.)
 // Only the approval question is used from VS Code here; the answer is scripted.
 const asked = [];

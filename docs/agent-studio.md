@@ -1,6 +1,6 @@
 # Agent Studio
 
-Status: phases **1, 2a and 2b are built** (2.19.0, 2.20.0); later phases are
+Status: phases **1, 2a and 2b are built** (2.19.0, 3.0.0); later phases are
 proposals. The "as built" sections record what the code does. Items marked *(decided)* come
 from the user. Items marked *(proposed)* wait for the user's decision.
 Items marked *(open)* need an answer before the phase that depends on them.
@@ -209,7 +209,7 @@ How it works:
 
 ## Phase 2b design: Studio Chat
 
-Status: **built (2.20.0)**, from the user's decisions of 2026-11-09; the
+Status: **built (3.0.0)**, from the user's decisions of 2026-11-09; the
 "as built" sections for 2b-1, 2b-2 and 2b-3 say what the code does. It changes the
 AI-assisted authoring above in one way: drafting happens in a chat, and a
 drafted plan is a workflow that can be run at once, not only a file to edit.
@@ -308,7 +308,7 @@ All optional, so every 2.19.0 workflow stays valid:
 ### Rounds
 
 Each round ends usable on its own. The user asked for all three before the
-release, so they ship together in 2.20.0, one commit each.
+release, so they ship together in 3.0.0, one commit each.
 
 1. **2b-1, Chat and plans.** The chat view, model picker, plan card with
    criteria and per-step model, follow-up changes as a diff, Run in the
@@ -704,7 +704,7 @@ side panel (the chat's plan card and the JSON do it; the diagram keeps it).
 ## Agent tasks moved to Studio
 
 *(decided 2026-11-12: move the old tasks into the Studio, and remove the
-Tasks view.)* When 2.20.0 starts in a workspace, every agent task not moved
+Tasks view.)* When 3.0.0 starts in a workspace, every agent task not moved
 yet becomes a Studio Chat conversation (`src/studio/agentMigration.ts`, no
 `vscode`; started from `src/agent/agentTasksMove.ts`), and one message says
 how many moved, with **Open Chat History**:

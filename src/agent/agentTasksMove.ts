@@ -1,5 +1,5 @@
 /**
- * The Agent's Tasks view is gone (2.20.0): new work starts in the Studio chat. Tasks people
+ * The Agent's Tasks view is gone (3.0.0): new work starts in the Studio chat. Tasks people
  * started before are moved into Studio chats when the extension starts (src/studio/agentMigration.ts).
  * A task left running when VS Code closed is first put back where a person decides, as the agent
  * did: a step that was running has what it wrote undone. Nothing is deleted.
