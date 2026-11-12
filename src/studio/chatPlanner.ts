@@ -39,7 +39,7 @@ export interface PlanDiff {
   changed: string[];
   criteriaAdded: string[];
   criteriaRemoved: string[];
-  /** Workflow-level parts that changed: inputs, prompts, types, title, default model. */
+  /** Workflow-level parts that changed: inputs, prompts, types, title, default model, edges. */
   other: string[];
 }
 
@@ -169,7 +169,8 @@ export function planDiff(before: Workflow, after: Workflow): PlanDiff {
   const changed = [...next.keys()].filter(id => old.has(id) && (!same(old.get(id), next.get(id)) || !same(promptOf(before, id), promptOf(after, id))));
   const criteriaBefore = before.criteria ?? [];
   const criteriaAfter = after.criteria ?? [];
-  const other = (['title', 'inputs', 'types', 'prompts', 'defaults'] as const).filter(key => !same(before[key], after[key]));
+  // Edges too: a change to the order of steps or to a condition is a change to accept.
+  const other = (['title', 'inputs', 'types', 'prompts', 'defaults', 'edges'] as const).filter(key => !same(before[key] ?? (key === 'edges' ? [] : undefined), after[key] ?? (key === 'edges' ? [] : undefined)));
   return {
     added: [...next.keys()].filter(id => !old.has(id)),
     removed: [...old.keys()].filter(id => !next.has(id)),

@@ -211,6 +211,12 @@
         "title": "Studio Chat History",
         "category": "Repository Manager",
         "icon": "$(history)"
+      },
+      {
+        "command": "repositoryManager.studio.manageSkillSources",
+        "title": "Manage Skill Sources",
+        "category": "Repository Manager",
+        "icon": "$(library)"
       }
     ],
     "viewsContainers": {
@@ -310,6 +316,11 @@
           "command": "repositoryManager.studio.chatHistory",
           "when": "view == repositoryManager.studio.chat",
           "group": "navigation@2"
+        },
+        {
+          "command": "repositoryManager.studio.manageSkillSources",
+          "when": "view == repositoryManager.studio.chat",
+          "group": "navigation@3"
         }
       ],
       "commandPalette": [

@@ -28,8 +28,10 @@ const lmModel = (family, name) => ({
   countTokens: async text => Math.ceil(text.length / 4),
   sendRequest: async (messages) => {
     lmCalls.push({ family, prompt: messages[0].text });
-    const reply = lmReplies.shift();
+    let reply = lmReplies.shift();
     if (reply === undefined) { throw new Error('the script has no reply left'); }
+    // A function is a reply that comes later: the test decides when.
+    if (typeof reply === 'function') { reply = await reply(); }
     return { text: (async function* () { yield typeof reply === 'string' ? reply : JSON.stringify(reply); })() };
   }
 });
@@ -199,6 +201,13 @@ async function main() {
     assert.equal(conversation.plan.prompts.summarize.instructions, 'Summarize the text in 3 lines.');
     assert.equal(conversation.plan.id, 'summarize-notes', 'a change keeps the plan id');
 
+    // Only the flow changes (a condition on an edge): still a change to accept (edges are compared).
+    const reordered = { ...conversation.plan, edges: [{ from: 'summarize', to: 'write', when: '${summarize.output.summary}' }] };
+    const reorder = addDraft(conversation, await draftPlan(scripted([{ reply: 'Unchained.', workflow: reordered }]), steps, { ...turn, current: conversation.plan }, never));
+    assert.equal(reorder.draft.status, 'proposed');
+    assert.deepEqual(reorder.draft.diff.other, ['edges']);
+    discardDraft(conversation, reorder.id);
+
     // A "change" with nothing different is a reply; discard leaves the plan.
     const same = addDraft(conversation, await draftPlan(scripted([{ reply: 'Same.', workflow: conversation.plan }]), steps, { ...turn, current: conversation.plan }, never));
     assert.equal(same.draft, undefined);
@@ -329,6 +338,29 @@ async function main() {
     await receive({ type: 'run' }); await settle();
     assert.equal(ran.length, 1);
     assert.match(last().notice, /cannot run yet: criteria/);
+
+    // A plan moved from an agent task runs only in the repository it was made for.
+    await receive({ type: 'edit', operation: { op: 'setCriteria', criteria: ['Two criteria now'] } }); await settle();
+    viewProvider.conversation.repositoryRoot = path.join(base, 'another-repository');
+    await receive({ type: 'run' }); await settle();
+    assert.equal(ran.length, 1, 'not run in the wrong repository');
+    assert.match(last().notice, /This plan was made for .*another-repository, and the folder open is .*workspace: open that repository/);
+    viewProvider.conversation.repositoryRoot = workspace;
+
+    // While a reply is drafted, Chat History does not switch away (the reply would be lost).
+    let answer;
+    lmReplies.push(() => new Promise(resolve => { answer = resolve; }));
+    const pending = viewProvider.receive({ type: 'send', text: 'One more thing' });
+    await settle();
+    assert.equal(last().busy, 'drafting');
+    const before = viewProvider.conversation.id;
+    await commands.get('repositoryManager.studio.chatHistory')(); await settle();
+    assert.equal(viewProvider.conversation.id, before);
+    assert.match(last().notice, /Wait for the current reply or run to finish/);
+    answer({ reply: 'Noted.', workflow: null });
+    await pending; await settle();
+    const saved = await new ChatStore(path.join(base, 'storage', 'studio', 'chats')).load(before);
+    assert.ok(saved.messages.some(message => message.text === 'Noted.'), 'the reply was saved to its chat');
 
     // New Chat starts empty; Chat History reopens the saved one, plan and all.
     await commands.get('repositoryManager.studio.newChat')(); await settle();

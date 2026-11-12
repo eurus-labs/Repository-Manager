@@ -52,6 +52,11 @@ export interface Conversation {
   plan?: Workflow;
   /** Where the plan was saved, relative to the workspace: from then on that file is the plan. */
   file?: string;
+  /**
+   * The repository the plan was made for, when it came from elsewhere (an agent task): its paths are
+   * relative to it, so it runs only when that repository is the folder open.
+   */
+  repositoryRoot?: string;
 }
 
 export const newMessage = (message: Omit<ChatMessage, 'id' | 'at'>): ChatMessage => ({ id: randomUUID().slice(0, 12), at: new Date().toISOString(), ...message });

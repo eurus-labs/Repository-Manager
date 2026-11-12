@@ -583,7 +583,7 @@ scripted in the tests; a chat with Copilot in VS Code has not been run yet.
 - **Conversation rules** (`src/studio/chatSession.ts`). The first plan is the
   plan. A later plan is a **proposed change** with its diff (nodes added,
   removed, changed, including a changed prompt; criteria added and removed;
-  title, inputs, prompts, types, defaults); only the latest can be accepted;
+  title, inputs, prompts, types, defaults, edges); only the latest can be accepted;
   an earlier one is marked superseded. A plan identical to the current one is
   a plain reply. The card edits criteria, the plan's default model and a
   step's model, nothing else (the diagram does the rest).
@@ -612,7 +612,8 @@ scripted in the tests; a chat with Copilot in VS Code has not been run yet.
   the Workflow Editor.
 - **Run** goes through the same path as Run Workflow… (inputs, model
   replacements, consent, gates); the chat shows the run's status as it
-  changes.
+  changes. While a reply is drafted or a plan runs, New Chat and Chat
+  History do not switch chats (the reply or run writes to its own).
 - **Tests.** `src/test/studioChatSmoke.js` (planner, rules, engine models and
   criteria, the host with a scripted `vscode.lm`), `src/test/studioChatUi.js`
   (the page in Chromium; screenshots 40–44).
@@ -647,8 +648,14 @@ side panel (the chat's plan card and the JSON do it; the diagram keeps it).
   references a skill names are included; all of it within 60,000 characters,
   and what does not fit is listed as left out. The text says skills cannot
   override the data rule or approve anything. Scripts are never run.
-- **Chat.** Each step that uses a model has **+ Skill** on the plan card:
-  the listing of every trusted source, pinned to the commit listed now; a
+- **Chat.** Each step that uses a model has **+ Skill** on the plan card. It
+  first asks where the skills come from *(decided 2026-11-12)*: one source,
+  **All sources** (with more than one), or **Add a GitHub repository…**
+  (`owner/name`, or a GitHub URL, which may go on into a branch or folder);
+  an added repository is trusted first and then kept in the setting (user
+  settings). **Manage Skill Sources** (chat title bar) adds or removes one; a
+  removed source's pinned skills keep working from the cache. Then the
+  listing of the chosen sources, pinned to the commit listed now; a
   chip per skill (⚠ when it uses scripts), removable. The planner is offered
   the skills listed before (from the cache, no request) and may attach only
   those or ones the plan already has; another is a problem and gets the
@@ -683,7 +690,8 @@ side panel (the chat's plan card and the JSON do it; the diagram keeps it).
   change and runs it again with the summary and failing output (3 runs in
   all). **Stop Run** undoes it and ends the run. Closing the dialog leaves the
   review waiting; Show Workflow Runs asks it again, even after a restart.
-  A run that fails or is cancelled undoes what the step wrote.
+  A run that fails or is cancelled undoes what the step wrote; Cancel also
+  stops a check that is running (its npm script), not only the model.
 - **Engine.** Any step may declare a review (`StepReview`); the run keeps
   `data` its steps share (the branch), `attempts` and `feedback` per node.
 - **Planner.** It is told the repository's scripts (the only checks a code
@@ -724,6 +732,9 @@ how many moved, with **Open Chat History**:
   branch before Run; until then the step says so.
 - A task with no plan becomes the goal and a note to draft a plan; a done or
   stopped task becomes history with no plan.
+- The chat keeps the task's repository: its plan runs only when that
+  repository is the folder open (a multi-root workspace runs the first
+  folder), and Run says which one otherwise.
 - Nothing is deleted: a moved task gets `movedTo` (the conversation id) and
   keeps its file and run log; it is not moved again.
 - Tested by `src/test/agentMigrationSmoke.js`, including the moved plan's

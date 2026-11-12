@@ -42,6 +42,7 @@ with an effect, edited as a diagram in the Workflow Editor, and drafted from a g
 - A change the AI proposes to an existing plan is shown as a diff and changes nothing until Accept; a dropped step shows as removed. [confirmed: test src/test/studioChatSmoke.js]
 - A plan with problems (no criteria, unknown step, broken reference) cannot run; the planner gets one repair turn. [confirmed: test src/test/studioChatSmoke.js]
 - Skills come from GitHub repositories, pinned to a commit and cached; a source is trusted once before use; their scripts are never run, and skills that use scripts are marked. [confirmed: user, 2026-11-09]
+- + Skill asks for the source first (one, all, or a GitHub repository added by name or URL, trusted before it is kept); Manage Skill Sources adds or removes one. [confirmed: user, 2026-11-12; test src/test/studioSkillsSmoke.js]
 - The planner may attach only skills it was offered or the plan already had. [confirmed: test src/test/studioSkillsSmoke.js]
 - A code step works on the current branch; it creates a branch only when the plan names one (asked for by the person), and only from a clean tree. [confirmed: user, 2026-11-12]
 - A code step changes only its paths, runs only approved scripts as checks, and waits for review; Retry and Stop undo its changes. [confirmed: test src/test/studioCodeStepSmoke.js]

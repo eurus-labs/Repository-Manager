@@ -15,7 +15,7 @@ import { RunState } from './engine';
 import { CancelSignal, StepDefinition } from './steps';
 import { studioSteps } from './registry';
 import { dashboardSelector, listModels, ModelChoice, onModelsChanged, studioModel } from './studioModels';
-import { StudioSkills, studioSkills } from './githubSkills';
+import { parseSkillSource, StudioSkills, studioSkills } from './githubSkills';
 import { SkillSummary } from './skills';
 import { readScripts } from '../agent/repositoryScripts';
 import { StudioRuns } from './studioCommands';
@@ -58,7 +58,8 @@ export class StudioChatProvider implements vscode.WebviewViewProvider {
     context.subscriptions.push(
       vscode.window.registerWebviewViewProvider(CHAT_VIEW, provider, { webviewOptions: { retainContextWhenHidden: true } }),
       vscode.commands.registerCommand('repositoryManager.studio.newChat', () => provider.newChat()),
-      vscode.commands.registerCommand('repositoryManager.studio.chatHistory', () => provider.pickChat())
+      vscode.commands.registerCommand('repositoryManager.studio.chatHistory', () => provider.pickChat()),
+      vscode.commands.registerCommand('repositoryManager.studio.manageSkillSources', () => provider.manageSkillSources())
     );
     return provider;
   }
@@ -94,15 +95,48 @@ export class StudioChatProvider implements vscode.WebviewViewProvider {
   }
 
   async pickChat(): Promise<void> {
+    // A reply or a run in progress writes to the chat it started in: switching would lose it.
+    if (this.busy) { this.say('Wait for the current reply or run to finish, or stop it.'); return; }
     const all = await this.store.list();
     const picked = await vscode.window.showQuickPick(all.slice(0, 100).map(item => ({
       label: item.title, description: item.plan ? `plan: ${item.plan.title}` : '', detail: `${item.updatedAt.slice(0, 16).replace('T', ' ')} · ${item.messages.length} messages`, item
     })), { title: 'Studio Chats', placeHolder: all.length ? 'Open a chat' : 'No chats yet' });
     if (!picked) { return; }
+    if (this.busy) { this.say('A reply or run started while choosing: wait for it, then open the chat again.'); return; }
     this.conversation = picked.item;
     await this.context.workspaceState.update(CURRENT_KEY, picked.item.id);
     await this.syncFromFile();
     this.post();
+  }
+
+  /** The skill repositories: add one, or remove one (its pinned skills stay cached and keep working). */
+  async manageSkillSources(): Promise<void> {
+    const sources = this.skills.sources();
+    type Item = vscode.QuickPickItem & { source?: string };
+    const picked = await vscode.window.showQuickPick<Item>([
+      { label: '$(add) Add a GitHub repository…' },
+      ...sources.map(source => ({ label: `$(trash) Remove ${source}`, source }))
+    ], { title: 'Skill Sources', placeHolder: sources.length ? `Now: ${sources.join(', ')}` : 'No skill repository yet' });
+    if (!picked) { return; }
+    if (picked.source) {
+      await this.skills.removeSource(picked.source);
+      this.say(`Removed ${picked.source}. Skills already on a plan keep working from the cache.`);
+      return;
+    }
+    const added = await this.chooseSourcesAdd();
+    if (added) { this.say(`Added ${added}: its skills show under + Skill.`); }
+  }
+
+  private async chooseSourcesAdd(): Promise<string | undefined> {
+    const typed = await vscode.window.showInputBox({
+      title: 'Add a skill repository', prompt: 'A GitHub repository with skills (folders with a SKILL.md), as owner/name or its URL.',
+      placeHolder: 'eurus-labs/skills', ignoreFocusOut: true,
+      validateInput: value => !value.trim() || parseSkillSource(value) ? undefined : 'Write owner/name, or paste the repository\'s GitHub URL.'
+    });
+    const source = typed ? parseSkillSource(typed) : undefined;
+    if (!source || !await this.skills.ensureTrusted([source])) { return undefined; }
+    await this.skills.addSource(source);
+    return source;
   }
 
   private defaultSelector(): string | undefined {
@@ -213,6 +247,10 @@ export class StudioChatProvider implements vscode.WebviewViewProvider {
     if (!plan) { this.say('There is no plan to run yet.'); return; }
     const problems = planProblems(plan, this.steps);
     if (problems.length) { this.say(`The plan cannot run yet: ${problems[0].where}: ${problems[0].message}`); return; }
+    if (conversation.repositoryRoot && path.resolve(conversation.repositoryRoot) !== path.resolve(this.root)) {
+      this.say(`This plan was made for ${conversation.repositoryRoot}, and the folder open is ${this.root}: open that repository (as the first folder) to run it.`);
+      return;
+    }
     this.busy = 'running';
     this.post();
     let run: ChatRun | undefined;
@@ -250,8 +288,8 @@ export class StudioChatProvider implements vscode.WebviewViewProvider {
     await this.syncFromFile();
     const node = conversation.plan?.nodes.find(candidate => candidate.id === id);
     if (!node) { this.say('That step is no longer in the plan.'); return; }
-    const sources = this.skills.sources();
-    if (!sources.length) { this.say('No skill repositories are set. Add one to the setting repositoryManager.studio.skillSources (owner/name).'); return; }
+    const sources = await this.chooseSources();
+    if (!sources?.length) { return; }
     if (!await this.skills.ensureTrusted(sources)) { return; }
     const listed: SkillSummary[] = [];
     const failed: string[] = [];
@@ -259,7 +297,7 @@ export class StudioChatProvider implements vscode.WebviewViewProvider {
       try { listed.push(...(await this.skills.index(source)).skills); } catch (error) { failed.push(`${source}: ${error instanceof Error ? error.message : String(error)}`); }
     }
     for (const skill of listed) { this.skillNames.set(skill.ref, skill); }
-    if (!listed.length) { this.say(failed.length ? `No skills could be listed. ${failed.join(' ')}` : 'The skill repositories have no SKILL.md.'); return; }
+    if (!listed.length) { this.say(failed.length ? `No skills could be listed. ${failed.join(' ')}` : `${sources.join(', ')} has no SKILL.md.`); return; }
     const present = new Set(node.skills ?? []);
     const picked = await vscode.window.showQuickPick(listed.filter(skill => !present.has(skill.ref)).map(skill => ({
       label: skill.name, description: skill.ref.replace(/^github:/, '').replace(/@([0-9a-f]{7})[0-9a-f]+$/, '@$1'),
@@ -270,6 +308,25 @@ export class StudioChatProvider implements vscode.WebviewViewProvider {
     await this.writeFile();
     await this.saveConversation();
     this.post();
+  }
+
+  /**
+   * Where the skills come from: one source, all of them, or a GitHub repository added now (kept in
+   * the setting). Undefined: cancelled.
+   */
+  private async chooseSources(): Promise<string[] | undefined> {
+    const sources = this.skills.sources();
+    type Item = vscode.QuickPickItem & { sources?: string[]; add?: boolean };
+    const items: Item[] = [
+      ...sources.map(source => ({ label: source, description: 'GitHub', sources: [source] })),
+      ...(sources.length > 1 ? [{ label: 'All sources', description: `${sources.length} repositories`, sources }] : []),
+      { label: '$(add) Add a GitHub repository…', description: 'owner/name or its URL', add: true }
+    ];
+    const picked = await vscode.window.showQuickPick<Item>(items, { title: 'Skills from', placeHolder: sources.length ? 'Choose where the skills come from' : 'No skill repository yet: add one' });
+    if (!picked) { return undefined; }
+    if (!picked.add) { return picked.sources; }
+    const source = await this.chooseSourcesAdd();
+    return source ? [source] : undefined;
   }
 
   /** Saves the plan as a workflow file in the folder; from then on the file is the plan. */

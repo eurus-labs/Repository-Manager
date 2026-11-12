@@ -97,6 +97,30 @@ export function codePreview(result: CodeResult): string {
   ].filter(Boolean).join('\n\n');
 }
 
+/**
+ * A cancellation token that also tells listeners (the npm check stops through them) when the
+ * run's signal turns cancelled; the signal is a flag, so it is polled while the step runs.
+ */
+export function cancelToken(signal: { readonly cancelled: boolean }, every = 200): CancelToken & { dispose(): void } {
+  const listeners = new Set<() => unknown>();
+  let fired = false;
+  const timer = setInterval(() => {
+    if (fired || !signal.cancelled) { return; }
+    fired = true;
+    clearInterval(timer);
+    for (const listener of [...listeners]) { listener(); }
+  }, every);
+  return {
+    get isCancellationRequested() { return signal.cancelled; },
+    onCancellationRequested(listener: () => unknown) {
+      if (fired) { listener(); return { dispose() { /* already fired */ } }; }
+      listeners.add(listener);
+      return { dispose() { listeners.delete(listener); } };
+    },
+    dispose() { clearInterval(timer); listeners.clear(); }
+  };
+}
+
 /** Runs the model with tools until it gives its final JSON. */
 async function converse(context: StepContext, system: string, input: string, workspace: StepWorkspace, token: CancelToken,
   record: (call: ToolCallRecord) => void): Promise<Record<string, unknown>> {
@@ -204,7 +228,8 @@ export const codeStep: StepDefinition = {
       throw new StepError(`The repository is on ${current || 'no branch'}; switch to ${branch} to go on.`);
     }
 
-    const token: CancelToken = { get isCancellationRequested() { return context.signal.cancelled; } };
+    // The run's Cancel reaches a running check too: the npm script is stopped, not waited out.
+    const token = cancelToken(context.signal);
     const tools: AgentToolName[] = checks.length ? ['edit_file', 'create_file', 'run_check'] : ['edit_file', 'create_file'];
     const workspace = new StepWorkspace({ root, isDirty: code.isDirty, allowedScripts: () => code.allowedScripts(root), runScript: script => code.runScript(root, script, token) }, { tools, paths });
     const toolCalls: ToolCallRecord[] = [];
@@ -239,6 +264,8 @@ export const codeStep: StepDefinition = {
       const kept = revertChanges(root, [...workspace.changes.values()], code.isDirty);
       const message = error instanceof Error ? error.message : String(error);
       throw new StepError(`${message}${kept.length ? ` (not undone, changed since: ${kept.join(', ')})` : ''}`);
+    } finally {
+      token.dispose();
     }
   },
 

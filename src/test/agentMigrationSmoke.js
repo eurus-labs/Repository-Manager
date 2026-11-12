@@ -45,6 +45,7 @@ async function main() {
   {
     const conversation = taskToConversation(midway, chats, steps);
     assert.equal(conversation.title, 'Fix parser');
+    assert.equal(conversation.repositoryRoot, base, 'the chat keeps the task\'s repository');
     assert.equal(conversation.messages[0].role, 'user');
     assert.equal(conversation.messages[0].text, 'Goal of Fix parser\nDone when:\n- It works\n- Tests pass');
     const note = conversation.messages[1];

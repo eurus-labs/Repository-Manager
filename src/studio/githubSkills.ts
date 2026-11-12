@@ -22,6 +22,24 @@ export interface StudioSkills {
   load(ref: string): Promise<LoadedSkill>;
   /** Asks once per source before its skills are used. False: not trusted. */
   ensureTrusted(sources: string[]): Promise<boolean>;
+  /** Adds a source to the setting (the person's user settings). */
+  addSource(source: string): Promise<void>;
+  removeSource(source: string): Promise<void>;
+}
+
+/**
+ * A GitHub repository as people write it: owner/name, github.com/owner/name, or its URL (with .git,
+ * a branch path or a trailing slash). Undefined when it is not one.
+ */
+export function parseSkillSource(text: string): string | undefined {
+  const trimmed = text.trim().replace(/^git@github\.com:/i, 'github.com/');
+  // A URL may go on into a branch or a folder; a bare owner/name may not.
+  const url = /^(?:https?:\/\/)?(?:www\.)?github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?(?:\/[^\s]*)?$/i.exec(trimmed);
+  const bare = /^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?$/.exec(trimmed);
+  const match = url ?? bare;
+  if (!match || /^\.+$/.test(match[1]) || /^\.+$/.test(match[2])) { return undefined; }
+  const source = `${match[1]}/${match[2]}`;
+  return SKILL_SOURCE.test(source) ? source : undefined;
 }
 
 function request(url: string, token: string | undefined, accept: string): Promise<string> {
@@ -92,8 +110,13 @@ export function studioSkills(context: vscode.ExtensionContext, api: SkillSourceA
     const value = vscode.workspace.getConfiguration('repositoryManager').get<unknown>('studio.skillSources');
     return Array.isArray(value) ? [...new Set(value.filter((item): item is string => typeof item === 'string' && SKILL_SOURCE.test(item.trim())).map(item => item.trim()))] : [];
   };
+  const save = async (list: string[]) => {
+    await vscode.workspace.getConfiguration('repositoryManager').update('studio.skillSources', list, vscode.ConfigurationTarget.Global);
+  };
   return {
     sources,
+    addSource: async source => { if (!sources().includes(source)) { await save([...sources(), source]); } },
+    removeSource: async source => { await save(sources().filter(item => item !== source)); },
     index: source => library.index(source),
     cached: async () => (await Promise.all(sources().map(source => library.cachedIndex(source)))).flat(),
     load: ref => library.load(ref),

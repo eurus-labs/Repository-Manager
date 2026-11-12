@@ -59,6 +59,8 @@ function doneLine(step: PlanStep, index: number): string {
 export function taskToConversation(task: AgentTask, chats: ChatStore, steps: Map<string, StepDefinition>): Conversation {
   const conversation = chats.create();
   conversation.title = task.title;
+  // The task's steps name paths of its repository: the plan runs only with that repository open.
+  conversation.repositoryRoot = task.repositoryRoot;
   conversation.createdAt = task.createdAt;
   conversation.messages.push(newMessage({
     role: 'user',
@@ -73,7 +75,7 @@ export function taskToConversation(task: AgentTask, chats: ChatStore, steps: Map
   conversation.messages.push(newMessage({
     role: 'assistant',
     text: [
-      `Moved from the Agent task "${task.title}" (${task.id}, ${task.createdAt.slice(0, 10)}). ${status}`.trim(),
+      `Moved from the Agent task "${task.title}" (${task.id}, ${task.createdAt.slice(0, 10)}), for the repository ${task.repositoryRoot}. ${status}`.trim(),
       task.branch ? `Its branch: ${task.branch}.${plan ? ' The steps below work on it: switch to it before Run.' : ''}` : '',
       done.length ? `Done in the Agent:\n${done.map(({ step, index }) => doneLine(step, index)).join('\n')}` : '',
       reviewNote,

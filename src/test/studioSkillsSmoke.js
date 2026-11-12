@@ -32,15 +32,24 @@ const api = {
 
 // --- the fake `vscode` for the host parts -------------------------------------------------------
 const warnings = [];
-const answers = { warning: [], quickPick: [] };
+const answers = { warning: [], quickPick: [], input: [] };
+const settings = { skillSources: ['acme/skills', 'not a repo', 'acme/skills'] };
 let viewProvider;
 const fileUri = fsPath => ({ scheme: 'file', fsPath, path: fsPath, toString: () => `file://${fsPath}` });
 const fakeVscode = {
   Uri: { file: fileUri, joinPath: (uri, ...parts) => fileUri(path.join(uri.fsPath, ...parts)) },
-  workspace: { textDocuments: [], getConfiguration: () => ({ get: key => key === 'studio.skillSources' ? ['acme/skills', 'not a repo', 'acme/skills'] : undefined }) },
+  workspace: {
+    textDocuments: [],
+    getConfiguration: () => ({
+      get: key => key === 'studio.skillSources' ? settings.skillSources : undefined,
+      update: async (key, value, target) => { assert.equal(key, 'studio.skillSources'); assert.equal(target, 1, 'kept in user settings'); settings.skillSources = value; }
+    })
+  },
+  ConfigurationTarget: { Global: 1 },
   window: {
     showWarningMessage: async (message, options) => { warnings.push([message, options && options.detail]); return answers.warning.shift(); },
-    showQuickPick: async (items, options) => { warnings.push(['pick', options.title]); const pick = answers.quickPick.shift(); return pick ? items.find(pick) : undefined; },
+    showQuickPick: async (items, options) => { warnings.push(['pick', options.title, items.map(item => item.label)]); const pick = answers.quickPick.shift(); return pick ? items.find(pick) : undefined; },
+    showInputBox: async options => { const value = answers.input.shift(); if (value !== undefined && options.validateInput) { assert.equal(options.validateInput(value), undefined, `"${value}" was refused`); } return value; },
     registerWebviewViewProvider: (_id, provider) => { viewProvider = provider; return { dispose() {} }; }
   },
   commands: { registerCommand: () => ({ dispose() {} }), executeCommand: async () => undefined },
@@ -54,7 +63,7 @@ Module._load = function (request, parent, isMain) {
 };
 const out = name => require(path.join(__dirname, '../../out/studio', name));
 const { SkillLibrary, parseSkillRef, parseSkillFile, skillsPrompt, skillRef } = out('skills.js');
-const { studioSkills, skillSources } = out('githubSkills.js');
+const { studioSkills, skillSources, parseSkillSource } = out('githubSkills.js');
 const { StudioChatProvider } = out('studioChat.js');
 const { RunStore, WorkflowEngine, workflowSkills } = out('engine.js');
 const { studioSteps } = out('registry.js');
@@ -74,6 +83,8 @@ async function main() {
   assert.throws(() => parseSkillRef(`github:acme/skills/../secrets@${commit}`), /outside the repository/);
   assert.deepEqual(parseSkillFile('no front matter', 'fallback'), { name: 'fallback', description: '', body: 'no front matter' });
   assert.deepEqual(skillSources([writeTests, plainWords, 'nonsense']), ['acme/skills']);
+  assert.deepEqual(['eurus-labs/skills', 'https://github.com/eurus-labs/skills', 'github.com/eurus-labs/skills.git', 'https://github.com/eurus-labs/skills/tree/main/plugins', 'git@github.com:eurus-labs/skills.git', 'not a repo', '../x', 'a/b/c d'].map(parseSkillSource),
+    ['eurus-labs/skills', 'eurus-labs/skills', 'eurus-labs/skills', 'eurus-labs/skills', 'eurus-labs/skills', undefined, undefined, undefined]);
 
   // ---- The listing: names and descriptions, scripts flagged, templates left out; cached per commit.
   const library = new SkillLibrary(path.join(base, 'cache'), api);
@@ -178,18 +189,45 @@ async function main() {
     const conversation = viewProvider.conversation;
     conversation.plan = { schema: 'repository-manager/workflow@1', id: 'p', version: '0.1.0', title: 'P', criteria: ['c'], prompts: { p: { instructions: 'Do it.' } }, nodes: [{ id: 'a', type: 'prompt', prompt: 'p', with: { input: 'x' } }] };
     conversation.messages.push({ id: 'm1', role: 'assistant', text: 'Plan.', at: '', draft: { workflow: conversation.plan, problems: [], status: 'current' } });
-    answers.quickPick.push(item => item.label === 'write-tests');
+    // + Skill asks where the skills come from first: each source, or a repository added now.
+    answers.quickPick.push(item => item.label === 'acme/skills', item => item.label === 'write-tests');
     await receive({ type: 'addSkill', id: 'a' });
+    const sourcePick = warnings.find(entry => entry[0] === 'pick' && entry[1] === 'Skills from');
+    assert.deepEqual(sourcePick[2], ['acme/skills', '$(add) Add a GitHub repository…'], 'one source: no "All sources"');
     const ref = viewProvider.conversation.plan.nodes[0].skills[0];
     assert.equal(ref, skillRef('acme', 'skills', 'plugins/testing/skills/write-tests', newer), 'pinned to the commit listed now');
     const last = posted[posted.length - 1];
     assert.equal(last.messages[0].draft.view.steps[0].skills[0], ref);
     assert.deepEqual(last.skills[ref], { name: 'write-tests', usesScripts: true });
     // Picking nothing changes nothing; a step that is gone is said.
+    answers.quickPick.push(item => item.label === 'acme/skills');
     await receive({ type: 'addSkill', id: 'a' });
     assert.equal(viewProvider.conversation.plan.nodes[0].skills.length, 1);
     await receive({ type: 'addSkill', id: 'gone' });
     assert.match(posted[posted.length - 1].notice, /no longer in the plan/);
+
+    // Add a repository from + Skill: its URL is enough; it is trusted first, then kept in the setting.
+    answers.quickPick.push(item => item.add);
+    answers.input.push('https://github.com/other-org/team-skills.git');
+    answers.warning.push(undefined);
+    await receive({ type: 'addSkill', id: 'a' });
+    assert.deepEqual(settings.skillSources, ['acme/skills', 'not a repo', 'acme/skills'], 'a repository not trusted is not added');
+    assert.match(warnings[warnings.length - 1][0], /Use skills from github\.com\/other-org\/team-skills\?/);
+    answers.quickPick.push(item => item.add);
+    answers.input.push('other-org/team-skills');
+    answers.warning.push('Trust Skills');
+    head = commit;
+    await receive({ type: 'addSkill', id: 'a' });
+    assert.deepEqual(settings.skillSources, ['acme/skills', 'other-org/team-skills']);
+    // Two sources: "All sources" is offered.
+    answers.quickPick.push(undefined);
+    await receive({ type: 'addSkill', id: 'a' });
+    assert.deepEqual(warnings.filter(entry => entry[1] === 'Skills from').pop()[2], ['acme/skills', 'other-org/team-skills', 'All sources', '$(add) Add a GitHub repository…']);
+    // Manage Skill Sources removes one.
+    answers.quickPick.push(item => item.source === 'other-org/team-skills');
+    await viewProvider.manageSkillSources(); await settle();
+    assert.deepEqual(settings.skillSources, ['acme/skills']);
+    assert.match(posted[posted.length - 1].notice, /Removed other-org\/team-skills\. Skills already on a plan keep working/);
   }
 
   console.log('Studio skills smoke passed');

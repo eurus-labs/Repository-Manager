@@ -176,7 +176,7 @@ function registerUsage(context: vscode.ExtensionContext): void {
 function registerWithoutFolder(context: vscode.ExtensionContext): void {
   const declared: string[] = (context.extension?.packageJSON?.contributes?.commands ?? []).map((c: { command: string }) => c.command);
   // Requirements and the Studio Chat register their own commands, with or without a folder.
-  const ownRegistration = (id: string) => id.startsWith('repositoryManager.requirements.') || ['repositoryManager.studio.newChat', 'repositoryManager.studio.chatHistory'].includes(id);
+  const ownRegistration = (id: string) => id.startsWith('repositoryManager.requirements.') || ['repositoryManager.studio.newChat', 'repositoryManager.studio.chatHistory', 'repositoryManager.studio.manageSkillSources'].includes(id);
   for (const id of declared.filter(id => !ownRegistration(id))) {
     context.subscriptions.push(vscode.commands.registerCommand(id, () => vscode.window.showErrorMessage(NO_FOLDER_MESSAGE)));
   }

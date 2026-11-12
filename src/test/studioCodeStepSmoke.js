@@ -15,7 +15,7 @@ const { RunStore, WorkflowEngine } = out('engine.js');
 const { studioSteps } = out('registry.js');
 const { validateWorkflow } = out('workflow.js');
 const { draftPlan } = out('chatPlanner.js');
-const { lineDiff, validBranchName } = out('codeStep.js');
+const { lineDiff, validBranchName, cancelToken } = out('codeStep.js');
 
 const base = fs.mkdtempSync(path.join(os.tmpdir(), 'repository-manager-code-step-'));
 const repo = path.join(base, 'repo');
@@ -188,6 +188,39 @@ async function main() {
     assert.match((await go(unapproved)).error, /not approved for this repository: deploy/);
     assert.equal(run(['branch', '--show-current']).trim(), 'main');
     assert.equal(run(['branch', '--list', 'fix/other']).trim(), '', 'a refused step made no branch');
+  }
+
+  // ---- Cancel reaches a running check: it is told, stops, and the step's change is undone.
+  {
+    const signal = { cancelled: false };
+    const token = cancelToken(signal, 10);
+    let told = 0;
+    token.onCancellationRequested(() => { told++; });
+    signal.cancelled = true;
+    await new Promise(resolve => setTimeout(resolve, 40));
+    assert.equal(told, 1);
+    token.onCancellationRequested(() => { told++; });
+    assert.equal(told, 2, 'a listener added after the cancel is told at once');
+    token.dispose();
+
+    const live = { cancelled: false };
+    let stopped = false;
+    const slow = services([{ tool: 'edit_file', input: { path: 'src/value.txt', oldText: 'fixed', newText: 'half' } }, { final: 'Done.' }], [], []);
+    slow.runScript = (_root, script, checkToken) => new Promise(resolve => {
+      // A check that would run for minutes, unless it is stopped.
+      const timer = setTimeout(() => resolve({ script, passed: true, exitCode: 0, output: '', durationMs: 600000 }), 600000);
+      checkToken.onCancellationRequested(() => { stopped = true; clearTimeout(timer); resolve({ script, passed: false, exitCode: null, output: 'Cancelled.', durationMs: 1 }); });
+      setTimeout(() => { live.cancelled = true; }, 50);
+    });
+    const engine = new WorkflowEngine({ root: repo, steps, store: new RunStore(path.join(base, 'runs')), code: slow });
+    const flow = workflow();
+    const waiting = await engine.continue(flow, await engine.start(flow, 'hash', {}), never);
+    const started = Date.now();
+    const state = await engine.continue(flow, await engine.answer(waiting, true), live);
+    assert.ok(stopped, 'the running check was told to stop');
+    assert.ok(Date.now() - started < 5000, 'not waited out');
+    assert.equal(state.status, 'stopped');
+    assert.equal(fs.readFileSync(path.join(repo, 'src', 'value.txt'), 'utf8'), 'value = fixed\n', 'the change was undone');
   }
 
   // ---- The planner: code steps may only name the repository's scripts as checks.
