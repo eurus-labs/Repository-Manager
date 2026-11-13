@@ -637,7 +637,21 @@ side panel (the chat's plan card and the JSON do it; the diagram keeps it).
   storage (`studio/skills/<owner>/<repo>/<commit>/`); a cached commit is never
   fetched again, so pinned skills work offline.
 - **GitHub** (`src/studio/githubSkills.ts`). The REST API with the VS Code
-  GitHub session (`repo` scope; without one, public repositories only).
+  GitHub session (`repo` scope). A session the person already has is found
+  silently; without one, repositories are read anonymously (public ones
+  work). Only when GitHub refuses (401, 403, 404: a private repository or
+  the anonymous rate limit) is the person asked to sign in, once; a Cancel is
+  remembered for the session, and **Manage Skill Sources → Sign in to
+  <server>** asks on request. (3.0.0 asked before every request, so the
+  dialog came back after each Cancel: fixed in 3.1.0.)
+- **GitHub Enterprise** *(asked for 2026-11-13)*. A source may be
+  `<host>/<owner>/<repo>`, and a skill reference
+  `github:<host>/<owner>/<repo>/<folder>@<commit>`; github.com keeps the short
+  forms. A host has a dot and an owner never does, so they cannot be confused.
+  Requests go to `https://<host>/api/v3`; sign-in uses VS Code's GitHub
+  Enterprise account, which serves the one server in `github-enterprise.uri`:
+  for any other server, a refusal says to set it, and no dialog opens. An
+  Enterprise source's cache is under its host.
   Sources come from `repositoryManager.studio.skillSources` (default
   `eurus-labs/skills`). Trust is asked once per source, before it is listed
   and before a run uses a skill from a source not trusted yet (a shared

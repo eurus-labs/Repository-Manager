@@ -7,7 +7,7 @@
 import * as vscode from 'vscode';
 import * as https from 'https';
 import * as path from 'path';
-import { LoadedSkill, SKILL_SOURCE, SkillError, SkillLibrary, SkillSourceApi, SkillSummary, parseSkillRef } from './skills';
+import { GITHUB_HOST, LoadedSkill, SKILL_SOURCE, SkillError, SkillLibrary, SkillSourceApi, SkillSummary, parseSkillRef, sourceLabel } from './skills';
 
 const TRUSTED_KEY = 'repositoryManager.studio.trustedSkillSources';
 const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
@@ -22,25 +22,38 @@ export interface StudioSkills {
   load(ref: string): Promise<LoadedSkill>;
   /** Asks once per source before its skills are used. False: not trusted. */
   ensureTrusted(sources: string[]): Promise<boolean>;
+  /** Asks the person to sign in to a host (github.com by default) now, even after an earlier Cancel. True: signed in. */
+  signIn(host?: string): Promise<boolean>;
   /** Adds a source to the setting (the person's user settings). */
   addSource(source: string): Promise<void>;
   removeSource(source: string): Promise<void>;
 }
 
 /**
- * A GitHub repository as people write it: owner/name, github.com/owner/name, or its URL (with .git,
- * a branch path or a trailing slash). Undefined when it is not one.
+ * A GitHub repository as people write it: owner/name, github.com/owner/name, a GitHub Enterprise
+ * server's host/owner/name, or the repository's URL on either (with .git, a branch path or a
+ * trailing slash). github.com gives owner/name; another server gives host/owner/name. Undefined
+ * when it is not one.
  */
 export function parseSkillSource(text: string): string | undefined {
-  const trimmed = text.trim().replace(/^git@github\.com:/i, 'github.com/');
-  // A URL may go on into a branch or a folder; a bare owner/name may not.
-  const url = /^(?:https?:\/\/)?(?:www\.)?github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?(?:\/[^\s]*)?$/i.exec(trimmed);
-  const bare = /^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?$/.exec(trimmed);
-  const match = url ?? bare;
-  if (!match || /^\.+$/.test(match[1]) || /^\.+$/.test(match[2])) { return undefined; }
-  const source = `${match[1]}/${match[2]}`;
+  const trimmed = text.trim().replace(/^git@([^:\s]+):/i, '$1/');
+  // A URL may go on into a branch or a folder; a bare owner/name (or host/owner/name) may not.
+  const url = /^(?:https?:\/\/)?(?:www\.)?([a-z0-9-]+(?:\.[a-z0-9-]+)+)\/([A-Za-z0-9_-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?(?:\/[^\s]*)?$/i.exec(trimmed);
+  const bare = /^([A-Za-z0-9_-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?$/.exec(trimmed);
+  const host = url ? url[1].toLowerCase() : undefined;
+  const owner = url ? url[2] : bare?.[1];
+  const repo = url ? url[3] : bare?.[2];
+  if (!owner || !repo || /^\.+$/.test(repo)) { return undefined; }
+  const source = host && host !== GITHUB_HOST ? `${host}/${owner}/${repo}` : `${owner}/${repo}`;
   return SKILL_SOURCE.test(source) ? source : undefined;
 }
+
+/** GitHub answered with an error status: kept, so a refusal can lead to one sign-in question. */
+export class GitHubRequestError extends SkillError {
+  constructor(message: string, readonly status: number) { super(message); }
+}
+
+export type GitHubFetch = (url: string, token: string | undefined, accept: string) => Promise<string>;
 
 function request(url: string, token: string | undefined, accept: string): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -59,7 +72,7 @@ function request(url: string, token: string | undefined, accept: string): Promis
         const body = Buffer.concat(chunks).toString('utf8');
         if ((res.statusCode ?? 0) >= 400) {
           const hint = res.statusCode === 404 ? ' (not found, or your GitHub account cannot see it)' : res.statusCode === 403 ? ' (forbidden or rate limited)' : '';
-          reject(new SkillError(`GitHub answered ${res.statusCode}${hint} for ${url.replace('https://api.github.com/', '')}.`));
+          reject(new GitHubRequestError(`GitHub answered ${res.statusCode}${hint} for ${url.replace('https://api.github.com/', '')}.`, res.statusCode ?? 0));
           return;
         }
         resolve(body);
@@ -70,41 +83,124 @@ function request(url: string, token: string | undefined, accept: string): Promis
   });
 }
 
-/** The GitHub REST API through the person's sign-in; without a session, public repositories only. */
+type Auth = Pick<typeof vscode.authentication, 'getSession'>;
+
+/** The host VS Code's GitHub Enterprise sign-in is set up for (`github-enterprise.uri`), if any. */
+export function enterpriseHost(): string | undefined {
+  const uri = vscode.workspace.getConfiguration('github-enterprise').get<string>('uri');
+  try { return uri ? new URL(uri).hostname.toLowerCase() : undefined; } catch { return undefined; }
+}
+
+interface HostState { token?: string; looked: boolean; declined: boolean; asking?: Promise<string | undefined> }
+
+/**
+ * The GitHub REST API, on github.com or a GitHub Enterprise server (its `/api/v3`). A session the
+ * person already has is used without asking; without one, repositories are read anonymously.
+ * Only when a server refuses (a private repository, the anonymous rate limit) is the person asked
+ * to sign in, once per server: a Cancel is remembered and not asked again (Manage Skill Sources →
+ * Sign in asks on request). Each request asking again kept the sign-in dialog coming back after
+ * Cancel (reported 2026-11-13). An Enterprise server signs in through VS Code's GitHub Enterprise
+ * account, which serves the one server set in `github-enterprise.uri`.
+ */
 export class GitHubSkillApi implements SkillSourceApi {
-  async token(): Promise<string | undefined> {
+  private readonly hosts = new Map<string, HostState>();
+
+  constructor(private readonly fetch: GitHubFetch = request, private readonly auth: Auth = vscode.authentication,
+    private readonly enterprise: () => string | undefined = enterpriseHost) {}
+
+  private state(host: string): HostState {
+    let state = this.hosts.get(host);
+    if (!state) { state = { looked: false, declined: false }; this.hosts.set(host, state); }
+    return state;
+  }
+
+  /** The VS Code account that signs in to this host; undefined when none can. */
+  private provider(host: string): string | undefined {
+    if (host === GITHUB_HOST) { return 'github'; }
+    return this.enterprise() === host ? 'github-enterprise' : undefined;
+  }
+
+  /** A session the person already has, found without a dialog; looked up once per host. */
+  private async silent(host: string): Promise<string | undefined> {
+    const state = this.state(host);
+    const provider = this.provider(host);
+    if (!state.looked && provider) {
+      state.looked = true;
+      try { state.token = (await this.auth.getSession(provider, ['repo'], { silent: true }))?.accessToken; } catch { state.token = undefined; }
+    }
+    return state.token;
+  }
+
+  /**
+   * Asks to sign in to a host, at most once at a time; after a Cancel, only when `force` (the person
+   * asked). Undefined: not signed in.
+   */
+  async signIn(force = false, host: string = GITHUB_HOST): Promise<string | undefined> {
+    const state = this.state(host);
+    const provider = this.provider(host);
+    if (!provider || (state.declined && !force)) { return undefined; }
+    if (!state.asking) {
+      state.asking = (async () => {
+        try {
+          const session = await this.auth.getSession(provider, ['repo'], { createIfNone: true });
+          state.token = session?.accessToken;
+          state.looked = true;
+          state.declined = !state.token;
+          return state.token;
+        } catch {
+          state.declined = true;
+          return undefined;
+        } finally {
+          state.asking = undefined;
+        }
+      })();
+    }
+    return state.asking;
+  }
+
+  private async get(route: string, accept: string, host: string = GITHUB_HOST): Promise<string> {
+    const url = host === GITHUB_HOST ? `https://api.github.com/${route}` : `https://${host}/api/v3/${route}`;
+    const token = await this.silent(host);
     try {
-      const session = await vscode.authentication.getSession('github', ['repo'], { createIfNone: true });
-      return session?.accessToken;
-    } catch {
-      return undefined;
+      return await this.fetch(url, token, accept);
+    } catch (error) {
+      // Refused without a sign-in: a private repository, or the anonymous limit. Ask once.
+      if (token || !(error instanceof GitHubRequestError) || ![401, 403, 404].includes(error.status)) { throw error; }
+      if (!this.provider(host)) {
+        throw new SkillError(`${error.message} To sign in to ${host}, set the setting github-enterprise.uri to https://${host}, then use Manage Skill Sources → Sign in.`);
+      }
+      const signedIn = await this.signIn(false, host);
+      if (!signedIn) {
+        throw new SkillError(`${error.message} If the repository is private, sign in: Manage Skill Sources → Sign in to ${host}.`);
+      }
+      return this.fetch(url, signedIn, accept);
     }
   }
 
-  private async json<T>(route: string): Promise<T> {
-    return JSON.parse(await request(`https://api.github.com/${route}`, await this.token(), 'application/vnd.github+json')) as T;
+  private async json<T>(route: string, host?: string): Promise<T> {
+    return JSON.parse(await this.get(route, 'application/vnd.github+json', host)) as T;
   }
 
-  async headCommit(owner: string, repo: string): Promise<string> {
-    const info = await this.json<{ default_branch?: string }>(`repos/${owner}/${repo}`);
+  async headCommit(owner: string, repo: string, host?: string): Promise<string> {
+    const info = await this.json<{ default_branch?: string }>(`repos/${owner}/${repo}`, host);
     const branch = info.default_branch ?? 'main';
-    const commit = await this.json<{ sha?: string }>(`repos/${owner}/${repo}/commits/${encodeURIComponent(branch)}`);
+    const commit = await this.json<{ sha?: string }>(`repos/${owner}/${repo}/commits/${encodeURIComponent(branch)}`, host);
     if (!commit.sha || !/^[0-9a-f]{40}$/.test(commit.sha)) { throw new SkillError(`No commit found on ${owner}/${repo} ${branch}.`); }
     return commit.sha;
   }
 
-  async tree(owner: string, repo: string, commit: string): Promise<string[]> {
-    const tree = await this.json<{ tree?: Array<{ path: string; type: string }>; truncated?: boolean }>(`repos/${owner}/${repo}/git/trees/${commit}?recursive=1`);
+  async tree(owner: string, repo: string, commit: string, host?: string): Promise<string[]> {
+    const tree = await this.json<{ tree?: Array<{ path: string; type: string }>; truncated?: boolean }>(`repos/${owner}/${repo}/git/trees/${commit}?recursive=1`, host);
     return (tree.tree ?? []).filter(entry => entry.type === 'blob').map(entry => entry.path);
   }
 
-  async file(owner: string, repo: string, commit: string, filePath: string): Promise<string> {
+  async file(owner: string, repo: string, commit: string, filePath: string, host?: string): Promise<string> {
     const route = `repos/${owner}/${repo}/contents/${filePath.split('/').map(encodeURIComponent).join('/')}?ref=${commit}`;
-    return request(`https://api.github.com/${route}`, await this.token(), 'application/vnd.github.raw');
+    return this.get(route, 'application/vnd.github.raw', host);
   }
 }
 
-export function studioSkills(context: vscode.ExtensionContext, api: SkillSourceApi = new GitHubSkillApi()): StudioSkills {
+export function studioSkills(context: vscode.ExtensionContext, api: SkillSourceApi & { signIn?(force: boolean, host?: string): Promise<string | undefined> } = new GitHubSkillApi()): StudioSkills {
   const library = new SkillLibrary(path.join(context.globalStorageUri.fsPath, 'studio', 'skills'), api);
   const sources = (): string[] => {
     const value = vscode.workspace.getConfiguration('repositoryManager').get<unknown>('studio.skillSources');
@@ -115,6 +211,7 @@ export function studioSkills(context: vscode.ExtensionContext, api: SkillSourceA
   };
   return {
     sources,
+    signIn: async host => Boolean(await api.signIn?.(true, host)),
     addSource: async source => { if (!sources().includes(source)) { await save([...sources(), source]); } },
     removeSource: async source => { await save(sources().filter(item => item !== source)); },
     index: source => library.index(source),
@@ -125,7 +222,7 @@ export function studioSkills(context: vscode.ExtensionContext, api: SkillSourceA
       for (const source of [...new Set(wanted)]) {
         if (trusted.has(source)) { continue; }
         const trust = 'Trust Skills';
-        const answer = await vscode.window.showWarningMessage(`Use skills from github.com/${source}?`, {
+        const answer = await vscode.window.showWarningMessage(`Use skills from ${sourceLabel(source)}?`, {
           modal: true,
           detail: 'A skill is instructions the model follows in the steps that use it. Trust only a repository you would take instructions from. Its scripts are never run here, and steps that write, run or send still ask you first. This is asked once for this repository.'
         }, trust);

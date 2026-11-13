@@ -63,7 +63,7 @@ Module._load = function (request, parent, isMain) {
 };
 const out = name => require(path.join(__dirname, '../../out/studio', name));
 const { SkillLibrary, parseSkillRef, parseSkillFile, skillsPrompt, skillRef } = out('skills.js');
-const { studioSkills, skillSources, parseSkillSource } = out('githubSkills.js');
+const { studioSkills, skillSources, parseSkillSource, GitHubSkillApi, GitHubRequestError } = out('githubSkills.js');
 const { StudioChatProvider } = out('studioChat.js');
 const { RunStore, WorkflowEngine, workflowSkills } = out('engine.js');
 const { studioSteps } = out('registry.js');
@@ -83,8 +83,19 @@ async function main() {
   assert.throws(() => parseSkillRef(`github:acme/skills/../secrets@${commit}`), /outside the repository/);
   assert.deepEqual(parseSkillFile('no front matter', 'fallback'), { name: 'fallback', description: '', body: 'no front matter' });
   assert.deepEqual(skillSources([writeTests, plainWords, 'nonsense']), ['acme/skills']);
-  assert.deepEqual(['eurus-labs/skills', 'https://github.com/eurus-labs/skills', 'github.com/eurus-labs/skills.git', 'https://github.com/eurus-labs/skills/tree/main/plugins', 'git@github.com:eurus-labs/skills.git', 'not a repo', '../x', 'a/b/c d'].map(parseSkillSource),
-    ['eurus-labs/skills', 'eurus-labs/skills', 'eurus-labs/skills', 'eurus-labs/skills', 'eurus-labs/skills', undefined, undefined, undefined]);
+  const sources = {
+    'eurus-labs/skills': 'eurus-labs/skills',
+    'https://github.com/eurus-labs/skills': 'eurus-labs/skills',
+    'github.com/eurus-labs/skills.git': 'eurus-labs/skills',
+    'https://github.com/eurus-labs/skills/tree/main/plugins': 'eurus-labs/skills',
+    'git@github.com:eurus-labs/skills.git': 'eurus-labs/skills',
+    // A GitHub Enterprise server (the URL a person pasted, 2026-11-13), and its other forms.
+    'https://github.boschdevcloud.com/GON7HC/DSD-Skills': 'github.boschdevcloud.com/GON7HC/DSD-Skills',
+    'github.boschdevcloud.com/GON7HC/DSD-Skills/tree/main': 'github.boschdevcloud.com/GON7HC/DSD-Skills',
+    'git@GitHub.BoschDevCloud.com:GON7HC/DSD-Skills.git': 'github.boschdevcloud.com/GON7HC/DSD-Skills',
+    'not a repo': undefined, '../x': undefined, 'a/b/c d': undefined, 'https://github.com/only-owner': undefined
+  };
+  for (const [text, expected] of Object.entries(sources)) { assert.equal(parseSkillSource(text), expected, text); }
 
   // ---- The listing: names and descriptions, scripts flagged, templates left out; cached per commit.
   const library = new SkillLibrary(path.join(base, 'cache'), api);
@@ -160,6 +171,100 @@ async function main() {
     const none = [];
     await draftPlan({ complete: async prompt => { none.push(prompt); return { text: JSON.stringify(reply(undefined)), model: 'S' }; } }, steps, { message: 'x', history: [] }, never);
     assert.match(none[0], /No skills are available: do not add "skills"\./);
+  }
+
+  // ---- GitHub sign-in: an existing session is used silently; public repositories need none; a
+  // ---- refusal asks once, and a Cancel is not asked again (the dialog kept coming back).
+  {
+    const asked = [];
+    const auth = (silentToken, answer) => ({ getSession: async (_provider, _scopes, options) => {
+      asked.push(options.silent ? 'silent' : 'dialog');
+      if (options.silent) { return silentToken ? { accessToken: silentToken } : undefined; }
+      if (answer === 'cancel') { throw new Error('User did not consent to login.'); }
+      return { accessToken: answer };
+    } });
+    const fetched = [];
+    // A public repository answers anyone; a private one only a token.
+    const fetch = async (url, token) => {
+      fetched.push([url.replace('https://api.github.com/', ''), token]);
+      if (/\/acme\/private(\/|$|\?)/.test(url) && !token) { throw new GitHubRequestError('GitHub answered 404 (not found, or your GitHub account cannot see it).', 404); }
+      if (url.endsWith('/commits/main')) { return JSON.stringify({ sha: commit }); }
+      if (url.includes('/git/trees/')) { return JSON.stringify({ tree: Object.keys(files).map(file => ({ path: file, type: 'blob' })) }); }
+      if (url.includes('/contents/')) { return files[decodeURIComponent(url.split('/contents/')[1].split('?')[0])]; }
+      return JSON.stringify({ default_branch: 'main' });
+    };
+
+    const publicApi = new GitHubSkillApi(fetch, auth(undefined, 'cancel'));
+    const listed = await new SkillLibrary(path.join(base, 'public-cache'), publicApi).index('acme/skills');
+    assert.equal(listed.skills.length, 2);
+    assert.deepEqual(asked, ['silent'], 'a public repository is read without asking to sign in');
+    assert.ok(fetched.every(([, token]) => token === undefined));
+
+    asked.length = 0; fetched.length = 0;
+    const cancelled = new GitHubSkillApi(fetch, auth(undefined, 'cancel'));
+    const library = new SkillLibrary(path.join(base, 'private-cache'), cancelled);
+    await assert.rejects(library.index('acme/private'), /404.*If the repository is private, sign in: Manage Skill Sources → Sign in to github\.com\./);
+    await assert.rejects(library.index('acme/private'), /404/);
+    await assert.rejects(Promise.all([cancelled.tree('acme', 'private', commit), cancelled.file('acme', 'private', commit, 'a')]), /404/);
+    assert.deepEqual(asked, ['silent', 'dialog'], 'Cancel is remembered: one dialog for all those requests');
+
+    // Signing in when the person asks (Manage Skill Sources) works after a Cancel.
+    const later = new GitHubSkillApi(fetch, { getSession: async (_p, _s, options) => { asked.push(options.silent ? 'silent' : 'dialog'); return options.silent ? undefined : { accessToken: 'tok' }; } });
+    asked.length = 0; fetched.length = 0;
+    assert.equal((await later.headCommit('acme', 'private')), commit);
+    assert.deepEqual(asked, ['silent', 'dialog']);
+    assert.deepEqual(fetched.map(([, token]) => token), [undefined, 'tok', 'tok'], 'refused once, then read with the token from then on');
+    asked.length = 0;
+    await later.tree('acme', 'private', commit);
+    assert.deepEqual(asked, [], 'signed in: no more questions');
+    assert.equal(await cancelled.signIn(false), undefined, 'not asked again by itself');
+    const forced = new GitHubSkillApi(fetch, auth(undefined, 'tok2'));
+    await assert.rejects(new GitHubSkillApi(fetch, auth(undefined, 'cancel')).signIn(false).then(token => { if (token) { throw new Error('signed in'); } throw new Error('declined'); }), /declined/);
+    assert.equal(await forced.signIn(true), 'tok2');
+
+    // A session already there is used, silently, from the first request.
+    asked.length = 0; fetched.length = 0;
+    const existing = new GitHubSkillApi(fetch, auth('mine', 'cancel'));
+    await existing.headCommit('acme', 'private');
+    assert.deepEqual(asked, ['silent']);
+    assert.ok(fetched.every(([, token]) => token === 'mine'));
+  }
+
+  // ---- A GitHub Enterprise server: its API under /api/v3, its own sign-in, its host in refs and the cache.
+  {
+    const host = 'github.boschdevcloud.com';
+    assert.deepEqual(parseSkillRef(skillRef('GON7HC', 'DSD-Skills', 'skills/review', commit, host)),
+      { host, owner: 'GON7HC', repo: 'DSD-Skills', folder: 'skills/review', commit, source: `${host}/GON7HC/DSD-Skills` });
+    assert.equal(parseSkillRef(`github:acme/skills/plugins/x@${commit}`).host, undefined, 'an owner is never read as a host');
+    const asked = [];
+    const urls = [];
+    const fetch = async (url, token) => {
+      urls.push(url);
+      if (!token) { throw new GitHubRequestError('GitHub answered 404 (not found, or your GitHub account cannot see it).', 404); }
+      if (url.endsWith('/commits/main')) { return JSON.stringify({ sha: commit }); }
+      if (url.includes('/git/trees/')) { return JSON.stringify({ tree: [{ path: 'skills/review/SKILL.md', type: 'blob' }] }); }
+      if (url.includes('/contents/')) { return '---\nname: dsd-review\ndescription: Team review.\n---\nReview it.'; }
+      return JSON.stringify({ default_branch: 'main' });
+    };
+    const auth = { getSession: async (provider, _scopes, options) => { asked.push(`${provider}:${options.silent ? 'silent' : 'dialog'}`); return options.silent ? undefined : { accessToken: 'ghe-token' }; } };
+    const api = new GitHubSkillApi(fetch, auth, () => host);
+    const library = new SkillLibrary(path.join(base, 'ghe-cache'), api);
+    const listed = await library.index(`${host}/GON7HC/DSD-Skills`);
+    assert.deepEqual(listed.skills.map(skill => [skill.name, skill.ref]), [['dsd-review', `github:${host}/GON7HC/DSD-Skills/skills/review@${commit}`]]);
+    assert.ok(urls.every(url => url.startsWith(`https://${host}/api/v3/repos/GON7HC/DSD-Skills`)), urls.join('\n'));
+    assert.deepEqual(asked, ['github-enterprise:silent', 'github-enterprise:dialog'], 'the Enterprise account, asked once');
+    assert.ok(fs.existsSync(path.join(base, 'ghe-cache', host, 'GON7HC', 'DSD-Skills', commit, 'index.json')));
+    assert.deepEqual((await library.cachedIndex(`${host}/GON7HC/DSD-Skills`)).map(skill => skill.name), ['dsd-review']);
+    assert.equal((await library.load(listed.skills[0].ref)).body, 'Review it.');
+    // VS Code's Enterprise sign-in set up for another server (or none): no dialog, and the way to set it up.
+    asked.length = 0;
+    const unset = new GitHubSkillApi(fetch, auth, () => undefined);
+    await assert.rejects(unset.headCommit('GON7HC', 'DSD-Skills', host), /To sign in to github\.boschdevcloud\.com, set the setting github-enterprise\.uri to https:\/\/github\.boschdevcloud\.com/);
+    assert.deepEqual(asked, []);
+    assert.equal(await unset.signIn(true, host), undefined);
+    // Validation takes an Enterprise ref like any other.
+    assert.deepEqual(validateWorkflow({ schema: 'repository-manager/workflow@1', id: 'w', version: '1', title: 'W', prompts: { p: { instructions: 'x' } },
+      nodes: [{ id: 'a', type: 'prompt', prompt: 'p', skills: [listed.skills[0].ref], with: { input: 'x' } }] }, steps), []);
   }
 
   // ---- The host: sources from the setting, trust asked once per source.

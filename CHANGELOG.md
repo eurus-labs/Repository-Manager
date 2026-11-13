@@ -5,6 +5,16 @@ All notable changes to Repository Manager will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Skills from **GitHub Enterprise** servers: add a repository by its URL (for example `https://github.example.com/team/skills`) or as `host/owner/name`. It is read through the server's API, and signs in with VS Code's GitHub Enterprise account (the server set in `github-enterprise.uri`).
+
+### Fixed
+
+- The GitHub sign-in dialog no longer comes back after **Cancel** while listing skills. A GitHub account you are already signed in with is used without asking; public skill repositories are read without signing in; you are asked once, only when a repository needs it, and a Cancel is remembered. **Manage Skill Sources → Sign in to …** signs in to a server when you want to.
+
 ## [3.0.0] - 2026-11-12
 
 ### Added
