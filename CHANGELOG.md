@@ -5,6 +5,12 @@ All notable changes to Repository Manager will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- A skill repository on a GitHub Enterprise server that needs a sign-in no longer just fails with "GitHub answered 401" when VS Code is not set up for that server: you are asked once to set it up (the setting `github-enterprise.uri`, in your user settings) and then to sign in. If the setting names another server, the question says so before switching it.
+
 ## [3.1.0] - 2026-11-13
 
 ### Added

@@ -290,12 +290,26 @@ async function main() {
     assert.ok(fs.existsSync(path.join(base, 'ghe-cache', host, 'GON7HC', 'DSD-Skills', commit, 'index.json')));
     assert.deepEqual((await library.cachedIndex(`${host}/GON7HC/DSD-Skills`)).map(skill => skill.name), ['dsd-review']);
     assert.equal((await library.load(listed.skills[0].ref)).body, 'Review it.');
-    // VS Code's Enterprise sign-in set up for another server (or none): no dialog, and the way to set it up.
+    // VS Code's Enterprise sign-in set up for another server (or none): the person is offered to set
+    // it up for this one (the 401 a person hit, 2026-11-13). Declined: no sign-in dialog, the way to
+    // do it later, and not offered again by itself.
     asked.length = 0;
-    const unset = new GitHubSkillApi(fetch, auth, () => undefined);
-    await assert.rejects(unset.headCommit('GON7HC', 'DSD-Skills', host), /To sign in to github\.boschdevcloud\.com, set the setting github-enterprise\.uri to https:\/\/github\.boschdevcloud\.com/);
-    assert.deepEqual(asked, []);
+    const offers = [];
+    const unset = new GitHubSkillApi(fetch, auth, () => undefined, async offered => { offers.push(offered); return false; });
+    await assert.rejects(unset.headCommit('GON7HC', 'DSD-Skills', host), /needs a sign-in: Manage Skill Sources → Sign in to github\.boschdevcloud\.com sets up VS Code's GitHub Enterprise sign-in for it/);
+    await assert.rejects(unset.tree('GON7HC', 'DSD-Skills', commit, host), /needs a sign-in/);
+    assert.deepEqual(offers, [host], 'offered once');
+    assert.deepEqual(asked, [], 'no sign-in dialog without the setup');
     assert.equal(await unset.signIn(true, host), undefined);
+    assert.deepEqual(offers, [host, host], 'Manage Skill Sources → Sign in offers it again');
+    // Accepted: the setting is set, then the Enterprise account signs in and the repository is read.
+    asked.length = 0; urls.length = 0;
+    let configured;
+    const setUp = new GitHubSkillApi(fetch, auth, () => configured, async offered => { configured = offered; return true; });
+    assert.equal(await setUp.headCommit('GON7HC', 'DSD-Skills', host), commit);
+    assert.equal(configured, host);
+    assert.deepEqual(asked, ['github-enterprise:dialog'], 'signed in with the Enterprise account right after the setup');
+    assert.ok(urls.slice(-1)[0].startsWith(`https://${host}/api/v3/`));
     // Validation takes an Enterprise ref like any other.
     assert.deepEqual(validateWorkflow({ schema: 'repository-manager/workflow@1', id: 'w', version: '1', title: 'W', prompts: { p: { instructions: 'x' } },
       nodes: [{ id: 'a', type: 'prompt', prompt: 'p', skills: [listed.skills[0].ref], with: { input: 'x' } }] }, steps), []);

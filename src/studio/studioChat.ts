@@ -123,7 +123,7 @@ export class StudioChatProvider implements vscode.WebviewViewProvider {
     if (!picked) { return; }
     if (picked.host) {
       this.say(await this.skills.signIn(picked.host) ? `Signed in to ${picked.host}: its private skill repositories can be read.`
-        : `Not signed in to ${picked.host}: public skill repositories still work.${picked.host === 'github.com' ? '' : ` A GitHub Enterprise server signs in when the setting github-enterprise.uri is https://${picked.host}.`}`);
+        : `Not signed in to ${picked.host}: public skill repositories still work.${picked.host === 'github.com' ? '' : ' If the sign-in did not open after the setup, reload the window and try again.'}`);
       return;
     }
     if (picked.source) {

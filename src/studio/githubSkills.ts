@@ -96,6 +96,23 @@ export function enterpriseHost(): string | undefined {
 interface HostState { token?: string; looked: boolean; declined: boolean; asking?: Promise<string | undefined> }
 
 /**
+ * Asks to point VS Code's GitHub Enterprise sign-in (`github-enterprise.uri`) at a server, and sets
+ * it when the person agrees. When it already names another server, says so: other extensions sign in
+ * through the same setting. True: set.
+ */
+export async function setUpEnterprise(host: string): Promise<boolean> {
+  const current = enterpriseHost();
+  const action = current ? `Switch to ${host}` : 'Set Up and Sign In';
+  const detail = current
+    ? `VS Code's GitHub Enterprise sign-in is set to ${current} (the setting github-enterprise.uri). Skills from ${host} need it set to https://${host}; extensions that use GitHub Enterprise then sign in to ${host} instead.`
+    : `VS Code signs in to a GitHub Enterprise server named in the setting github-enterprise.uri. This sets it to https://${host} in your user settings, then asks you to sign in.`;
+  const answer = await vscode.window.showWarningMessage(`Sign in to ${host} to read its skills?`, { modal: true, detail }, action);
+  if (answer !== action) { return false; }
+  await vscode.workspace.getConfiguration('github-enterprise').update('uri', `https://${host}`, vscode.ConfigurationTarget.Global);
+  return true;
+}
+
+/**
  * The GitHub REST API, on github.com or a GitHub Enterprise server (its `/api/v3`). A session the
  * person already has is used without asking; without one, repositories are read anonymously.
  * Only when a server refuses (a private repository, the anonymous rate limit) is the person asked
@@ -108,7 +125,8 @@ export class GitHubSkillApi implements SkillSourceApi {
   private readonly hosts = new Map<string, HostState>();
 
   constructor(private readonly fetch: GitHubFetch = request, private readonly auth: Auth = vscode.authentication,
-    private readonly enterprise: () => string | undefined = enterpriseHost) {}
+    private readonly enterprise: () => string | undefined = enterpriseHost,
+    private readonly setUp: (host: string) => Promise<boolean> = setUpEnterprise) {}
 
   private state(host: string): HostState {
     let state = this.hosts.get(host);
@@ -139,11 +157,15 @@ export class GitHubSkillApi implements SkillSourceApi {
    */
   async signIn(force = false, host: string = GITHUB_HOST): Promise<string | undefined> {
     const state = this.state(host);
-    const provider = this.provider(host);
-    if (!provider || (state.declined && !force)) { return undefined; }
+    if (state.declined && !force) { return undefined; }
     if (!state.asking) {
       state.asking = (async () => {
         try {
+          // An Enterprise server VS Code is not set up for: offer to set it up first (asked once,
+          // with the sign-in: declining either is remembered the same way).
+          if (!this.provider(host) && !await this.setUp(host)) { state.declined = true; return undefined; }
+          const provider = this.provider(host);
+          if (!provider) { state.declined = true; return undefined; }
           const session = await this.auth.getSession(provider, ['repo'], { createIfNone: true });
           state.token = session?.accessToken;
           state.looked = true;
@@ -188,12 +210,11 @@ export class GitHubSkillApi implements SkillSourceApi {
       }
       // Refused without a sign-in: a private repository, or the anonymous limit. Ask once.
       if (token || !(error instanceof GitHubRequestError) || ![401, 403, 404].includes(error.status)) { throw error; }
-      if (!this.provider(host)) {
-        throw new SkillError(`${error.message} To sign in to ${host}, set the setting github-enterprise.uri to https://${host}, then use Manage Skill Sources → Sign in.`);
-      }
       const signedIn = await this.signIn(false, host);
       if (!signedIn) {
-        throw new SkillError(`${error.message} If the repository is private, sign in: Manage Skill Sources → Sign in to ${host}.`);
+        throw new SkillError(this.provider(host)
+          ? `${error.message} If the repository is private, sign in: Manage Skill Sources → Sign in to ${host}.`
+          : `${error.message} ${host} needs a sign-in: Manage Skill Sources → Sign in to ${host} sets up VS Code's GitHub Enterprise sign-in for it (the setting github-enterprise.uri).`);
       }
       return this.fetch(url, signedIn, accept);
     }

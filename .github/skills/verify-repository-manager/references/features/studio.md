@@ -43,7 +43,7 @@ with an effect, edited as a diagram in the Workflow Editor, and drafted from a g
 - A plan with problems (no criteria, unknown step, broken reference) cannot run; the planner gets one repair turn. [confirmed: test src/test/studioChatSmoke.js]
 - Skills come from GitHub repositories, pinned to a commit and cached; a source is trusted once before use; their scripts are never run, and skills that use scripts are marked. [confirmed: user, 2026-11-09]
 - + Skill asks for the source first (one, all, or a GitHub repository added by name or URL, trusted before it is kept); Manage Skill Sources adds or removes one. [confirmed: user, 2026-11-12; test src/test/studioSkillsSmoke.js]
-- Skill sources may be on a GitHub Enterprise server (URL or host/owner/name), read through its /api/v3 and signed in with VS Code's GitHub Enterprise account. [confirmed: user, 2026-11-13; test src/test/studioSkillsSmoke.js]
+- Skill sources may be on a GitHub Enterprise server (URL or host/owner/name), read through its /api/v3 and signed in with VS Code's GitHub Enterprise account; when that account is not set up for the server, the person is offered to set it up, once. [confirmed: user, 2026-11-13; test src/test/studioSkillsSmoke.js]
 - GitHub sign-in is asked at most once, only when a repository refuses an anonymous read; a Cancel is not asked again. [confirmed: user bug report, 2026-11-13; test src/test/studioSkillsSmoke.js]
 - The planner may attach only skills it was offered or the plan already had. [confirmed: test src/test/studioSkillsSmoke.js]
 - A code step works on the current branch; it creates a branch only when the plan names one (asked for by the person), and only from a clean tree. [confirmed: user, 2026-11-12]
