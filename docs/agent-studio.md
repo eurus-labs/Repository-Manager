@@ -654,7 +654,7 @@ side panel (the chat's plan card and the JSON do it; the diagram keeps it).
   asked once to set it up (the question says which server it names now, if
   any; other extensions use the same setting), then to sign in; declining is
   remembered like a Cancel. (3.1.0 only told the person to set it: fixed in
-  3.1.1.) An
+  3.2.0.) An
   Enterprise source's cache is under its host. A host is kept whole (only
   `www.github.com` is github.com).
 - **Sessions that change.** A token refused with 401 (signed out, or
