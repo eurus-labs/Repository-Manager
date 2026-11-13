@@ -23,13 +23,29 @@ export interface ModelChoice { selector: string; name: string; id: string; vendo
 
 const MAX_REPLY_CHARS = 60_000;
 
-export const selectorOf = (model: Pick<LmModel, 'vendor' | 'family'>) => `${model.vendor}:${model.family}`;
+/** `<vendor>:<family>`; a model that gives no family (some custom endpoints) is named by its id. */
+export const selectorOf = (model: Pick<LmModel, 'vendor' | 'family'> & { id?: string }) => `${model.vendor}:${model.family || model.id || ''}`;
 
 /** Every chat model this VS Code offers now, one per vendor and family, in the order it lists them. */
+/**
+ * Every chat model this VS Code offers now: all vendors, and Copilot's asked for by name too. An
+ * empty selector did not list Copilot's models in VS Code (reported 2026-11-13: only other vendors
+ * were offered while Copilot answered), so both lists are read and merged, Copilot's first.
+ */
 export async function lmModels(): Promise<LmModel[]> {
   const api = vscode as LmApi;
   if (!api.lm?.selectChatModels) { return []; }
-  return api.lm.selectChatModels({});
+  const read = async (selector: { vendor?: string }) => {
+    try { return await api.lm!.selectChatModels(selector); } catch { return [] as LmModel[]; }
+  };
+  const [copilot, all] = await Promise.all([read({ vendor: 'copilot' }), read({})]);
+  const seen = new Set<string>();
+  return [...copilot, ...all].filter(model => {
+    const key = `${model.vendor}\u0000${model.id}`;
+    if (!model.id || seen.has(key)) { return false; }
+    seen.add(key);
+    return true;
+  });
 }
 
 export async function listModels(): Promise<ModelChoice[]> {
@@ -39,7 +55,7 @@ export async function listModels(): Promise<ModelChoice[]> {
     const selector = selectorOf(model);
     if (seen.has(selector)) { continue; }
     seen.add(selector);
-    choices.push({ selector, name: model.name || model.family, id: model.id, vendor: model.vendor });
+    choices.push({ selector, name: model.name || model.family || model.id, id: model.id, vendor: model.vendor });
   }
   return choices;
 }
@@ -53,7 +69,7 @@ export function onModelsChanged(listener: () => void): vscode.Disposable | undef
 export function resolveSelector<T extends { vendor: string; id: string } & ({ selector: string } | { family: string })>(selector: string, models: T[]): T | undefined {
   const vendor = selector.slice(0, selector.indexOf(':'));
   const family = selector.slice(selector.indexOf(':') + 1);
-  const selectorOfItem = (model: T) => 'selector' in model ? model.selector : `${model.vendor}:${model.family}`;
+  const selectorOfItem = (model: T) => 'selector' in model ? model.selector : selectorOf(model);
   return models.find(model => selectorOfItem(model) === selector) ?? models.find(model => model.vendor === vendor && model.id === family);
 }
 
