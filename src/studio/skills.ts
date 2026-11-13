@@ -10,9 +10,15 @@
 import { promises as fs } from 'fs';
 import * as path from 'path';
 
-/** `github:<owner>/<repo>/<folder of SKILL.md>@<commit>` */
-export const SKILL_REF = /^github:([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\/((?:[A-Za-z0-9_.-]+\/)*[A-Za-z0-9_.-]+)@([0-9a-f]{40})$/;
-export const SKILL_SOURCE = /^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/;
+/**
+ * `github:<owner>/<repo>/<folder of SKILL.md>@<commit>`, or on a GitHub Enterprise server
+ * `github:<host>/<owner>/<repo>/<folder>@<commit>`. A host has a dot; an owner (a GitHub user or
+ * organization name) never does, so the two cannot be confused.
+ */
+export const SKILL_REF = /^github:(?:([a-z0-9-]+(?:\.[a-z0-9-]+)+)\/)?([A-Za-z0-9_-]+)\/([A-Za-z0-9_.-]+)\/((?:[A-Za-z0-9_.-]+\/)*[A-Za-z0-9_.-]+)@([0-9a-f]{40})$/;
+/** `<owner>/<repo>` on github.com, or `<host>/<owner>/<repo>` on a GitHub Enterprise server. */
+export const SKILL_SOURCE = /^(?:([a-z0-9-]+(?:\.[a-z0-9-]+)+)\/)?([A-Za-z0-9_-]+)\/([A-Za-z0-9_.-]+)$/;
+export const GITHUB_HOST = 'github.com';
 export const MAX_NODE_SKILLS = 5;
 const MAX_SKILLS_PER_SOURCE = 200;
 const MAX_SKILL_CHARS = 60_000;
@@ -21,7 +27,18 @@ const MAX_REFERENCE_CHARS = 40_000;
 /** All skill text one step sends, instructions and references together. */
 export const MAX_SKILLS_PROMPT_CHARS = 60_000;
 
-export interface SkillRef { owner: string; repo: string; folder: string; commit: string; source: string }
+export interface SkillRef { host?: string; owner: string; repo: string; folder: string; commit: string; source: string }
+
+/** A source's parts; `host` only for a GitHub Enterprise server. */
+export function parseSkillSourceName(source: string): { host?: string; owner: string; repo: string } | undefined {
+  const match = SKILL_SOURCE.exec(source);
+  if (!match || /^\.+$/.test(match[3])) { return undefined; }
+  const host = match[1] && match[1] !== GITHUB_HOST ? match[1] : undefined;
+  return { ...(host ? { host } : {}), owner: match[2], repo: match[3] };
+}
+
+/** The web address a source is shown as: github.com/<owner>/<repo>, or <host>/<owner>/<repo>. */
+export const sourceLabel = (source: string) => source.split('/').length === 3 ? source : `${GITHUB_HOST}/${source}`;
 
 export interface SkillSummary {
   ref: string;
@@ -40,24 +57,25 @@ export interface LoadedSkill extends SkillSummary {
 
 /** What the host gives to read a GitHub repository (the person's sign-in, through the API). */
 export interface SkillSourceApi {
-  /** The commit the default branch is at now. */
-  headCommit(owner: string, repo: string): Promise<string>;
+  /** The commit the default branch is at now. `host`: a GitHub Enterprise server, else github.com. */
+  headCommit(owner: string, repo: string, host?: string): Promise<string>;
   /** Every file path in the repository at that commit. */
-  tree(owner: string, repo: string, commit: string): Promise<string[]>;
-  file(owner: string, repo: string, commit: string, filePath: string): Promise<string>;
+  tree(owner: string, repo: string, commit: string, host?: string): Promise<string[]>;
+  file(owner: string, repo: string, commit: string, filePath: string, host?: string): Promise<string>;
 }
 
 export class SkillError extends Error {}
 
 export function parseSkillRef(ref: string): SkillRef {
   const match = SKILL_REF.exec(ref);
-  if (!match) { throw new SkillError(`"${ref}" is not a skill reference (github:<owner>/<repo>/<folder>@<40-character commit>).`); }
-  const [, owner, repo, folder, commit] = match;
+  if (!match) { throw new SkillError(`"${ref}" is not a skill reference (github:[<host>/]<owner>/<repo>/<folder>@<40-character commit>).`); }
+  const [, matchedHost, owner, repo, folder, commit] = match;
+  const host = matchedHost && matchedHost !== GITHUB_HOST ? matchedHost : undefined;
   if (folder.split('/').some(part => part === '.' || part === '..')) { throw new SkillError(`"${ref}" names a folder outside the repository.`); }
-  return { owner, repo, folder, commit, source: `${owner}/${repo}` };
+  return { ...(host ? { host } : {}), owner, repo, folder, commit, source: host ? `${host}/${owner}/${repo}` : `${owner}/${repo}` };
 }
 
-export const skillRef = (owner: string, repo: string, folder: string, commit: string) => `github:${owner}/${repo}/${folder}@${commit}`;
+export const skillRef = (owner: string, repo: string, folder: string, commit: string, host?: string) => `github:${host ? `${host}/` : ''}${owner}/${repo}/${folder}@${commit}`;
 
 /** `name` and `description` from the front matter (simple `key: value` lines), and the text after it. */
 export function parseSkillFile(text: string, fallbackName: string): { name: string; description: string; body: string } {
@@ -86,9 +104,14 @@ function usesScripts(folder: string, files: string[], body: string): boolean {
 export class SkillLibrary {
   constructor(private readonly cache: string, private readonly api: SkillSourceApi) {}
 
-  private dir(owner: string, repo: string, commit: string): string {
+  /** github.com keeps <owner>/<repo>; an Enterprise server's repositories are under its host. */
+  private repoDir(owner: string, repo: string, host?: string): string {
+    return host ? path.join(this.cache, host, owner, repo) : path.join(this.cache, owner, repo);
+  }
+
+  private dir(owner: string, repo: string, commit: string, host?: string): string {
     if (!/^[0-9a-f]{40}$/.test(commit)) { throw new SkillError(`"${commit}" is not a commit.`); }
-    return path.join(this.cache, owner, repo, commit);
+    return path.join(this.repoDir(owner, repo, host), commit);
   }
 
   private async readJson<T>(file: string): Promise<T | undefined> {
@@ -103,59 +126,59 @@ export class SkillLibrary {
 
   /** The skills of a source at its current commit; the list is cached per commit. */
   async index(source: string): Promise<{ commit: string; skills: SkillSummary[] }> {
-    const match = SKILL_SOURCE.exec(source);
-    if (!match) { throw new SkillError(`"${source}" is not a GitHub repository (owner/name).`); }
-    const [, owner, repo] = match;
-    const commit = await this.api.headCommit(owner, repo);
-    const file = path.join(this.dir(owner, repo, commit), 'index.json');
+    const name = parseSkillSourceName(source);
+    if (!name) { throw new SkillError(`"${source}" is not a GitHub repository (owner/name, or host/owner/name).`); }
+    const { owner, repo, host } = name;
+    const commit = await this.api.headCommit(owner, repo, host);
+    const file = path.join(this.dir(owner, repo, commit, host), 'index.json');
     const cached = await this.readJson<SkillSummary[]>(file);
     if (cached) { return { commit, skills: cached }; }
-    const files = await this.api.tree(owner, repo, commit);
+    const files = await this.api.tree(owner, repo, commit, host);
     const folders = files.filter(file => file === 'SKILL.md' ? false : file.endsWith('/SKILL.md')).map(file => file.slice(0, -'/SKILL.md'.length))
       .filter(folder => !folder.split('/').some(part => part.startsWith('_'))).slice(0, MAX_SKILLS_PER_SOURCE);
     const skills: SkillSummary[] = [];
     for (const folder of folders) {
-      const loaded = await this.fetchSkill(owner, repo, commit, folder, files);
+      const loaded = await this.fetchSkill(owner, repo, commit, folder, files, host);
       skills.push({ ref: loaded.ref, name: loaded.name, description: loaded.description, usesScripts: loaded.usesScripts });
     }
     await this.writeJson(file, skills);
-    await this.writeJson(path.join(this.cache, owner, repo, 'latest.json'), { commit });
+    await this.writeJson(path.join(this.repoDir(owner, repo, host), 'latest.json'), { commit });
     return { commit, skills };
   }
 
   /** The last list fetched for a source, without asking GitHub (for the planner's catalog). */
   async cachedIndex(source: string): Promise<SkillSummary[]> {
-    const match = SKILL_SOURCE.exec(source);
-    if (!match) { return []; }
-    const latest = await this.readJson<{ commit: string }>(path.join(this.cache, match[1], match[2], 'latest.json'));
+    const name = parseSkillSourceName(source);
+    if (!name) { return []; }
+    const latest = await this.readJson<{ commit: string }>(path.join(this.repoDir(name.owner, name.repo, name.host), 'latest.json'));
     if (!latest || !/^[0-9a-f]{40}$/.test(latest.commit)) { return []; }
-    return await this.readJson<SkillSummary[]>(path.join(this.dir(match[1], match[2], latest.commit), 'index.json')) ?? [];
+    return await this.readJson<SkillSummary[]>(path.join(this.dir(name.owner, name.repo, latest.commit, name.host), 'index.json')) ?? [];
   }
 
   /** One skill at its pinned commit: from the cache, or fetched once. */
   async load(ref: string): Promise<LoadedSkill> {
-    const { owner, repo, folder, commit } = parseSkillRef(ref);
-    const cached = await this.readJson<LoadedSkill>(path.join(this.dir(owner, repo, commit), folder, 'skill.json'));
+    const { owner, repo, folder, commit, host } = parseSkillRef(ref);
+    const cached = await this.readJson<LoadedSkill>(path.join(this.dir(owner, repo, commit, host), folder, 'skill.json'));
     if (cached) { return cached; }
-    return this.fetchSkill(owner, repo, commit, folder, await this.api.tree(owner, repo, commit));
+    return this.fetchSkill(owner, repo, commit, folder, await this.api.tree(owner, repo, commit, host), host);
   }
 
-  private async fetchSkill(owner: string, repo: string, commit: string, folder: string, files: string[]): Promise<LoadedSkill> {
-    const target = path.join(this.dir(owner, repo, commit), folder, 'skill.json');
+  private async fetchSkill(owner: string, repo: string, commit: string, folder: string, files: string[], host?: string): Promise<LoadedSkill> {
+    const target = path.join(this.dir(owner, repo, commit, host), folder, 'skill.json');
     const cached = await this.readJson<LoadedSkill>(target);
     if (cached) { return cached; }
-    if (!files.includes(`${folder}/SKILL.md`)) { throw new SkillError(`${owner}/${repo} has no ${folder}/SKILL.md at ${commit.slice(0, 7)}.`); }
-    const text = await this.api.file(owner, repo, commit, `${folder}/SKILL.md`);
+    if (!files.includes(`${folder}/SKILL.md`)) { throw new SkillError(`${host ? `${host}/` : ''}${owner}/${repo} has no ${folder}/SKILL.md at ${commit.slice(0, 7)}.`); }
+    const text = await this.api.file(owner, repo, commit, `${folder}/SKILL.md`, host);
     if (text.length > MAX_SKILL_CHARS) { throw new SkillError(`${folder}/SKILL.md is longer than ${MAX_SKILL_CHARS} characters.`); }
     const parsed = parseSkillFile(text, folder.split('/').pop() ?? folder);
     const references: Record<string, string> = {};
     const referenceFiles = files.filter(file => file.startsWith(`${folder}/references/`) && /\.(md|txt|rst)$/i.test(file)).slice(0, MAX_REFERENCES);
     for (const file of referenceFiles) {
-      const content = await this.api.file(owner, repo, commit, file);
+      const content = await this.api.file(owner, repo, commit, file, host);
       if (content.length <= MAX_REFERENCE_CHARS) { references[file.slice(folder.length + 1)] = content; }
     }
     const skill: LoadedSkill = {
-      ref: skillRef(owner, repo, folder, commit), name: parsed.name, description: parsed.description,
+      ref: skillRef(owner, repo, folder, commit, host), name: parsed.name, description: parsed.description,
       usesScripts: usesScripts(folder, files, parsed.body), body: parsed.body, references
     };
     await this.writeJson(target, skill);

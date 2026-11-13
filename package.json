@@ -2,7 +2,7 @@
   "name": "repository-manager",
   "displayName": "Repository Manager",
   "description": "Coordinate branches and Git workflows across a parent repository and its linked repositories from one VS Code dashboard",
-  "version": "3.0.0",
+  "version": "3.1.0",
   "publisher": "repository-manager",
   "engines": {
     "vscode": "^1.104.0"
@@ -448,12 +448,12 @@
           "type": "array",
           "items": {
             "type": "string",
-            "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
+            "pattern": "^([a-z0-9-]+(\\.[a-z0-9-]+)+/)?[A-Za-z0-9_-]+/[A-Za-z0-9_.-]+$"
           },
           "default": [
             "eurus-labs/skills"
           ],
-          "markdownDescription": "GitHub repositories (`owner/name`) whose skills (folders with a `SKILL.md`) the Studio offers for its steps. Read with your VS Code GitHub sign-in; each repository is trusted once before its skills are used. Skills' scripts are never run."
+          "markdownDescription": "Repositories whose skills (folders with a `SKILL.md`) the Studio offers for its steps: `owner/name` on github.com, or `host/owner/name` on a GitHub Enterprise server (sign-in there uses VS Code's GitHub Enterprise account, set with `github-enterprise.uri`). Read with your sign-in when needed; each repository is trusted once before its skills are used. Skills' scripts are never run."
         }
       }
     },

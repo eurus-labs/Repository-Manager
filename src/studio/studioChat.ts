@@ -112,12 +112,20 @@ export class StudioChatProvider implements vscode.WebviewViewProvider {
   /** The skill repositories: add one, or remove one (its pinned skills stay cached and keep working). */
   async manageSkillSources(): Promise<void> {
     const sources = this.skills.sources();
-    type Item = vscode.QuickPickItem & { source?: string };
+    type Item = vscode.QuickPickItem & { source?: string; host?: string };
+    // One sign-in per server the sources are on: github.com, and any GitHub Enterprise host.
+    const hosts = [...new Set(['github.com', ...sources.filter(source => source.split('/').length === 3).map(source => source.split('/')[0])])];
     const picked = await vscode.window.showQuickPick<Item>([
       { label: '$(add) Add a GitHub repository…' },
-      ...sources.map(source => ({ label: `$(trash) Remove ${source}`, source }))
+      ...sources.map(source => ({ label: `$(trash) Remove ${source}`, source })),
+      ...hosts.map(host => ({ label: `$(account) Sign in to ${host}`, description: 'to read private skill repositories', host }))
     ], { title: 'Skill Sources', placeHolder: sources.length ? `Now: ${sources.join(', ')}` : 'No skill repository yet' });
     if (!picked) { return; }
+    if (picked.host) {
+      this.say(await this.skills.signIn(picked.host) ? `Signed in to ${picked.host}: its private skill repositories can be read.`
+        : `Not signed in to ${picked.host}: public skill repositories still work.${picked.host === 'github.com' ? '' : ` A GitHub Enterprise server signs in when the setting github-enterprise.uri is https://${picked.host}.`}`);
+      return;
+    }
     if (picked.source) {
       await this.skills.removeSource(picked.source);
       this.say(`Removed ${picked.source}. Skills already on a plan keep working from the cache.`);
@@ -129,9 +137,9 @@ export class StudioChatProvider implements vscode.WebviewViewProvider {
 
   private async chooseSourcesAdd(): Promise<string | undefined> {
     const typed = await vscode.window.showInputBox({
-      title: 'Add a skill repository', prompt: 'A GitHub repository with skills (folders with a SKILL.md), as owner/name or its URL.',
+      title: 'Add a skill repository', prompt: 'A repository with skills (folders with a SKILL.md) on GitHub or a GitHub Enterprise server: owner/name, host/owner/name, or its URL.',
       placeHolder: 'eurus-labs/skills', ignoreFocusOut: true,
-      validateInput: value => !value.trim() || parseSkillSource(value) ? undefined : 'Write owner/name, or paste the repository\'s GitHub URL.'
+      validateInput: value => !value.trim() || parseSkillSource(value) ? undefined : 'Write owner/name (or host/owner/name), or paste the repository\'s URL on GitHub or GitHub Enterprise.'
     });
     const source = typed ? parseSkillSource(typed) : undefined;
     if (!source || !await this.skills.ensureTrusted([source])) { return undefined; }
@@ -318,7 +326,7 @@ export class StudioChatProvider implements vscode.WebviewViewProvider {
     const sources = this.skills.sources();
     type Item = vscode.QuickPickItem & { sources?: string[]; add?: boolean };
     const items: Item[] = [
-      ...sources.map(source => ({ label: source, description: 'GitHub', sources: [source] })),
+      ...sources.map(source => ({ label: source, description: source.split('/').length === 3 ? 'GitHub Enterprise' : 'github.com', sources: [source] })),
       ...(sources.length > 1 ? [{ label: 'All sources', description: `${sources.length} repositories`, sources }] : []),
       { label: '$(add) Add a GitHub repository…', description: 'owner/name or its URL', add: true }
     ];
