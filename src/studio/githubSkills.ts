@@ -38,9 +38,11 @@ export interface StudioSkills {
 export function parseSkillSource(text: string): string | undefined {
   const trimmed = text.trim().replace(/^git@([^:\s]+):/i, '$1/');
   // A URL may go on into a branch or a folder; a bare owner/name (or host/owner/name) may not.
-  const url = /^(?:https?:\/\/)?(?:www\.)?([a-z0-9-]+(?:\.[a-z0-9-]+)+)\/([A-Za-z0-9_-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?(?:\/[^\s]*)?$/i.exec(trimmed);
+  const url = /^(?:https?:\/\/)?([a-z0-9-]+(?:\.[a-z0-9-]+)+)\/([A-Za-z0-9_-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?(?:\/[^\s]*)?$/i.exec(trimmed);
   const bare = /^([A-Za-z0-9_-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?$/.exec(trimmed);
-  const host = url ? url[1].toLowerCase() : undefined;
+  // Only github.com's own www alias is the same server; an Enterprise host is kept whole.
+  const named = url ? url[1].toLowerCase() : undefined;
+  const host = named === `www.${GITHUB_HOST}` ? GITHUB_HOST : named;
   const owner = url ? url[2] : bare?.[1];
   const repo = url ? url[3] : bare?.[2];
   if (!owner || !repo || /^\.+$/.test(repo)) { return undefined; }
@@ -158,12 +160,32 @@ export class GitHubSkillApi implements SkillSourceApi {
     return state.asking;
   }
 
+  /**
+   * Forgets the sessions found (not the Cancels): the next request looks again, silently. Called
+   * when VS Code's sessions change (sign out, sign in, a refreshed token).
+   */
+  forgetSessions(): void {
+    for (const state of this.hosts.values()) { state.looked = false; state.token = undefined; }
+  }
+
   private async get(route: string, accept: string, host: string = GITHUB_HOST): Promise<string> {
     const url = host === GITHUB_HOST ? `https://api.github.com/${route}` : `https://${host}/api/v3/${route}`;
-    const token = await this.silent(host);
+    let token = await this.silent(host);
     try {
       return await this.fetch(url, token, accept);
-    } catch (error) {
+    } catch (first) {
+      let error: unknown = first;
+      // A token no longer valid (signed out, or replaced): look for the current session silently and
+      // try again with it, or without one; never keep sending the old token.
+      if (token && error instanceof GitHubRequestError && error.status === 401) {
+        const state = this.state(host);
+        state.looked = false;
+        state.token = undefined;
+        const fresh = await this.silent(host);
+        if (fresh === token) { throw error; }
+        token = fresh;
+        try { return await this.fetch(url, token, accept); } catch (retry) { error = retry; }
+      }
       // Refused without a sign-in: a private repository, or the anonymous limit. Ask once.
       if (token || !(error instanceof GitHubRequestError) || ![401, 403, 404].includes(error.status)) { throw error; }
       if (!this.provider(host)) {
@@ -202,6 +224,12 @@ export class GitHubSkillApi implements SkillSourceApi {
 
 export function studioSkills(context: vscode.ExtensionContext, api: SkillSourceApi & { signIn?(force: boolean, host?: string): Promise<string | undefined> } = new GitHubSkillApi()): StudioSkills {
   const library = new SkillLibrary(path.join(context.globalStorageUri.fsPath, 'studio', 'skills'), api);
+  // A sign-out, a sign-in or a refreshed token in VS Code: the next request uses the session as it is now.
+  const forget = (api as { forgetSessions?: () => void }).forgetSessions;
+  const changed = forget ? vscode.authentication?.onDidChangeSessions?.(event => {
+    if (event.provider.id === 'github' || event.provider.id === 'github-enterprise') { forget.call(api); }
+  }) : undefined;
+  if (changed) { context.subscriptions.push(changed); }
   const sources = (): string[] => {
     const value = vscode.workspace.getConfiguration('repositoryManager').get<unknown>('studio.skillSources');
     return Array.isArray(value) ? [...new Set(value.filter((item): item is string => typeof item === 'string' && SKILL_SOURCE.test(item.trim())).map(item => item.trim()))] : [];

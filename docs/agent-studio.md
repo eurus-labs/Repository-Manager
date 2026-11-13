@@ -651,7 +651,13 @@ side panel (the chat's plan card and the JSON do it; the diagram keeps it).
   Requests go to `https://<host>/api/v3`; sign-in uses VS Code's GitHub
   Enterprise account, which serves the one server in `github-enterprise.uri`:
   for any other server, a refusal says to set it, and no dialog opens. An
-  Enterprise source's cache is under its host.
+  Enterprise source's cache is under its host. A host is kept whole (only
+  `www.github.com` is github.com).
+- **Sessions that change.** A token refused with 401 (signed out, or
+  replaced) is not sent again: the current session is looked up silently and
+  the request retried with it, or without one. VS Code's session changes for
+  GitHub and GitHub Enterprise make the next request look again; a Cancel
+  stays remembered.
   Sources come from `repositoryManager.studio.skillSources` (default
   `eurus-labs/skills`). Trust is asked once per source, before it is listed
   and before a run uses a skill from a source not trusted yet (a shared

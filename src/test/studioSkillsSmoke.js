@@ -93,6 +93,9 @@ async function main() {
     'https://github.boschdevcloud.com/GON7HC/DSD-Skills': 'github.boschdevcloud.com/GON7HC/DSD-Skills',
     'github.boschdevcloud.com/GON7HC/DSD-Skills/tree/main': 'github.boschdevcloud.com/GON7HC/DSD-Skills',
     'git@GitHub.BoschDevCloud.com:GON7HC/DSD-Skills.git': 'github.boschdevcloud.com/GON7HC/DSD-Skills',
+    // An Enterprise host is kept whole, www included; only github.com's www alias is github.com.
+    'https://www.github.example.com/team/skills': 'www.github.example.com/team/skills',
+    'https://www.github.com/eurus-labs/skills': 'eurus-labs/skills',
     'not a repo': undefined, '../x': undefined, 'a/b/c d': undefined, 'https://github.com/only-owner': undefined
   };
   for (const [text, expected] of Object.entries(sources)) { assert.equal(parseSkillSource(text), expected, text); }
@@ -221,6 +224,37 @@ async function main() {
     const forced = new GitHubSkillApi(fetch, auth(undefined, 'tok2'));
     await assert.rejects(new GitHubSkillApi(fetch, auth(undefined, 'cancel')).signIn(false).then(token => { if (token) { throw new Error('signed in'); } throw new Error('declined'); }), /declined/);
     assert.equal(await forced.signIn(true), 'tok2');
+
+    // A token that is no longer valid (signed out and in again, or replaced) is not sent again:
+    // the current session is looked up silently and the request retried with it.
+    {
+      const sessions = ['old', 'new'];
+      const silentAsked = [];
+      const rotating = new GitHubSkillApi(async (url, token) => {
+        if (token === 'old') { throw new GitHubRequestError('GitHub answered 401.', 401); }
+        return JSON.stringify(url.endsWith('/commits/main') ? { sha: commit } : { default_branch: 'main' });
+      }, { getSession: async (_p, _s, options) => { silentAsked.push(options.silent ? 'silent' : 'dialog'); return options.silent ? { accessToken: sessions.shift() } : undefined; } });
+      assert.equal(await rotating.headCommit('acme', 'skills'), commit);
+      assert.deepEqual(silentAsked, ['silent', 'silent'], 'looked again silently, no dialog');
+      // Signed out: a public repository is still read, without a token.
+      const tokens = [];
+      const signedOut = new GitHubSkillApi(async (url, token) => {
+        tokens.push(token);
+        if (token === 'gone') { throw new GitHubRequestError('GitHub answered 401.', 401); }
+        return JSON.stringify(url.endsWith('/commits/main') ? { sha: commit } : { default_branch: 'main' });
+      }, { getSession: async (_p, _s, options) => options.silent ? (tokens.length ? undefined : { accessToken: 'gone' }) : undefined });
+      assert.equal(await signedOut.headCommit('acme', 'skills'), commit);
+      assert.deepEqual(tokens, ['gone', undefined, undefined]);
+      // VS Code's sessions changed: the next request looks again (a Cancel stays remembered).
+      const looks = [];
+      const watched = new GitHubSkillApi(async url => JSON.stringify(url.endsWith('/commits/main') ? { sha: commit } : { default_branch: 'main' }),
+        { getSession: async (_p, _s, options) => { looks.push(options.silent); return { accessToken: `t${looks.length}` }; } });
+      await watched.headCommit('acme', 'skills');
+      await watched.headCommit('acme', 'skills');
+      watched.forgetSessions();
+      await watched.headCommit('acme', 'skills');
+      assert.equal(looks.length, 2, 'looked up once, then again after the sessions changed');
+    }
 
     // A session already there is used, silently, from the first request.
     asked.length = 0; fetched.length = 0;
