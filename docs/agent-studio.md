@@ -649,8 +649,12 @@ side panel (the chat's plan card and the JSON do it; the diagram keeps it).
   `github:<host>/<owner>/<repo>/<folder>@<commit>`; github.com keeps the short
   forms. A host has a dot and an owner never does, so they cannot be confused.
   Requests go to `https://<host>/api/v3`; sign-in uses VS Code's GitHub
-  Enterprise account, which serves the one server in `github-enterprise.uri`:
-  for any other server, a refusal says to set it, and no dialog opens. An
+  Enterprise account, which serves the one server in `github-enterprise.uri`.
+  When a server refuses and the setting does not name it, the person is
+  asked once to set it up (the question says which server it names now, if
+  any; other extensions use the same setting), then to sign in; declining is
+  remembered like a Cancel. (3.1.0 only told the person to set it: fixed in
+  3.2.0.) An
   Enterprise source's cache is under its host. A host is kept whole (only
   `www.github.com` is github.com).
 - **Sessions that change.** A token refused with 401 (signed out, or
