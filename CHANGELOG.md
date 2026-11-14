@@ -5,6 +5,12 @@ All notable changes to Repository Manager will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- The Side Bar's **Changes** and the dashboard's Uncommitted changes no longer go back to an older state when several refreshes overlap (after a discard, a stash, live changes or a repository switch); an older status that arrives last is ignored. The commit dialog's file list does the same.
+
 ## [3.2.1] - 2026-11-14
 
 ### Fixed
