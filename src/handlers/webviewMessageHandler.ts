@@ -193,9 +193,17 @@ export async function handleGetRepositoryRefs(ctx: MessageHandlerContext, payloa
   }
 }
 
+/**
+ * Numbers each working-tree status read when it starts. Reads run concurrently (a refresh after a
+ * discard, live changes, a repository switch), so replies can arrive out of order; the page keeps
+ * the highest number it has seen, and an older read never replaces a newer one.
+ */
+let workingTreeStatusSequence = 0;
+
 export async function handleGetWorkingTreeChanges(ctx: MessageHandlerContext, payload: unknown): Promise<void> {
   const request = requireRecord(payload);
   const repositoryPath = requireString(request, 'repositoryPath');
+  const sequence = ++workingTreeStatusSequence;
 
   try {
     const changes = await ctx.gitOps.getWorkingTreeChanges(repositoryPath);
@@ -204,7 +212,7 @@ export async function handleGetWorkingTreeChanges(ctx: MessageHandlerContext, pa
     const purpose = request.purpose === 'dashboard' ? 'dashboard' : undefined;
     await sendToWebview(ctx, {
       type: 'workingTreeChangesLoaded',
-      payload: { repositoryPath, changes, pushAfterCommit, purpose }
+      payload: { repositoryPath, changes, pushAfterCommit, purpose, sequence }
     });
   } catch (error) {
     await sendDashboardError(ctx, 'getWorkingTreeChanges', repositoryPath, error);

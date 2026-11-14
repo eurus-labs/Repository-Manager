@@ -232,6 +232,17 @@ detail(A, P);
 listeners.window_message({ data: { type: 'workingTreeChangesLoaded', payload: { repositoryPath: '.', purpose: 'dashboard',
   changes: [{ path: 'untracked.txt', staged: false, unstaged: false, untracked: true, conflicted: false }] } } });
 assert.doesNotMatch(node('dashboardCommitSummary').innerHTML, /Uncommitted changes/);
+// Issue #141: status replies can arrive out of order; an older read never replaces a newer one.
+const status = (sequence, paths) => listeners.window_message({ data: { type: 'workingTreeChangesLoaded', payload: {
+  repositoryPath: '.', purpose: 'dashboard', sequence,
+  changes: paths.map(item => ({ path: item, staged: false, unstaged: true, untracked: false, conflicted: false })) } } });
+status(11, ['newer-a.txt', 'newer-b.txt']);
+status(10, ['older.txt']);
+assert.equal(node('changesRefCount').textContent, '2', 'an older status replaced a newer one');
+assert.match(node('dashboardChanges').innerHTML, /newer-a\.txt/);
+assert.doesNotMatch(node('dashboardChanges').innerHTML, /older\.txt/);
+status(12, ['latest.txt']);
+assert.equal(node('changesRefCount').textContent, '1', 'a newer status was dropped');
 // An ordinary commit, or a stash compared with another commit, has none.
 assert.equal(node('stashActions').hidden, true, 'an ordinary commit has stash actions');
 listeners.body_click({ target: { dataset: { action: 'selectHistoryCommit', commit: B }, parentElement: document.body,

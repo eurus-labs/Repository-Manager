@@ -52,6 +52,26 @@ async function main() {
       return last('workingTreeChangesLoaded');
     };
 
+    // Issue #141: each status read is numbered when it starts, so a slow early read that answers
+    // last still carries the lower number and the page can drop it.
+    {
+      const real = ctx.gitOps;
+      let release;
+      const slow = new Promise(resolve => { release = resolve; });
+      let reads = 0;
+      ctx.gitOps = Object.assign(Object.create(Object.getPrototypeOf(real)), real, {
+        getWorkingTreeChanges: async (...args) => { if (reads++ === 0) { await slow; } return real.getWorkingTreeChanges(...args); }
+      });
+      const first = messageHandlers.getWorkingTreeChanges(ctx, { repositoryPath: '.', purpose: 'dashboard' });
+      const second = messageHandlers.getWorkingTreeChanges(ctx, { repositoryPath: '.', purpose: 'dashboard' });
+      await second; release(); await first;
+      const replies = posted.filter(message => message.type === 'workingTreeChangesLoaded').map(message => message.payload.sequence);
+      assert.equal(replies.length, 2);
+      assert.ok(replies[0] > replies[1], `the later-started read answered first with a higher number: ${replies}`);
+      ctx.gitOps = real;
+      posted.length = 0;
+    }
+
     // Push after commit is off until it is used, then remembered for this repository.
     writeFileSync(path.join(repo, 'a.txt'), '2\n');
     assert.equal((await loadChanges()).pushAfterCommit, false);

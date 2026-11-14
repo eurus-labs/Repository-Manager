@@ -2436,9 +2436,21 @@
   }
 
   // The status of the active repository arrived (on load, after a refresh or a live update).
+  // The newest status read seen per purpose and repository (the host numbers each read as it starts).
+  const workingTreeStatusSeen = new Map();
+  // False for a reply older than one already shown: concurrent reads can answer out of order.
+  function isLatestWorkingTreeStatus(payload, purpose) {
+    if (!payload || typeof payload.sequence !== 'number') return true;
+    const key = `${purpose}\u0000${payload.repositoryPath}`;
+    if (payload.sequence < (workingTreeStatusSeen.get(key) || 0)) return false;
+    workingTreeStatusSeen.set(key, payload.sequence);
+    return true;
+  }
+
   function applyWorkingTreeSummary(payload) {
     if (payload) workingSummaryAnswered(payload.repositoryPath);
     if (!payload || payload.repositoryPath !== activeDashboardRepository) return;
+    if (!isLatestWorkingTreeStatus(payload, 'dashboard')) return;
     workingTree = { repositoryPath: payload.repositoryPath, changes: Array.isArray(payload.changes) ? payload.changes : [] };
     pruneWorkingSelection();
     updateUncommittedRow();
@@ -3014,7 +3026,7 @@
         }
         case 'workingTreeChangesLoaded':
           if (message.payload && message.payload.purpose === 'dashboard') applyWorkingTreeSummary(message.payload);
-          else renderWorkingTreeChanges(message.payload);
+          else if (isLatestWorkingTreeStatus(message.payload, 'dialog')) renderWorkingTreeChanges(message.payload);
           break;
 
         case 'discardStarted':
