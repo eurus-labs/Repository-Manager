@@ -8,7 +8,8 @@
 import * as vscode from 'vscode';
 import { randomBytes } from 'crypto';
 import { workflowEffects } from './engine';
-import { StepDefinition, stepRegistry } from './steps';
+import { StepDefinition } from './steps';
+import { studioSteps } from './registry';
 import { validateWorkflow, Workflow } from './workflow';
 import { applyEdit, EditError, EditOperation, positions, problemNodes, serializeWorkflow, settingText } from './workflowEdit';
 
@@ -19,7 +20,7 @@ const EFFECT_ASKS: Record<string, string> = { write: 'writes files', command: 'r
 /** What the page draws: the workflow, where each node sits, its problems, and the steps it can add. */
 export function editorState(text: string, steps: Map<string, StepDefinition>): Record<string, unknown> {
   const catalog = [...steps.values()].map(step => ({
-    type: step.type, title: step.title, effect: step.effect, usesModel: Boolean(step.usesModel),
+    type: step.type, title: step.title, description: step.description ?? '', effect: step.effect, usesModel: Boolean(step.usesModel),
     required: step.required, optional: step.optional ?? [], asks: step.type === 'gate' ? 'waits for you' : EFFECT_ASKS[step.effect] ?? ''
   }));
   let value: unknown;
@@ -52,7 +53,7 @@ export function editorState(text: string, steps: Map<string, StepDefinition>): R
 }
 
 export class WorkflowEditorProvider implements vscode.CustomTextEditorProvider {
-  private readonly steps = stepRegistry();
+  private readonly steps = studioSteps();
 
   constructor(private readonly extensionUri: vscode.Uri) {}
 

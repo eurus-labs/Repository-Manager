@@ -33,6 +33,7 @@ let output;
 let folders;
 let failIn;
 let customEditors;
+let webviewViews;
 const vscode = withStubs('vscode', {
   commands: withStubs('commands', {
     registerCommand(id, handler) {
@@ -54,7 +55,7 @@ const vscode = withStubs('vscode', {
     showWarningMessage: async () => undefined,
     showInformationMessage: async () => undefined,
     createTreeView(id) { if (failIn === 'requirements' && id.startsWith('repositoryManager.requirements')) { throw new Error('tree view broke'); } return stub('treeView'); },
-    registerWebviewViewProvider: () => ({ dispose() {} }),
+    registerWebviewViewProvider(id) { webviewViews.push(id); return { dispose() {} }; },
     registerCustomEditorProvider(viewType) { customEditors.push(viewType); return { dispose() {} }; }
   })
 });
@@ -63,7 +64,7 @@ Module._load = function (request, ...rest) { return request === 'vscode' ? vscod
 const extension = require(path.join(root, 'out', 'extension.js'));
 
 async function activate(options) {
-  commands = new Map(); errors = []; output = []; customEditors = [];
+  commands = new Map(); errors = []; output = []; customEditors = []; webviewViews = [];
   folders = options.folder ? [{ uri: { fsPath: root, toString: () => `file://${root}` }, name: 'repo', index: 0 }] : undefined;
   failIn = options.failIn;
   const state = new Map([['repositoryManager.welcomeShown', true]]);
@@ -95,6 +96,10 @@ const missing = () => declared.filter(id => !commands.has(id));
   assert.ok(output.includes('No workspace folder open'));
   // Its editors open files with or without a folder: a clarification file, a workflow file.
   assert.deepEqual(customEditors.sort(), ['repositoryManager.requirementEditor', 'repositoryManager.workflowEditor']);
+  // The Studio Chat is there too: it drafts plans without a folder and says why it cannot run them.
+  assert.ok(webviewViews.includes('repositoryManager.studio.chat'), webviewViews.join(', '));
+  await commands.get('repositoryManager.studio.newChat')();
+  assert.deepEqual(errors, [extension.NO_FOLDER_MESSAGE], 'New Studio Chat is the chat\'s own command, not the no-folder stub');
 
   await activate({ folder: true, failIn: 'requirements' });
   assert.ok(commands.has('repositoryManager.openPanel'), 'a Requirements failure keeps the Git commands');

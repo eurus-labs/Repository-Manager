@@ -47,6 +47,12 @@ jobs:
       - name: Requirement editor UI
         run: node ./src/test/requirementEditorUi.js
 
+      - name: Workflow editor UI
+        run: node ./src/test/studioEditorUi.js
+
+      - name: Studio chat UI
+        run: node ./src/test/studioChatUi.js
+
       - name: Upload UI snapshots
         if: always()
         uses: actions/upload-artifact@v4

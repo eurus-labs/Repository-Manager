@@ -36,6 +36,7 @@ We want to know whether Repository Manager saves time, for two readers:
 ## Decisions and limits
 
 - **Medians, not means.** A commit with the dialog open longer than 10 minutes is counted but not timed: the person was probably doing something else.
+- **Timed from the last opening.** Closing the dialog and opening it again restarts the clock, so the time away is not counted; a Copilot message kept from before still counts as Copilot's.
 - **No comparison under 20 commits on each side.** Until then, the report says "still collecting" and shows the counts.
 - **Selection bias.** The person chooses when to use Copilot, so the two groups differ. The report compares within a size bucket and says so; it is not a controlled experiment.
 - **No baseline from before the tool.** Commits made outside the dialog are not recorded.
