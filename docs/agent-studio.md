@@ -589,7 +589,10 @@ scripted in the tests; a chat with Copilot in VS Code has not been run yet.
   step's model, nothing else (the diagram does the rest).
 - **Models** (`src/studio/studioModels.ts`). Selectors are
   `<vendor>:<family>` of every chat model `vscode.lm` lists (Copilot's and
-  other vendors'), one per family. The menu is read again when VS Code says
+  other vendors'), one per family; a model with no family (a custom endpoint)
+  is named by its id. Copilot's models are asked for by vendor as well as in
+  the full list, Copilot's first: the full list alone left them out in VS
+  Code (reported 2026-11-13, fixed in 3.2.1). The menu is read again when VS Code says
   the models changed and when the person opens it: Copilot's models load
   after VS Code starts, and a list read once at start can stay empty
   (reported by the user, 2026-11-12). It says "Loading models…" or "No model

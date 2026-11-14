@@ -89,7 +89,8 @@ export interface Problem { where: string; message: string }
 
 const NODE_ID = /^[a-z][a-z0-9-]*$/;
 /** `<vendor>:<family>`, as vscode.lm names a model: matched on the machine that runs it. */
-export const MODEL_SELECTOR = /^[A-Za-z0-9_.-]{1,60}:[A-Za-z0-9_.-]{1,100}$/;
+// The part after ":" is a family, or the id of a model that has none (custom endpoints: "org/model:tag").
+export const MODEL_SELECTOR = /^[A-Za-z0-9_.-]{1,60}:[A-Za-z0-9_.:/@+-]{1,200}$/;
 export const MAX_CRITERIA = 20;
 const MAX_CRITERION_CHARS = 500;
 const RESERVED = new Set(['inputs', 'item', 'index']);

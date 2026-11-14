@@ -69,6 +69,7 @@ const { RunStore, WorkflowEngine, workflowModels } = out('engine.js');
 const { stepRegistry } = out('steps.js');
 const { validateWorkflow } = out('workflow.js');
 const { StudioChatProvider } = out('studioChat.js');
+const { listModels, resolveSelector } = out('studioModels.js');
 Module._load = originalLoad;
 
 const steps = stepRegistry();
@@ -377,6 +378,32 @@ async function main() {
     await loneReceive({ type: 'ready' }); await loneReceive({ type: 'run' }); await settle();
     assert.equal(lonePosted[lonePosted.length - 1].folder, false);
     assert.match(lonePosted[lonePosted.length - 1].notice, /Open a folder/);
+  }
+
+  // ---- The model menu as a person saw it (2026-11-13): asked with no vendor, VS Code listed only other
+  // ---- vendors' models, and one without a name or family showed as an empty entry.
+  {
+    const saved = fakeVscode.lm.selectChatModels;
+    const custom = [
+      { ...lmModel('auto', 'Auto'), vendor: 'copilotcli' },
+      { id: 'org/custom:latest', name: '', family: '', vendor: 'customendpoint', maxInputTokens: 1000 },
+      { ...lmModel('gemini-4-argon', ''), vendor: 'customendpoint' }
+    ];
+    const copilot = [lmModel('claude-haiku', 'Claude Haiku'), lmModel('gpt-4o', 'GPT-4o')];
+    fakeVscode.lm.selectChatModels = async selector => selector && selector.vendor === 'copilot' ? copilot : custom;
+    const models = await listModels();
+    assert.deepEqual(models.map(model => [model.selector, model.name]), [
+      ['copilot:claude-haiku', 'Claude Haiku'], ['copilot:gpt-4o', 'GPT-4o'],
+      ['copilotcli:auto', 'Auto'], ['customendpoint:org/custom:latest', 'org/custom:latest'], ['customendpoint:gemini-4-argon', 'gemini-4-argon']
+    ], 'Copilot\'s models first; a model with no name or family is named by its id');
+    assert.equal(resolveSelector('customendpoint:org/custom:latest', models).id, 'org/custom:latest');
+    // A selector by id is a valid workflow model.
+    const flow = plan({ defaults: { model: 'customendpoint:org/custom:latest' } });
+    assert.deepEqual(validateWorkflow({ schema: 'repository-manager/workflow@1', id: 'x', version: '1', ...flow }, steps), []);
+    // A vendor whose listing fails does not empty the menu.
+    fakeVscode.lm.selectChatModels = async selector => { if (!selector.vendor) { throw new Error('a provider failed'); } return copilot; };
+    assert.deepEqual((await listModels()).map(model => model.selector), ['copilot:claude-haiku', 'copilot:gpt-4o']);
+    fakeVscode.lm.selectChatModels = saved;
   }
 
   // ---- The manifest: the chat is in the Secondary Side Bar (right, as Copilot's), and nothing of
