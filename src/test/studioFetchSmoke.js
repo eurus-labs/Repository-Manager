@@ -8,6 +8,7 @@ const { fetchSharedWorkflow, MAX_REDIRECTS, FetchError } = require(path.join(__d
 
 async function main() {
   const big = 'x'.repeat(2048);
+  let redirectClosed = false;
   const server = http.createServer((request, response) => {
     const url = new URL(request.url, 'http://localhost');
     const hop = Number(url.searchParams.get('n') ?? 0);
@@ -18,6 +19,13 @@ async function main() {
       case '/declared': response.writeHead(200, { 'content-length': String(big.length) }); response.end(big); return;
       case '/chunked': response.writeHead(200); response.write(big.slice(0, 1024)); response.end(big.slice(1024)); return;
       case '/slow': return; // never answers
+      case '/endless-redirect': {
+        // A redirect whose body never ends: the fetch must close it, not read it.
+        response.writeHead(302, { location: '/ok' });
+        const timer = setInterval(() => response.write('x'.repeat(1024)), 5);
+        response.on('close', () => { clearInterval(timer); redirectClosed = true; });
+        return;
+      }
       default: response.writeHead(404, 'Not Found'); response.end();
     }
   });
@@ -46,6 +54,20 @@ async function main() {
     await assert.rejects(fetchSharedWorkflow(`${base}/missing`, local), /answered 404 Not Found/);
     await assert.rejects(fetchSharedWorkflow('not a url'), error => error instanceof FetchError && /is not a URL/.test(error.message));
     await assert.rejects(fetchSharedWorkflow('http://127.0.0.1:1/x', local), /Could not reach 127\.0\.0\.1:1/);
+    // Review of the first version (Codex). A redirect's endless body is not drained: the fetch ends
+    // and that connection is closed.
+    fetched = await fetchSharedWorkflow(`${base}/endless-redirect`, { ...local, timeoutMs: 2000 });
+    assert.equal(fetched.text, '{"id":"shared"}');
+    for (let i = 0; i < 50 && !redirectClosed; i++) { await new Promise(resolve => setTimeout(resolve, 20)); }
+    assert.equal(redirectClosed, true, 'the redirect connection stayed open');
+    // A request that cannot even be built rejects at once, and its deadline does not fire later.
+    const uncaught = [];
+    const onUncaught = error => uncaught.push(error);
+    process.on('uncaughtException', onUncaught);
+    await assert.rejects(fetchSharedWorkflow('https://example.invalid/x', { timeoutMs: 100, get: () => { throw new URIError('URI malformed'); } }), /Could not request example\.invalid: URI malformed/);
+    await new Promise(resolve => setTimeout(resolve, 250));
+    process.off('uncaughtException', onUncaught);
+    assert.deepEqual(uncaught, [], 'the deadline fired after the fetch had failed');
     console.log('Studio fetch smoke passed');
   } finally {
     server.closeAllConnections?.();

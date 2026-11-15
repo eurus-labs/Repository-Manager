@@ -47,24 +47,27 @@ export async function fetchSharedWorkflow(address: string, options: FetchOptions
 function once(get: Get, url: URL, deadline: number, limit: number, maxBytes: number): Promise<{ text: string } | { redirect: string }> {
   return new Promise((resolve, reject) => {
     let settled = false;
+    let request: http.ClientRequest | undefined;
+    // Every outcome closes the connection: nothing keeps reading after the fetch is over.
     const finish = (error?: Error, value?: { text: string } | { redirect: string }) => {
       if (settled) { return; }
       settled = true;
       clearTimeout(timer);
-      if (error) { request.destroy(); reject(error); } else { resolve(value!); }
+      request?.destroy();
+      if (error) { reject(error); } else { resolve(value!); }
     };
     // One deadline for the whole fetch, redirects included.
     const timer = setTimeout(() => finish(new FetchError(`No complete answer from ${url.host} within ${limit / 1000} s.`)), Math.max(0, deadline - Date.now()));
-    const request = get(url, response => {
+    const onResponse = (response: http.IncomingMessage) => {
       const status = response.statusCode ?? 0;
+      // A redirect's or an error's body is never read: the connection is closed instead.
       if (status >= 300 && status < 400 && response.headers.location) {
-        response.resume();
         finish(undefined, { redirect: response.headers.location });
         return;
       }
-      if (status !== 200) { response.resume(); finish(new FetchError(`${url.host} answered ${status}${response.statusMessage ? ` ${response.statusMessage}` : ''}.`)); return; }
+      if (status !== 200) { finish(new FetchError(`${url.host} answered ${status}${response.statusMessage ? ` ${response.statusMessage}` : ''}.`)); return; }
       const declared = Number(response.headers['content-length']);
-      if (Number.isFinite(declared) && declared > maxBytes) { response.resume(); finish(new FetchError(`The file is larger than ${Math.round(maxBytes / 1024)} KB.`)); return; }
+      if (Number.isFinite(declared) && declared > maxBytes) { finish(new FetchError(`The file is larger than ${Math.round(maxBytes / 1024)} KB.`)); return; }
       const chunks: Buffer[] = [];
       let size = 0;
       response.on('data', (chunk: Buffer) => {
@@ -74,7 +77,14 @@ function once(get: Get, url: URL, deadline: number, limit: number, maxBytes: num
       });
       response.on('end', () => finish(undefined, { text: Buffer.concat(chunks).toString('utf8') }));
       response.on('error', error => finish(new FetchError(`Reading from ${url.host} failed: ${error.message}`)));
-    });
+    };
+    try {
+      request = get(url, onResponse);
+    } catch (error) {
+      // Some addresses that parse as URLs are refused while the request is built (bad credentials).
+      finish(new FetchError(`Could not request ${url.host}: ${error instanceof Error ? error.message : String(error)}`));
+      return;
+    }
     request.on('error', error => finish(new FetchError(`Could not reach ${url.host}: ${error.message}`)));
   });
 }
