@@ -21,7 +21,7 @@ with an effect, edited as a diagram in the Workflow Editor, and drafted from a g
 - Node: `studioEngineSmoke.js` (the sample on a real Git repository with a scripted model), `studioCommandsSmoke.js`
   (the commands with a scripted vscode), `workflowEditSmoke.js`, `studioChatSmoke.js` (planner, conversation rules, per-step
   models, and the chat host with a scripted `vscode.lm`), `studioSkillsSmoke.js` (a scripted GitHub), `studioCodeStepSmoke.js`
-  (a real Git repository and check, scripted tool calls), `agentMigrationSmoke.js` (agent tasks to Studio chats) — `$V capture <label> -- node src/test/<name>`.
+  (a real Git repository and check, scripted tool calls), `agentMigrationSmoke.js` (agent tasks to Studio chats), `studioSharingSmoke.js` (Export and Import's requirements and checks) — `$V capture <label> -- node src/test/<name>`.
 - Chromium: `src/test/studioEditorUi.js` (real page and provider, fake text document); screenshots `ui-snapshots/30*`–`32*`.
   `src/test/studioChatUi.js` (real chat page and provider, scripted `vscode.lm`); screenshots `ui-snapshots/40*`–`45*`.
 
@@ -46,6 +46,9 @@ with an effect, edited as a diagram in the Workflow Editor, and drafted from a g
 - Skill sources may be on a GitHub Enterprise server (URL or host/owner/name), read through its /api/v3 and signed in with VS Code's GitHub Enterprise account; when that account is not set up for the server, the person is offered to set it up, once. [confirmed: user, 2026-11-13; test src/test/studioSkillsSmoke.js]
 - GitHub sign-in is asked at most once, only when a repository refuses an anonymous read; a Cancel is not asked again. [confirmed: user bug report, 2026-11-13; test src/test/studioSkillsSmoke.js]
 - The planner may attach only skills it was offered or the plan already had. [confirmed: test src/test/studioSkillsSmoke.js]
+- A workflow is shared as a file by Export Workflow… / Import Workflow…; Export writes `requires` (extension, steps, models, skills, scripts), computed, never by hand. [confirmed: user, 2026-11-15; test src/test/studioCommandsSmoke.js]
+- Import warns when the file's `requires` does not match the workflow and keeps the computed one; it shows what the workflow does and what is missing here, runs nothing, and asks before replacing a library workflow (or keeps both). [confirmed: user, 2026-11-15; test src/test/studioCommandsSmoke.js, src/test/studioSharingSmoke.js]
+- A shared workflow may carry `about`: authors, license (SPDX), homepage (https), keywords. [confirmed: user, 2026-11-15; test src/test/studioSharingSmoke.js]
 - A code step works on the current branch; it creates a branch only when the plan names one (asked for by the person), and only from a clean tree. [confirmed: user, 2026-11-12]
 - A code step changes only its paths, runs only approved scripts as checks, and waits for review; Retry and Stop undo its changes. [confirmed: test src/test/studioCodeStepSmoke.js]
 - A failed or unverified code step is never accepted by a plain Accept: the button says Accept Anyway or Accept as Unverified. [observed: src/studio/studioCommands.ts, drive]
