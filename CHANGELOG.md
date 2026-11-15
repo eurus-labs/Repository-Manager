@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Runs** in the Studio (next to Chat): every workflow run with its status, filters by workflow and status, and what they add up to: runs, the completion rate (done of finished runs; running and waiting runs are counted apart, and done means the run finished, not that the code is right), interrupted runs, retries, and how accepted code steps were verified. A run's detail shows each step: how many times it ran, time executing and time waiting for you, its result or error, and what was undone if VS Code closed while it ran. A waiting run can be resumed from there, and **Open raw log** shows its state and log. A time the log does not have shows "no data".
+
 ### Fixed
 
 - A Studio code step cut short because VS Code closed while it ran no longer leaves its edits behind: each write is recorded before it reaches the disk, and on the next start the step's files are put back as they were (a file you changed since is left alone and named), the run is shown as interrupted, and a message says what was undone. Changes already waiting for your review are kept. A run left running when VS Code closed is marked interrupted too.

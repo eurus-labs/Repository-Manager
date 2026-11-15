@@ -55,6 +55,9 @@ jobs:
       - name: Studio chat UI
         run: node ./src/test/studioChatUi.js
 
+      - name: Studio runs UI
+        run: node ./src/test/studioRunsUi.js
+
       - name: Upload UI snapshots
         if: always()
         uses: actions/upload-artifact@v4

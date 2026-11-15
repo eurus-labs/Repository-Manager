@@ -830,6 +830,35 @@ people by chat or email, before any usage data; see Risks.)*
 - Tested by `src/test/studioSharingSmoke.js` and `studioCommandsSmoke.js`
   (scripted `vscode`, the real engine and files).
 
+## Phase 3 as built: the Runs view
+
+- **Runs** (`repositoryManager.studio.runs`), a webview view next to Chat in
+  the Studio, reads the run states and logs `RunStore` keeps (the newest 300);
+  nothing new is recorded for it. `src/studio/runsReport.ts` (no `vscode`)
+  measures, `src/studio/runsPage.ts` renders the page whole (inline script and
+  style under a nonce), `src/studio/runsView.ts` hosts it.
+- **Summary**, following the measures above: runs; completion rate = done ÷
+  finished (done, failed, stopped), with running and waiting counted apart;
+  interrupted runs (a subset of failed); retries (extra attempts of reviewed
+  steps); accepted code steps by verdict (from the `review` log events).
+- **List**: the 100 newest that match the filters (workflow, status, or
+  interrupted), with the status and what a waiting run waits for.
+- **A run**: status, error, total time executing and waiting for a person,
+  then each node in the order the log met it (then the rest from the saved
+  state or the workflow): times it ran and retries, execution time (`node` to
+  `waiting`, `done` or `finish`), waiting time (`waiting` to `approval` or
+  `review`), result, last verdict, error, and what recovery undid. A node that
+  has not run says "not run yet"; one waiting now says so and has no total
+  yet; a time the log lacks, or a log that is missing, says "no data".
+  **Resume** (waiting runs) goes through the same `drive` as Run Workflow…,
+  after startup recovery; **Open raw log** opens the state and log as JSON.
+  Show Workflow Runs keeps its quick pick and uses the same two actions.
+- The view reads again when it is shown, after its own actions, and on
+  **Refresh**; a run started elsewhere appears on the next of these.
+- Tested by `src/test/studioRunsSmoke.js` (real engine runs, and logs with
+  known times) and `src/test/studioRunsUi.js` (the real provider in Chromium
+  under its Content Security Policy).
+
 ## Phases
 
 Each phase ends with something usable on its own.
