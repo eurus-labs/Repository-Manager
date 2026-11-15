@@ -25,7 +25,11 @@ const fakeVscode = {
     showInputBox: async () => answers.input.shift(),
     showSaveDialog: async () => answers.save.shift(),
     showOpenDialog: async () => answers.open.shift(),
-    showWarningMessage: async (message, options) => { asked.push(['warning', message, options.detail]); return answers.warning.shift(); },
+    showWarningMessage: async (message, options) => {
+      asked.push(['warning', message, options.detail]);
+      const answer = answers.warning.shift();
+      return typeof answer === 'function' ? answer() : answer;
+    },
     showInformationMessage: async (message, ...rest) => { asked.push(['info', message]); return answers.info.shift(); },
     showErrorMessage: async (message, options) => { asked.push(['error', message, options && options.detail]); },
     withProgress: async (_options, task) => task({ report() {} }, { isCancellationRequested: false }),
@@ -151,6 +155,20 @@ async function main() {
     assert.deepEqual(both.requires, shared.requires, 'the hand-edited requires was kept');
     assert.equal(JSON.parse(fs.readFileSync(path.join(library, 'note.workflow.json'), 'utf8')).title, 'Write a note', 'Keep Both replaced the first');
 
+    // Keep Both while another window takes the same new id: the file is created exclusively, so this
+    // import moves on to the next free id instead of overwriting the other one.
+    const raced = path.join(base, 'shared', 'raced.workflow.json');
+    fs.writeFileSync(raced, JSON.stringify({ ...shared, title: 'Write a note (raced)' }));
+    answers.open.push([{ fsPath: raced }]);
+    answers.warning.push('Import', () => {
+      fs.writeFileSync(path.join(library, 'note-3.workflow.json'), JSON.stringify({ ...shared, id: 'note-3', title: 'Other window' }));
+      return 'Keep Both';
+    });
+    await commands.get('repositoryManager.studio.importWorkflow')();
+    assert.equal(JSON.parse(fs.readFileSync(path.join(library, 'note-3.workflow.json'), 'utf8')).title, 'Other window', 'the other window\'s import was overwritten');
+    const next = JSON.parse(fs.readFileSync(path.join(library, 'note-4.workflow.json'), 'utf8'));
+    assert.deepEqual([next.id, next.title], ['note-4', 'Write a note (raced)']);
+
     // A newer extension's file says what is missing; a broken file is refused.
     const newer = path.join(base, 'shared', 'newer.workflow.json');
     fs.writeFileSync(newer, JSON.stringify({ ...shared, id: 'newer', requires: { ...shared.requires, extension: '>=9.1.0' } }));
@@ -170,7 +188,7 @@ async function main() {
     let offered = [];
     answers.quickPick.push(item => { offered.push(`${item.label} ${item.description}`); return false; });
     await commands.get('repositoryManager.studio.runWorkflow')();
-    assert.ok(offered.includes('note Library') && offered.includes('note-2 Library'), offered.join(', '));
+    assert.ok(['note', 'note-2', 'note-3', 'note-4'].every(id => offered.includes(`${id} Library`)), offered.join(', '));
     console.log('Studio commands smoke passed');
   } finally {
     fs.rmSync(base, { recursive: true, force: true });

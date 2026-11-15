@@ -272,7 +272,19 @@ export function registerStudio(context: vscode.ExtensionContext, workspaceRoot: 
           if (choice === both) { id = freeId(id, taken); text = withId(text, id); }
         }
       }
-      await fs.writeFile(path.join(library, `${id}${SUFFIX}`), text, 'utf8');
+      if (id === workflow.id) {
+        await fs.writeFile(path.join(library, `${id}${SUFFIX}`), text, 'utf8');
+      } else {
+        // Keep Both creates a new file exclusively: another window may have taken this id meanwhile.
+        for (;;) {
+          try { await fs.writeFile(path.join(library, `${id}${SUFFIX}`), text, { encoding: 'utf8', flag: 'wx' }); break; } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== 'EEXIST') { throw error; }
+            taken.add(id);
+            id = freeId(workflow.id, taken);
+            text = withId(text, id);
+          }
+        }
+      }
       void vscode.window.showInformationMessage(`Imported "${workflow.title}" into your library as ${id}. Run it from Run Workflow….`);
     }),
     vscode.commands.registerCommand('repositoryManager.studio.showRuns', async () => {

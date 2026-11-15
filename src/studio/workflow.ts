@@ -175,6 +175,26 @@ export function parseWorkflow(text: string, steps: Map<string, StepShape>): { wo
   return problems.length ? { problems } : { workflow: value as Workflow, problems };
 }
 
+/**
+ * An SPDX license expression: identifiers joined by AND, OR or WITH, with parentheses at any depth,
+ * such as "MIT" or "MIT AND (Apache-2.0 OR BSD-3-Clause)". Checks the form, not the license list.
+ */
+export function isSpdxExpression(text: string): boolean {
+  const tokens = text.replace(/[()]/g, ' $& ').trim().split(/\s+/);
+  let index = 0;
+  const term = (): boolean => {
+    const token = tokens[index++];
+    if (token === '(') { return expression() && tokens[index++] === ')'; }
+    return token !== undefined && /^[A-Za-z0-9.+-]+$/.test(token) && !['AND', 'OR', 'WITH'].includes(token);
+  };
+  const expression = (): boolean => {
+    if (!term()) { return false; }
+    while (['AND', 'OR', 'WITH'].includes(tokens[index])) { index++; if (!term()) { return false; } }
+    return true;
+  };
+  return expression() && index === tokens.length;
+}
+
 export function validateWorkflow(value: unknown, steps: Map<string, StepShape>): Problem[] {
   const problems: Problem[] = [];
   const add = (where: string, message: string) => problems.push({ where, message });
@@ -209,7 +229,7 @@ export function validateWorkflow(value: unknown, steps: Map<string, StepShape>):
       };
       texts('authors', 200, 20);
       texts('keywords', 40, 10);
-      if (about.license !== undefined && !(typeof about.license === 'string' && about.license.length <= 100 && /^\(?[A-Za-z0-9.+-]+(?: (?:AND|OR|WITH) [A-Za-z0-9.+-]+)*\)?$/.test(about.license))) {
+      if (about.license !== undefined && !(typeof about.license === 'string' && about.license.length <= 100 && isSpdxExpression(about.license))) {
         add('about.license', 'Name the license by its SPDX identifier, such as "MIT".');
       }
       if (about.homepage !== undefined && !(typeof about.homepage === 'string' && /^https:\/\/[^\s]{1,500}$/.test(about.homepage))) {

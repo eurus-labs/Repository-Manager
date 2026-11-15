@@ -51,6 +51,11 @@ check = checkImport(JSON.stringify({ ...base, requires: { extension: 'latest', s
 assert.ok(check.warnings.some(line => line.startsWith('"requires.steps" does not match')));
 assert.ok(check.warnings.includes('"requires.extension" is not ">=X.Y.Z"; this version (3.3.0) was written instead.'));
 assert.equal(check.workflow.requires.extension, '>=3.3.0');
+// A list entry that is not text is a mismatch, warned about, never coerced (an object without
+// toString used to throw out of Import).
+check = checkImport(JSON.stringify({ ...base, requires: { ...requires, steps: [{ toString: null }] } }), steps, { extensionVersion: '3.3.0', scripts: ['lint', 'test'] });
+assert.deepEqual(check.warnings, ['"requires.steps" does not match the workflow; it uses code, gate, prompt.']);
+assert.deepEqual(check.workflow.requires.steps, ['code', 'gate', 'prompt']);
 
 // What cannot be imported: too large, not JSON, not a valid workflow.
 const huge = JSON.stringify({ ...base, description: 'x'.repeat(MAX_SHARED_BYTES) });
@@ -62,6 +67,13 @@ assert.ok(checkImport(JSON.stringify({ ...base, nodes: [] }), steps, { extension
 const about = (value) => parseWorkflow(JSON.stringify({ ...base, about: value }), steps).problems.map(problem => problem.where);
 assert.deepEqual(about({ authors: ['Ana <ana@example.com>'], license: 'Apache-2.0', homepage: 'https://example.com', keywords: ['review'] }), []);
 assert.deepEqual(about({ license: 'MIT OR Apache-2.0' }), []);
+// Grouped SPDX expressions at any depth; a broken one is refused.
+for (const license of ['MIT AND (Apache-2.0 OR BSD-3-Clause)', '(MIT OR (GPL-2.0-only WITH Classpath-exception-2.0))']) {
+  assert.deepEqual(about({ license }), [], license);
+}
+for (const license of ['MIT AND', '(MIT', 'MIT)', 'MIT OR OR Apache-2.0', 'AND', '()']) {
+  assert.deepEqual(about({ license }), ['about.license'], license);
+}
 assert.deepEqual(about({ license: 'see file', homepage: 'http://example.com', authors: 'Ana', version: '1' }).sort(),
   ['about.authors', 'about.homepage', 'about.license', 'about.version']);
 

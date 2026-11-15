@@ -38,7 +38,9 @@ export function requirementDifferences(declared: unknown, computed: WorkflowRequ
   const given = declared as Record<string, unknown>;
   const differences: string[] = [];
   for (const key of LISTS) {
-    const list = Array.isArray(given[key]) ? [...new Set((given[key] as unknown[]).map(String))].sort() : undefined;
+    // Only text entries count: anything else in the list is a mismatch, never coerced.
+    const raw = given[key];
+    const list = Array.isArray(raw) && raw.every(item => typeof item === 'string') ? [...new Set(raw as string[])].sort() : undefined;
     if (!list || list.join('\n') !== computed[key].join('\n')) {
       const missing = computed[key].filter(item => !list?.includes(item));
       const extra = (list ?? []).filter(item => !computed[key].includes(item));
