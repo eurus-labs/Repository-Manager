@@ -66,6 +66,9 @@ export function summarizeRuns(records: RunRecord[]): RunsSummary {
 
 export type NodeOutcome = 'done' | 'failed' | 'skipped' | 'approved' | 'rejected' | 'accepted' | 'stopped' | 'interrupted' | 'waiting' | 'running' | 'pending';
 
+/** How much of a step's saved result the page shows; the raw log has all of it. */
+export const RESULT_CHARS = 2000;
+
 export interface TimelineNode {
   node: string;
   title?: string;
@@ -86,6 +89,18 @@ export interface TimelineNode {
   waitingNow?: boolean;
   /** It waited for a person, but the log lacks a time to measure it. */
   waitingUnknown?: boolean;
+  /** The step's saved result as text, cut to RESULT_CHARS (`truncated` says so). */
+  result?: string;
+  truncated?: boolean;
+}
+
+/** A saved output as readable text: a string as it is, anything else as indented JSON. */
+function resultText(output: unknown): { result?: string; truncated?: boolean } {
+  if (output === undefined || output === null || (Array.isArray(output) && !output.length)) { return {}; }
+  let text: string;
+  try { text = typeof output === 'string' ? output : JSON.stringify(output, null, 2); } catch { return {}; }
+  if (!text || !text.trim()) { return {}; }
+  return text.length > RESULT_CHARS ? { result: text.slice(0, RESULT_CHARS), truncated: true } : { result: text };
 }
 
 export interface RunTimeline {
@@ -124,8 +139,11 @@ export function runTimeline(record: RunRecord, workflow?: { nodes: Array<{ id: s
     if (at === undefined || Number.isNaN(node.waitStart)) { node.waitUnknown = true; } else { node.waitingMs = (node.waitingMs ?? 0) + (at - node.waitStart); }
     node.waitStart = undefined;
   };
+  // The node running or waiting now: a run-level stop (Cancel) is logged without a node.
+  let active: string | undefined;
   for (const entry of log) {
-    const id = typeof entry.node === 'string' && entry.node ? entry.node : undefined;
+    let id = typeof entry.node === 'string' && entry.node ? entry.node : undefined;
+    if (!id && entry.type === 'finish' && active) { id = active; }
     if (!id) { continue; }
     const node = get(id);
     const at = time(entry);
@@ -133,8 +151,10 @@ export function runTimeline(record: RunRecord, workflow?: { nodes: Array<{ id: s
       case 'node':
         node.runs++; node.execSeen = true; node.outcome = 'running';
         node.execStart = at ?? Number.NaN;
+        active = id;
         break;
       case 'waiting':
+        active = id;
         endExecution(node, at);
         node.waitSeen = true; node.outcome = 'waiting';
         node.waitStart = at ?? Number.NaN;
@@ -150,8 +170,14 @@ export function runTimeline(record: RunRecord, workflow?: { nodes: Array<{ id: s
         node.outcome = entry.decision === 'accept' ? 'accepted' : entry.decision === 'stop' ? 'stopped' : 'pending';
         break;
       case 'done':
+        // Done with no start before it: the log lost its `node` line, so the time is unknown. An empty
+        // list (`runs: 0`) truly ran nothing.
+        if (node.execStart === undefined && !node.execSeen && node.outcome !== 'accepted') {
+          if (entry.runs === 0) { node.execSeen = true; } else { node.execUnknown = true; }
+        }
         endExecution(node, at);
         node.outcome = node.outcome === 'accepted' ? 'accepted' : 'done';
+        if (active === id) { active = undefined; }
         break;
       case 'skip':
         node.outcome = 'skipped';
@@ -160,6 +186,8 @@ export function runTimeline(record: RunRecord, workflow?: { nodes: Array<{ id: s
         endExecution(node, at);
         endWait(node, at);
         if (entry.status === 'failed') { node.outcome = 'failed'; node.error = typeof entry.error === 'string' ? entry.error : undefined; }
+        if (entry.status === 'stopped') { node.outcome = 'stopped'; node.error = typeof entry.reason === 'string' ? entry.reason : undefined; }
+        active = undefined;
         break;
       case 'recovered':
         endExecution(node, undefined);
@@ -197,7 +225,8 @@ export function runTimeline(record: RunRecord, workflow?: { nodes: Array<{ id: s
   const waitingMs = total('waitingMs', 'waitUnknown');
   const list: TimelineNode[] = all.map(node => ({
     node: node.node, title: node.title, type: node.type, executionMs: node.executionMs, waitingMs: node.waitingMs, runs: node.runs,
-    outcome: node.outcome, verdict: node.verdict, error: node.error, recovered: node.recovered, ...(node.waitingNow ? { waitingNow: true } : {}),
+    outcome: node.outcome, verdict: node.verdict, error: node.error, recovered: node.recovered, ...resultText(state.nodes[node.node]?.output),
+    ...(node.waitingNow ? { waitingNow: true } : {}),
     ...(node.waitUnknown && !node.waitingNow ? { waitingUnknown: true } : {})
   }));
   return { nodes: list, hasLog: log.length > 0, executionMs, waitingMs };

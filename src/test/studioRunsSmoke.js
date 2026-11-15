@@ -7,7 +7,7 @@ const path = require('node:path');
 const out = name => require(path.join(__dirname, '../../out/studio', name));
 const { RunStore, WorkflowEngine } = out('engine.js');
 const { studioSteps } = out('registry.js');
-const { summarizeRuns, runTimeline, matchesFilter, formatDuration } = out('runsReport.js');
+const { summarizeRuns, runTimeline, matchesFilter, formatDuration, RESULT_CHARS } = out('runsReport.js');
 const { renderRunsPage } = out('runsPage.js');
 
 const base = fs.mkdtempSync(path.join(os.tmpdir(), 'repository-manager-runs-'));
@@ -76,6 +76,22 @@ async function main() {
       log: [{ at: at(1), type: 'node', node: 'fix' }, { at: at(30), type: 'recovered', node: 'fix', restored: ['src/a.ts'], kept: [] }] };
     const cutTimeline = runTimeline(cut);
     assert.deepEqual([cutTimeline.nodes[0].outcome, cutTimeline.nodes[0].recovered.restored, cutTimeline.nodes[0].executionMs], ['interrupted', ['src/a.ts'], undefined]);
+
+    // Review of the first version (Codex). Cancel logs a run-level finish with no node: it closes the
+    // node that was running, which reads as stopped with its time.
+    const cancelled = runTimeline({ state: state('cancelled', 'stopped'), log: [{ at: at(1), type: 'node', node: 'fix' }, { at: at(4), type: 'finish', status: 'stopped', reason: 'Cancelled' }] });
+    assert.deepEqual([cancelled.nodes[0].outcome, cancelled.nodes[0].executionMs, cancelled.nodes[0].error, cancelled.executionMs], ['stopped', 3000, 'Cancelled', 3000]);
+    // A done whose start line the log lost: the time is unknown, and so is the total; an empty list
+    // (done with runs: 0) truly took no time.
+    const lostStart = runTimeline({ state: state('lost-start', 'done'), log: [{ at: at(2), type: 'done', node: 'a' }, { at: at(3), type: 'node', node: 'b' }, { at: at(5), type: 'done', node: 'b' }] });
+    assert.deepEqual([lostStart.nodes[0].executionMs, lostStart.nodes[1].executionMs, lostStart.executionMs], [undefined, 2000, undefined]);
+    const empty = runTimeline({ state: state('empty', 'done'), log: [{ at: at(2), type: 'done', node: 'each', runs: 0 }] });
+    assert.deepEqual([empty.nodes[0].executionMs, empty.executionMs], [0, 0]);
+    // A step's saved result is in the detail, as text or JSON, cut to RESULT_CHARS.
+    const withOutput = runTimeline({ state: state('out', 'done', { nodes: { ask: { status: 'done', output: 'The answer.' }, big: { status: 'done', output: { text: 'x'.repeat(RESULT_CHARS) } }, none: { status: 'done', output: [] } } }), log: [] });
+    assert.deepEqual(withOutput.nodes.map(n => [n.node, n.result?.slice(0, 11), Boolean(n.truncated)]), [['ask', 'The answer.', false], ['big', '{\n  "text":', true], ['none', undefined, false]]);
+    const resultPage = renderRunsPage({ records: [], filter: {}, nonce: 'n', cspSource: 'x', selected: { record: { state: state('out', 'done', { nodes: { ask: { status: 'done', output: '<script>x</script>' } } }), log: [] }, timeline: runTimeline({ state: state('out', 'done', { nodes: { ask: { status: 'done', output: '<script>x</script>' } } }), log: [] }) } });
+    assert.match(resultPage, /<summary>Result<\/summary><pre>&#60;script&#62;x&#60;\/script&#62;<\/pre>/);
 
     // The summary over all of them: interrupted is a failed run; accepted verdicts and retries are apart.
     const all = [...real, coded, gap, old, cut, { state: state('accepted-anyway', 'done'), log: [{ at: at(1), type: 'review', node: 'x', decision: 'accept', verdict: 'failed' }] }];

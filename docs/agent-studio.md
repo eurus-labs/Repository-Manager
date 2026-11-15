@@ -847,7 +847,11 @@ people by chat or email, before any usage data; see Risks.)*
   then each node in the order the log met it (then the rest from the saved
   state or the workflow): times it ran and retries, execution time (`node` to
   `waiting`, `done` or `finish`), waiting time (`waiting` to `approval` or
-  `review`), result, last verdict, error, and what recovery undid. A node that
+  `review`), result, last verdict, error, what recovery undid, and its saved
+  output (text, or JSON, first 2000 characters; the raw log has the rest). A
+  run-level stop (Cancel) closes the node that was running. A `done` whose
+  `node` line is missing has no execution time ("no data"); an empty list
+  (`runs: 0`) took none. A node that
   has not run says "not run yet"; one waiting now says so and has no total
   yet; a time the log lacks, or a log that is missing, says "no data".
   **Resume** (waiting runs) goes through the same `drive` as Run Workflow…,

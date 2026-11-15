@@ -76,6 +76,7 @@ function nodeHtml(node: TimelineNode): string {
       <div><strong>${escape(node.title ?? node.node)}</strong>${node.type ? ` <span class="muted">${escape(node.type)}</span>` : ''} <span class="status status-${escape(node.outcome)}">${escape(node.outcome)}</span></div>
       <div class="muted">${facts.map(escape).join(' · ')}</div>
       ${node.error ? `<p class="error">${escape(node.error)}</p>` : ''}${recovered}
+      ${node.result ? `<details class="result"><summary>Result${node.truncated ? ' (first part; Open raw log has all of it)' : ''}</summary><pre>${escape(node.result)}</pre></details>` : ''}
     </li>`;
 }
 
@@ -124,6 +125,7 @@ export function renderRunsPage(model: RunsPageModel): string {
     ol.timeline { padding-left: 18px; }
     ol.timeline li { margin: 6px 0; }
     .actions { display: flex; gap: 8px; margin: 6px 0; }
+    .result pre { white-space: pre-wrap; max-height: 240px; overflow: auto; background: var(--vscode-textCodeBlock-background, #8881); padding: 6px; }
   </style>
   <title>Workflow Runs</title>
 </head>
