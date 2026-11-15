@@ -34,6 +34,12 @@ export interface StudioRuns {
   skills: StudioSkills;
   /** Asks the inputs, the models to use instead of missing ones, and the consent; then runs. Undefined when the person cancelled first. */
   run(workflow: Workflow, hash: string, onUpdate?: (state: RunState) => void): Promise<RunState | undefined>;
+  /** The stored runs, once recovery after a restart is done. */
+  runs(): Promise<RunStore>;
+  /** Takes a waiting run up again (asks at its gate or review), with the workflow as it was when it started. */
+  resume(id: string): Promise<RunState | undefined>;
+  /** Opens a run's state and log as JSON, for investigating. */
+  openLog(id: string): Promise<void>;
 }
 
 export function registerStudio(context: vscode.ExtensionContext, workspaceRoot: string): StudioRuns {
@@ -210,6 +216,20 @@ export function registerStudio(context: vscode.ExtensionContext, workspaceRoot: 
     }
   };
 
+  // A waiting run goes on with the workflow as it was when it started, even after a restart.
+  const resume = async (id: string): Promise<RunState | undefined> => {
+    await recovered();
+    const state = await store.load(id);
+    if (state.status !== 'waiting') { return state; }
+    return await drive(await store.loadWorkflow(id), state);
+  };
+  const openLog = async (id: string): Promise<void> => {
+    const state = await store.load(id).catch(() => undefined);
+    const log = (await store.readLog(id)).map(entry => JSON.stringify(entry)).join('\n');
+    const document = await vscode.workspace.openTextDocument({ content: `${state ? JSON.stringify(state, null, 2) : `// The state of ${id} could not be read.`}\n\n${log}\n`, language: 'json' });
+    await vscode.window.showTextDocument(document, { preview: true });
+  };
+
   context.subscriptions.push(
     // From the editor's Run, the workflow's file is given; from the Command Palette it is picked.
     vscode.commands.registerCommand('repositoryManager.studio.runWorkflow', async (given?: vscode.Uri) => {
@@ -308,15 +328,12 @@ export function registerStudio(context: vscode.ExtensionContext, workspaceRoot: 
       await recovered();
       const runs = await store.list();
       const picked = await vscode.window.showQuickPick(runs.slice(0, 50).map(run => ({
-        label: run.workflow.title, description: `${run.status}${run.waiting ? `: ${run.waiting.title}` : ''}`, detail: `${run.startedAt} · ${run.id}`, run
+        label: run.workflow.title, description: `${run.interrupted ? 'interrupted' : run.status}${run.waiting ? `: ${run.waiting.title}` : ''}`, detail: `${run.startedAt} · ${run.id}`, run
       })), { title: 'Workflow Runs', placeHolder: runs.length ? 'A waiting run goes on; others open their log' : 'No runs yet' });
       if (!picked) { return; }
-      // A waiting run goes on with the workflow as it was when it started, even after a restart.
-      if (picked.run.status === 'waiting') { await drive(await store.loadWorkflow(picked.run.id), picked.run); return; }
-      const log = (await store.readLog(picked.run.id)).map(entry => JSON.stringify(entry)).join('\n');
-      const document = await vscode.workspace.openTextDocument({ content: `${JSON.stringify(picked.run, null, 2)}\n\n${log}\n`, language: 'json' });
-      await vscode.window.showTextDocument(document, { preview: true });
+      if (picked.run.status === 'waiting') { await resume(picked.run.id); return; }
+      await openLog(picked.run.id);
     })
   );
-  return { steps, skills, run };
+  return { steps, skills, run, runs: async () => { await recovered(); return store; }, resume, openLog };
 }

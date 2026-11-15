@@ -21,9 +21,10 @@ with an effect, edited as a diagram in the Workflow Editor, and drafted from a g
 - Node: `studioEngineSmoke.js` (the sample on a real Git repository with a scripted model), `studioCommandsSmoke.js`
   (the commands with a scripted vscode), `workflowEditSmoke.js`, `studioChatSmoke.js` (planner, conversation rules, per-step
   models, and the chat host with a scripted `vscode.lm`), `studioSkillsSmoke.js` (a scripted GitHub), `studioCodeStepSmoke.js`
-  (a real Git repository and check, scripted tool calls), `agentMigrationSmoke.js` (agent tasks to Studio chats), `studioSharingSmoke.js` (Export and Import's requirements and checks), `studioRecoverySmoke.js` (a code step cut short by a closed window) — `$V capture <label> -- node src/test/<name>`.
+  (a real Git repository and check, scripted tool calls), `agentMigrationSmoke.js` (agent tasks to Studio chats), `studioSharingSmoke.js` (Export and Import's requirements and checks), `studioRecoverySmoke.js` (a code step cut short by a closed window), `studioRunsSmoke.js` (what the Runs view measures and shows) — `$V capture <label> -- node src/test/<name>`.
 - Chromium: `src/test/studioEditorUi.js` (real page and provider, fake text document); screenshots `ui-snapshots/30*`–`32*`.
   `src/test/studioChatUi.js` (real chat page and provider, scripted `vscode.lm`); screenshots `ui-snapshots/40*`–`45*`.
+  `src/test/studioRunsUi.js` (the Runs view, real provider and RunStore); screenshots `ui-snapshots/50*`–`52*`.
 
 ## Expected behavior
 - Workflows are user-defined, declarative and shared as one JSON file; the visual editor writes that file. [confirmed: user, 2026-11-07]
@@ -50,6 +51,7 @@ with an effect, edited as a diagram in the Workflow Editor, and drafted from a g
 - Import warns when the file's `requires` does not match the workflow and keeps the computed one; it shows what the workflow does and what is missing here, runs nothing, and asks before replacing a library workflow (or keeps both). [confirmed: user, 2026-11-15; test src/test/studioCommandsSmoke.js, src/test/studioSharingSmoke.js]
 - A shared workflow may carry `about`: authors, license (SPDX), homepage (https), keywords. [confirmed: user, 2026-11-15; test src/test/studioSharingSmoke.js]
 - A code step's writes are journaled before they reach the disk; when VS Code closed while it ran, the next start puts its files back (never one changed since), marks the run failed as interrupted, and keeps changes already waiting for review. [confirmed: user, 2026-11-15; test src/test/studioRecoverySmoke.js]
+- The Runs view's completion rate is done ÷ finished (done, failed, stopped); running and waiting runs are counted apart; done is not shown as correct code: verification of accepted code steps and retries are separate. Execution and waiting-for-a-person times are separate, and a time the log lacks is "no data", never inferred. [confirmed: user, 2026-11-15; test src/test/studioRunsSmoke.js]
 - A code step works on the current branch; it creates a branch only when the plan names one (asked for by the person), and only from a clean tree. [confirmed: user, 2026-11-12]
 - A code step changes only its paths, runs only approved scripts as checks, and waits for review; Retry and Stop undo its changes. [confirmed: test src/test/studioCodeStepSmoke.js]
 - A failed or unverified code step is never accepted by a plain Accept: the button says Accept Anyway or Accept as Unverified. [observed: src/studio/studioCommands.ts, drive]

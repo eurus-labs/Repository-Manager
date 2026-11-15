@@ -18,6 +18,7 @@ import { registerRequirements } from './requirements/requirementsView';
 import { registerAgentTasksMove } from './agent/agentTasksMove';
 import { registerStudio, StudioRuns } from './studio/studioCommands';
 import { StudioChatProvider } from './studio/studioChat';
+import { RunsViewProvider } from './studio/runsView';
 import { WorkflowEditorProvider } from './studio/workflowEditorProvider';
 import * as path from 'path';
 import { setUsageLog, UsageLog, usageReport } from './services/usageLog';
@@ -66,6 +67,8 @@ export function activate(context: vscode.ExtensionContext) {
   step('Workflow editor', () => context.subscriptions.push(WorkflowEditorProvider.register(context)));
   // The chat view is declared in package.json, so it is there with no folder too; it says so.
   step('Studio Chat', () => StudioChatProvider.register(context, studioRuns, workspaceRoot));
+  // Runs: what ran, how it went, and the waiting ones to take up again.
+  step('Studio Runs', () => { RunsViewProvider.register(context, studioRuns); });
   // Agent tasks from before 3.0.0 become Studio chats (the Tasks view is gone).
   step('Agent tasks', () => { void registerAgentTasksMove(context).catch(error => log.appendLine(`Moving agent tasks failed: ${error instanceof Error ? error.message : String(error)}`)); });
 

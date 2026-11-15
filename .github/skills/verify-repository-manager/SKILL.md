@@ -10,7 +10,7 @@ the harnesses the repository already has:
 
 - **Node smoke suites** (`src/test/*Smoke.js`) run the real host code against real Git repositories in
   the system temporary folder, with a scripted `vscode` and scripted models.
-- **Playwright UI tests** (`uiSnapshots.js`, `requirementEditorUi.js`, `studioEditorUi.js`, `studioChatUi.js`) load the real
+- **Playwright UI tests** (`uiSnapshots.js`, `requirementEditorUi.js`, `studioEditorUi.js`, `studioChatUi.js`, `studioRunsUi.js`) load the real
   webview pages under their Content Security Policy in Chromium, against the real providers.
 
 A live run in VS Code with Copilot is a person's step; this skill names it but cannot do it.
