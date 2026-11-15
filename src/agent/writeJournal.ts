@@ -23,7 +23,7 @@ export class WriteJournal {
     fs.mkdirSync(path.dirname(this.file), { recursive: true });
     const handle = fs.openSync(this.file, 'a');
     try {
-      fs.writeSync(handle, `${JSON.stringify({ root: this.root, ...entry })}\n`);
+      fs.writeSync(handle, `${JSON.stringify({ root: this.root, at: Date.now(), ...entry })}\n`);
       fs.fsyncSync(handle);
     } finally {
       fs.closeSync(handle);
@@ -39,8 +39,56 @@ export class WriteJournal {
 export interface Recovery {
   /** Files put back as they were before the step. */
   restored: string[];
-  /** Files changed since the step (or unreadable): left as they are. */
+  /** Files changed since the step, unreadable, or reached through a link: left as they are. */
   kept: string[];
+}
+
+/** Thrown when a journal exists but cannot be read: it is kept so recovery can be tried again. */
+export class JournalUnreadable extends Error {}
+
+/** When the journal's last write was recorded (ms), for undoing overlapping journals newest first. */
+export function journalTime(file: string): number {
+  let last = 0;
+  for (const line of readJournal(file).split('\n')) {
+    try { const at = (JSON.parse(line) as { at?: unknown }).at; if (typeof at === 'number' && at > last) { last = at; } } catch { /* torn */ }
+  }
+  return last || (() => { try { return fs.statSync(file).mtimeMs; } catch { return 0; } })();
+}
+
+function readJournal(file: string): string {
+  try { return fs.readFileSync(file, 'utf8'); } catch (error) {
+    // Only a missing journal is an empty one: any other failure must not lose the saved contents.
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') { return ''; }
+    throw new JournalUnreadable(`The write journal ${file} could not be read: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+/**
+ * The file a journal entry names, if it is still a plain file (or absent) inside the root once links
+ * are resolved. A path that now leads elsewhere (a link put in its place, or in a parent folder's)
+ * is never written through.
+ */
+function plainTarget(root: string, relative: string): string | undefined {
+  const absolute = path.resolve(root, relative);
+  const inside = (candidate: string, base: string) => { const rest = path.relative(base, candidate); return !rest.startsWith('..') && !path.isAbsolute(rest); };
+  if (!inside(absolute, root)) { return undefined; }
+  let realRoot: string;
+  try { realRoot = fs.realpathSync(root); } catch { return undefined; }
+  // The deepest folder that exists, resolved, must stay inside the root.
+  let folder = path.dirname(absolute);
+  while (!fs.existsSync(folder) && folder !== path.dirname(folder)) { folder = path.dirname(folder); }
+  try { if (!inside(fs.realpathSync(folder), realRoot)) { return undefined; } } catch { return undefined; }
+  try { if (fs.lstatSync(absolute).isSymbolicLink()) { return undefined; } } catch { /* absent: fine */ }
+  return absolute;
+}
+
+/** Writes through a temporary file and a rename, so a crash never leaves the file half written. */
+export function writeAtomically(absolute: string, content: string): void {
+  const temporary = path.join(path.dirname(absolute), `.${path.basename(absolute)}.${process.pid}.${Date.now()}.tmp`);
+  let mode: number | undefined;
+  try { mode = fs.statSync(absolute).mode; } catch { mode = undefined; }
+  fs.writeFileSync(temporary, content, mode === undefined ? undefined : { mode });
+  try { fs.renameSync(temporary, absolute); } catch (error) { fs.rmSync(temporary, { force: true }); throw error; }
 }
 
 /**
@@ -48,10 +96,12 @@ export interface Recovery {
  * content before the first one is restored when the file now holds any content of that chain (a
  * write that never reached the disk leaves the previous one). Anything else was changed since and is
  * kept. A torn last line (the process ended while recording) is ignored: its write never happened.
- * Running it again changes nothing more. The journal is removed afterwards.
+ * Writes go through a temporary file, so a file is always one complete state. Running it again
+ * changes nothing more. The journal is removed afterwards; one that cannot be read is kept and
+ * reported (JournalUnreadable).
  */
 export function recoverJournal(file: string, isDirty: (absolutePath: string) => boolean = () => false): Recovery {
-  const text = (() => { try { return fs.readFileSync(file, 'utf8'); } catch { return ''; } })();
+  const text = readJournal(file);
   const chains = new Map<string, { root: string; path: string; states: Array<string | null> }>();
   for (const line of text.split('\n')) {
     if (!line.trim()) { continue; }
@@ -66,15 +116,14 @@ export function recoverJournal(file: string, isDirty: (absolutePath: string) => 
   }
   const recovery: Recovery = { restored: [], kept: [] };
   for (const chain of chains.values()) {
-    const absolute = path.resolve(chain.root, chain.path);
-    // Only inside the root the journal was written for.
-    if (path.relative(chain.root, absolute).startsWith('..') || path.isAbsolute(path.relative(chain.root, absolute))) { continue; }
+    const absolute = plainTarget(chain.root, chain.path);
+    if (!absolute) { recovery.kept.push(chain.path); continue; }
     let current: string | null;
     try { current = fs.readFileSync(absolute, 'utf8'); } catch { current = null; }
     const original = chain.states[0];
     if (current === original) { continue; }
     if (!chain.states.includes(current) || isDirty(absolute)) { recovery.kept.push(chain.path); continue; }
-    if (original === null) { fs.rmSync(absolute, { force: true }); } else { fs.writeFileSync(absolute, original); }
+    if (original === null) { fs.rmSync(absolute, { force: true }); } else { writeAtomically(absolute, original); }
     recovery.restored.push(chain.path);
   }
   fs.rmSync(file, { force: true });

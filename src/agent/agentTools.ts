@@ -7,6 +7,7 @@
  */
 
 import * as fs from 'fs';
+import { writeAtomically } from './writeJournal';
 import * as path from 'path';
 import { execFile } from 'child_process';
 import { findAiDirectedText } from '../services/aiDirectedText';
@@ -254,7 +255,8 @@ export class StepWorkspace {
     const after = text.slice(0, first) + input.newText + text.slice(first + input.oldText.length);
     if (Buffer.byteLength(after) > MAX_FILE_BYTES) { throw new Error(`The result is larger than ${MAX_FILE_BYTES / 1024} KB`); }
     this.host.journal?.record({ path: target, before: text, after });
-    fs.writeFileSync(absolute, after);
+    // Journaled writes are atomic, so recovery never meets a half-written file (#140).
+    if (this.host.journal) { writeAtomically(absolute, after); } else { fs.writeFileSync(absolute, after); }
     this.record(target, text, after);
     return { ok: true, content: `Edited ${file}.`, note: file };
   }
@@ -267,7 +269,7 @@ export class StepWorkspace {
     if (fs.existsSync(absolute)) { throw new Error(`${file} exists; use edit_file.`); }
     this.host.journal?.record({ path: target, before: null, after: input.content });
     fs.mkdirSync(path.dirname(absolute), { recursive: true });
-    fs.writeFileSync(absolute, input.content);
+    if (this.host.journal) { writeAtomically(absolute, input.content); } else { fs.writeFileSync(absolute, input.content); }
     this.record(target, null, input.content);
     return { ok: true, content: `Created ${file}.`, note: file };
   }

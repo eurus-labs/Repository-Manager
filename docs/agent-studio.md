@@ -743,6 +743,16 @@ side panel (the chat's plan card and the JSON do it; the diagram keeps it).
   still `running` with no journal (cut short between steps, or in a step that
   writes no file) is marked the same way with nothing to undo. Files a check
   script changes are not journaled (#139).
+  - Journaled writes go through a temporary file and a rename, so a file is
+    always one whole state of the chain, never half written.
+  - Recovery never writes through a link: a path that, resolved, leaves the
+    root (a link put in the file's place or a parent's) is kept and named.
+  - Journals of several runs are undone newest first, so two runs that wrote
+    the same file both go back.
+  - A journal that exists but cannot be read is kept and reported, and its run
+    is left as it is, for another try at the next start.
+  - Run Workflow…, Show Workflow Runs and the Chat's Run wait for recovery to
+    finish, so it only meets runs that nothing is running.
 - **Not done here:** per-file Diff buttons (the review shows the diff as
   text); the review step (phase 4).
 - **Tests.** `src/test/studioCodeStepSmoke.js` (a real Git repository and

@@ -60,6 +60,12 @@ const context = () => ({
 
 async function main() {
   try {
+    // A run left running when VS Code closed (#140), found at start; a run started right away waits
+    // for that recovery, so it is never taken for an interrupted one.
+    const { RunStore } = require('../../out/studio/engine.js');
+    const runs = new RunStore(path.join(base, 'storage', 'studio', 'runs'));
+    await runs.save({ id: 'left-running', workflow: { id: 'note', version: '1.0.0', title: 'Write a note', hash: 'h' }, startedAt: '2026-11-01T00:00:00Z',
+      updatedAt: '', status: 'running', inputs: {}, nodes: { write: { status: 'pending' } }, approvals: {} });
     registerStudio(context(), workspace);
     const note = path.join(workspace, 'notes', 'note.txt');
 
@@ -72,6 +78,9 @@ async function main() {
     const gate = asked.find(entry => entry[0] === 'warning');
     assert.deepEqual(gate.slice(0, 2), ['warning', 'Write a file: write']);
     assert.match(gate[2], /^Create notes\/note\.txt \(5 characters\):\n\nhello$/);
+    assert.equal((await runs.load('left-running')).status, 'failed');
+    const started = (await runs.list()).find(item => item.id !== 'left-running');
+    assert.equal(started.status, 'waiting', 'the new run was taken for an interrupted one');
     assert.equal(fs.existsSync(note), false, 'written before approval');
 
     // A restart: the commands are registered again, and Show Workflow Runs asks again, then goes on.

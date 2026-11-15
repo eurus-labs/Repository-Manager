@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { WriteJournal, recoverJournal } = require('../../out/agent/writeJournal.js');
+const { WriteJournal, recoverJournal, JournalUnreadable } = require('../../out/agent/writeJournal.js');
 const { StepWorkspace } = require('../../out/agent/agentTools.js');
 const { RunStore, recoverInterruptedSteps, journalFile } = require('../../out/studio/engine.js');
 
@@ -73,8 +73,39 @@ async function main() {
     const outside = path.join(base, 'outside.txt');
     fs.writeFileSync(outside, 'keep\n');
     journal.record({ path: '../outside.txt', before: 'gone\n', after: 'keep\n' });
-    assert.deepEqual(recoverJournal(journalPath), { restored: [], kept: [] });
+    assert.deepEqual(recoverJournal(journalPath), { restored: [], kept: ['../outside.txt'] });
     assert.equal(fs.readFileSync(outside, 'utf8'), 'keep\n');
+
+    // Review of the first version (Codex). A path replaced by a link to a file outside, or under a
+    // linked folder, is never written through, even when the outside file holds a recorded state.
+    const outsideFolder = path.join(base, 'elsewhere');
+    fs.mkdirSync(outsideFolder, { recursive: true });
+    fs.writeFileSync(path.join(outsideFolder, 'target.txt'), 'after\n');
+    journal.record({ path: 'src/link.txt', before: 'before\n', after: 'after\n' });
+    fs.symlinkSync(path.join(outsideFolder, 'target.txt'), file('src/link.txt'));
+    fs.symlinkSync(outsideFolder, file('src/linked'));
+    journal.record({ path: 'src/linked/target.txt', before: 'before\n', after: 'after\n' });
+    assert.deepEqual(recoverJournal(journalPath), { restored: [], kept: ['src/link.txt', 'src/linked/target.txt'] });
+    assert.equal(fs.readFileSync(path.join(outsideFolder, 'target.txt'), 'utf8'), 'after\n', 'recovery wrote through a link');
+
+    // Journaled writes replace the file through a rename (a new inode), so a crash leaves one whole
+    // state, never a truncated file that recovery would take for the person's edit.
+    write('src/atomic.txt', 'old\n');
+    fs.chmodSync(file('src/atomic.txt'), 0o640);
+    const inode = fs.statSync(file('src/atomic.txt')).ino;
+    workspace = new StepWorkspace(host(new WriteJournal(journalPath, root)), { tools: ['edit_file'], paths: ['src/'] });
+    assert.equal((await workspace.invoke('edit_file', { path: 'src/atomic.txt', oldText: 'old', newText: 'new' })).ok, true);
+    assert.notEqual(fs.statSync(file('src/atomic.txt')).ino, inode, 'the journaled write was not atomic');
+    assert.equal(fs.statSync(file('src/atomic.txt')).mode & 0o777, 0o640, 'the file lost its mode');
+    assert.deepEqual(fs.readdirSync(file('src')).filter(name => name.endsWith('.tmp')), [], 'a temporary file was left');
+    recoverJournal(journalPath);
+
+    // A journal that exists but cannot be read is kept and reported, never dropped as empty.
+    const unreadablePath = path.join(base, 'runs', 'r2', 'fix.writes.jsonl');
+    fs.mkdirSync(unreadablePath, { recursive: true });
+    assert.throws(() => recoverJournal(unreadablePath), error => error instanceof JournalUnreadable);
+    assert.equal(fs.existsSync(unreadablePath), true);
+    fs.rmSync(unreadablePath, { recursive: true });
 
     // On the next start, per run: a running run with a journal is undone and marked; a run waiting
     // for the review of that node keeps its changes (its result was saved); a running run without a
@@ -106,6 +137,26 @@ async function main() {
     assert.equal((await store.load('done')).status, 'done');
     // A second start finds nothing.
     assert.deepEqual(await recoverInterruptedSteps(store), []);
+
+    // Two runs wrote the same file (A: one → first, then B: first → second) and both were cut short:
+    // the newer journal is undone first, so the file goes all the way back.
+    const overlap = new RunStore(path.join(base, 'overlap'));
+    await overlap.save(state('aaa', 'running'));
+    await overlap.save(state('bbb', 'running'));
+    const line = (at, before, after) => JSON.stringify({ root, at, path: 'src/a.txt', before, after }) + '\n';
+    fs.writeFileSync(journalFile(overlap, 'bbb', 'fix'), line(2000, 'first\n', 'second\n'));
+    fs.writeFileSync(journalFile(overlap, 'aaa', 'fix'), line(1000, 'one\n', 'first\n'));
+    write('src/a.txt', 'second\n');
+    await recoverInterruptedSteps(overlap);
+    assert.equal(read('src/a.txt'), 'one\n', 'an overlapping journal left an interrupted edit behind');
+    // A run whose journal cannot be read is reported and left as it is, for another try.
+    const stuck = new RunStore(path.join(base, 'stuck'));
+    await stuck.save(state('ccc', 'running'));
+    fs.mkdirSync(journalFile(stuck, 'ccc', 'fix'), { recursive: true });
+    const report = await recoverInterruptedSteps(stuck);
+    assert.equal(report.length, 1);
+    assert.match(report[0].unreadable, /could not be read/);
+    assert.equal((await stuck.load('ccc')).status, 'running', 'a run with an unreadable journal was marked');
     console.log('Studio recovery smoke passed');
   } finally {
     fs.rmSync(base, { recursive: true, force: true });
