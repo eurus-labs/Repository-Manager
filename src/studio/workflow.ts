@@ -68,6 +68,32 @@ export interface Workflow {
   /** What "done" means, proposed with a plan and frozen when a run starts. */
   criteria?: string[];
   defaults?: { model?: string };
+  /** Who made it and where it comes from, for a file shared outside the team (see sharing.ts). */
+  about?: WorkflowAbout;
+  /** What the workflow needs to run, written by Export and checked again by Import (see sharing.ts). */
+  requires?: WorkflowRequirements;
+}
+
+export interface WorkflowAbout {
+  authors?: string[];
+  /** An SPDX identifier, such as "MIT". */
+  license?: string;
+  /** An https:// page about the workflow. */
+  homepage?: string;
+  keywords?: string[];
+}
+
+export interface WorkflowRequirements {
+  /** The Repository Manager version that wrote the file, as ">=X.Y.Z". */
+  extension: string;
+  /** Step types the nodes use. */
+  steps: string[];
+  /** Model selectors the workflow names. */
+  models: string[];
+  /** Skills, pinned to a commit. */
+  skills: string[];
+  /** Repository scripts the code steps run as checks: the open repository must have them. */
+  scripts: string[];
 }
 
 /** What validation needs to know of each step type. */
@@ -170,6 +196,29 @@ export function validateWorkflow(value: unknown, steps: Map<string, StepShape>):
     if (!Array.isArray(value.criteria) || value.criteria.some(item => typeof item !== 'string' || !item.trim() || item.length > MAX_CRITERION_CHARS)) {
       add('criteria', `"criteria" is a list of text, each at most ${MAX_CRITERION_CHARS} characters.`);
     } else if (value.criteria.length > MAX_CRITERIA) { add('criteria', `At most ${MAX_CRITERIA} criteria.`); }
+  }
+  if (value.about !== undefined) {
+    if (!record(value.about)) { add('about', '"about" is an object.'); }
+    else {
+      const about = value.about;
+      const texts = (key: string, max: number, count: number) => {
+        const list = about[key];
+        if (list !== undefined && (!Array.isArray(list) || list.length > count || list.some(item => typeof item !== 'string' || !item.trim() || item.length > max))) {
+          add(`about.${key}`, `"${key}" is a list of at most ${count} texts, each at most ${max} characters.`);
+        }
+      };
+      texts('authors', 200, 20);
+      texts('keywords', 40, 10);
+      if (about.license !== undefined && !(typeof about.license === 'string' && about.license.length <= 100 && /^\(?[A-Za-z0-9.+-]+(?: (?:AND|OR|WITH) [A-Za-z0-9.+-]+)*\)?$/.test(about.license))) {
+        add('about.license', 'Name the license by its SPDX identifier, such as "MIT".');
+      }
+      if (about.homepage !== undefined && !(typeof about.homepage === 'string' && /^https:\/\/[^\s]{1,500}$/.test(about.homepage))) {
+        add('about.homepage', '"homepage" is an https:// address.');
+      }
+      for (const key of Object.keys(about)) {
+        if (!['authors', 'license', 'homepage', 'keywords'].includes(key)) { add(`about.${key}`, `"about" has no field "${key}".`); }
+      }
+    }
   }
   if (value.defaults !== undefined) {
     if (!record(value.defaults)) { add('defaults', '"defaults" is an object.'); }

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Export Workflow…** and **Import Workflow…** (Command Palette) share one Studio workflow as a `.workflow.json` file, for example by chat or email. Export writes what the workflow needs (`requires`: the extension version, step types, models, skills, and the repository scripts its code steps run). Import checks the file, shows what it does when it runs and what this machine or the open repository lacks, warns when its `requires` does not match the workflow and keeps the matching one, and asks before replacing a library workflow with the same id (or keeps both). Importing runs nothing. A workflow can carry `about` (authors, license, homepage, keywords).
+
 ### Fixed
 
 - The Side Bar's **Changes** and the dashboard's Uncommitted changes no longer go back to an older state when several refreshes overlap (after a discard, a stash, live changes or a repository switch); an older status that arrives last is ignored. The commit dialog's file list does the same.

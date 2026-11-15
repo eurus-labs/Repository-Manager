@@ -7,6 +7,7 @@
 import * as vscode from 'vscode';
 import { promises as fs } from 'fs';
 import * as path from 'path';
+import * as os from 'os';
 import { RunState, RunStore, WorkflowEngine, workflowEffects, workflowModels, workflowSkills } from './engine';
 import { skillSources, StudioSkills, studioSkills } from './githubSkills';
 import { approveChecks, codeServices } from './codeHost';
@@ -14,6 +15,8 @@ import { StepDefinition } from './steps';
 import { studioSteps } from './registry';
 import { listModels, resolveSelector, studioModel } from './studioModels';
 import { parseWorkflow, Workflow, workflowHash } from './workflow';
+import { checkImport, exportWorkflow, freeId, withId } from './sharing';
+import { readScripts } from '../agent/repositoryScripts';
 
 const REPOSITORY_FOLDER = path.join('.repository-manager', 'workflows');
 const SUFFIX = '.workflow.json';
@@ -35,6 +38,7 @@ export interface StudioRuns {
 
 export function registerStudio(context: vscode.ExtensionContext, workspaceRoot: string): StudioRuns {
   const steps = studioSteps();
+  const extensionVersion = String((context.extension?.packageJSON as { version?: unknown } | undefined)?.version ?? '0.0.0');
   const library = path.join(context.globalStorageUri.fsPath, 'studio', 'workflows');
   const store = new RunStore(path.join(context.storageUri?.fsPath ?? context.globalStorageUri.fsPath, 'studio', 'runs'));
   const skills = studioSkills(context);
@@ -97,17 +101,22 @@ export function registerStudio(context: vscode.ExtensionContext, workspaceRoot: 
     return chosen;
   };
 
-  /** What the run will send and change, asked once before it starts. */
-  const consent = async (workflow: Workflow, models: Record<string, string>): Promise<boolean> => {
+  /** What the workflow sends and changes when it runs, one line each (Run and Import show the same). */
+  const describe = (workflow: Workflow, models: Record<string, string>): string[] => {
     const effects = workflowEffects(workflow, steps as Map<string, StepDefinition>);
     const named = workflowModels(workflow).map(selector => models[selector] ? `${selector} (instead: ${models[selector]})` : selector);
-    const lines = [
+    return [
       effects.promptNodes.length ? `Sends the input of ${effects.promptNodes.length} prompt step${effects.promptNodes.length === 1 ? '' : 's'} (${effects.promptNodes.join(', ')}) to ${named.length ? `Copilot: ${named.join(', ')}${workflow.defaults?.model ? '' : ', and the selected model for the others'}` : 'the selected Copilot model'}.` : 'Sends nothing to a model.',
       ...(workflowSkills(workflow).length ? [`Steps follow ${workflowSkills(workflow).length} skill${workflowSkills(workflow).length === 1 ? '' : 's'} from ${skillSources(workflowSkills(workflow)).map(source => `github.com/${source}`).join(', ')} (instructions only; their scripts are not run).`] : []),
       ...effects.effects.map(item => `Asks you before ${item.node} (${item.type}) ${item.effect === 'write' ? 'writes files' : item.effect === 'command' ? 'runs a command' : 'sends to another system'}.`),
       ...effects.gates.map(gate => `Stops for your answer at ${gate}.`),
       ...(workflow.nodes.some(node => node.type === 'code') ? ['Code steps change files of this repository on the branch it is on (or a new branch the plan names), and wait for you to review each change (Accept, Retry or Stop).'] : [])
     ];
+  };
+
+  /** What the run will send and change, asked once before it starts. */
+  const consent = async (workflow: Workflow, models: Record<string, string>): Promise<boolean> => {
+    const lines = describe(workflow, models);
     const run = 'Run';
     return await vscode.window.showInformationMessage(`Run "${workflow.title}" (${workflow.version})?`, { modal: true, detail: lines.join('\n') }, run) === run;
   };
@@ -202,6 +211,69 @@ export function registerStudio(context: vscode.ExtensionContext, workspaceRoot: 
       if (!picked) { return; }
       const parsed = await load(picked.item.file);
       if (parsed) { await run(parsed.workflow, parsed.hash); }
+    }),
+    // Sharing one workflow as a file (phase 3): Export writes it with its requirements, Import
+    // checks it, says what it does and what is missing here, and keeps it in the library.
+    vscode.commands.registerCommand('repositoryManager.studio.exportWorkflow', async (given?: vscode.Uri) => {
+      let file = given?.fsPath;
+      if (!file) {
+        const found = [...await workflowFiles(path.join(workspaceRoot, REPOSITORY_FOLDER), 'This folder'), ...await workflowFiles(library, 'Library')];
+        if (!found.length) { void vscode.window.showInformationMessage(`No workflow to export: save one in ${REPOSITORY_FOLDER} or import one first.`); return; }
+        const picked = await vscode.window.showQuickPick(found.map(item => ({ label: item.label, description: item.where, item })),
+          { title: 'Export Workflow', placeHolder: 'The workflow to share as a file' });
+        if (!picked) { return; }
+        file = picked.item.file;
+      }
+      const result = exportWorkflow(await fs.readFile(file, 'utf8'), steps, extensionVersion);
+      if (!result.text) {
+        void vscode.window.showErrorMessage(`${path.basename(file)} cannot be exported.`, { modal: true, detail: result.problems.slice(0, 8).map(problem => `• ${problem.where}: ${problem.message}`).join('\n') });
+        return;
+      }
+      const target = await vscode.window.showSaveDialog({ title: 'Export Workflow', saveLabel: 'Export',
+        defaultUri: vscode.Uri.file(path.join(os.homedir(), path.basename(file))), filters: { Workflow: ['json'] } });
+      if (!target) { return; }
+      await fs.writeFile(target.fsPath, result.text, 'utf8');
+      void vscode.window.showInformationMessage(`Exported to ${target.fsPath}. It lists what it needs (requires); the person who imports it sees that and what it does.`);
+    }),
+    vscode.commands.registerCommand('repositoryManager.studio.importWorkflow', async (given?: vscode.Uri) => {
+      const source = given ?? (await vscode.window.showOpenDialog({ title: 'Import Workflow', openLabel: 'Import', canSelectMany: false, filters: { Workflow: ['json'] } }))?.[0];
+      if (!source) { return; }
+      const check = checkImport(await fs.readFile(source.fsPath, 'utf8'), steps, { extensionVersion, scripts: Object.keys(readScripts(workspaceRoot)) });
+      if (!check.workflow || !check.text) {
+        void vscode.window.showErrorMessage(`${path.basename(source.fsPath)} cannot be imported.`, { modal: true,
+          detail: check.problems.slice(0, 8).map(problem => `• ${problem.where}: ${problem.message}`).join('\n') });
+        return;
+      }
+      const workflow = check.workflow;
+      const about = workflow.about;
+      const detail = [
+        `${workflow.title} ${workflow.version}${about?.authors?.length ? ` by ${about.authors.join(', ')}` : ''}${about?.license ? ` · ${about.license}` : ''}`,
+        ...(about?.homepage ? [about.homepage] : []),
+        ...(workflow.description ? [workflow.description] : []),
+        '', 'When it runs, it:', ...describe(workflow, {}).map(line => `• ${line}`),
+        ...(check.missing.length ? ['', 'Missing here:', ...check.missing.map(line => `• ${line}`)] : []),
+        ...(check.warnings.length ? ['', 'Its "requires" did not match the workflow; the matching one is kept:', ...check.warnings.map(line => `• ${line}`)] : []),
+        '', 'Importing runs nothing. Each run asks first, as for any workflow.'
+      ].join('\n');
+      const imported = 'Import';
+      if (await vscode.window.showWarningMessage(`Import "${workflow.title}" into your library?`, { modal: true, detail }, imported) !== imported) { return; }
+      await fs.mkdir(library, { recursive: true });
+      const taken = new Set((await workflowFiles(library, 'Library')).map(item => item.label));
+      let id = workflow.id;
+      let text = check.text;
+      if (taken.has(id)) {
+        const existing = await fs.readFile(path.join(library, `${id}${SUFFIX}`), 'utf8').catch(() => '');
+        if (existing !== text) {
+          const replace = 'Replace';
+          const both = 'Keep Both';
+          const choice = await vscode.window.showWarningMessage(`Your library already has a workflow "${id}".`, { modal: true,
+            detail: 'Replace overwrites it with this file. Keep Both imports this one under another id.' }, replace, both);
+          if (!choice) { return; }
+          if (choice === both) { id = freeId(id, taken); text = withId(text, id); }
+        }
+      }
+      await fs.writeFile(path.join(library, `${id}${SUFFIX}`), text, 'utf8');
+      void vscode.window.showInformationMessage(`Imported "${workflow.title}" into your library as ${id}. Run it from Run Workflow….`);
     }),
     vscode.commands.registerCommand('repositoryManager.studio.showRuns', async () => {
       const runs = await store.list();
