@@ -783,7 +783,9 @@ people by chat or email, before any usage data; see Risks.)*
   - `skills`: its skills, pinned to a commit;
   - `scripts`: the checks its code steps run, by name (a `${…}` check is
     resolved at run time and not listed). These belong to the repository it
-    runs in, not to the machine.
+    runs in, not to the machine. Only the name is compared: a script of the
+    same name that does something else is not detected *(accepted,
+    2026-11-15)*; each check is still approved per command before it runs.
 - **Import Workflow…** (`repositoryManager.studio.importWorkflow`) takes a
   file of at most 1 MB and validates it as Run does. It computes `requires`
   again; where the file's lists differ, or it has none, it warns and keeps the

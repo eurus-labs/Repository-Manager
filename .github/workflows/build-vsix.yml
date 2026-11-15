@@ -1,4 +1,6 @@
-name: Build VSIX
+# Tests every pull request and push to main (job "verify", required by the ruleset), and attaches the
+# VSIX to a published release (job "upload-release").
+name: CI
 
 on:
   push:
