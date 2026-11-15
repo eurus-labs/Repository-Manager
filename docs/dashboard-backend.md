@@ -28,6 +28,32 @@ flowchart LR
 - `GitOperations` remains a thin facade. It exposes services to VS Code handlers but contains no parsing or view-specific state.
 - `webviewMessageHandler` validates untrusted webview payloads and converts service results into typed events.
 
+### Module and state ownership
+
+The dashboard is split by feature, not by file size *(issue #142)*. Each feature has one owner of
+its state on each side, and one set of messages between them.
+
+| Feature | Host handlers | Page state (in `resources/webview.js`) | Messages |
+|---|---|---|---|
+| Repository selection | `repositoryManagerPanel.ts`, `repositoryManagerLauncher.ts` (Side Bar mirror) | `repositoryData`, `activeDashboardRepository` | `updateSubmodules` (the list), `sidebarSnapshot` |
+| History | `webviewMessageHandler.ts` (`handleGetHistory`, history actions and rewrites) | `loadedHistoryCommits`, `historyRequestId`, `dashboardHistoryState`, filters | `getHistory` → `historyLoaded`, `reloadDashboardHistory` |
+| Commit detail and comparison | `webviewMessageHandler.ts` (`handleGetCommitDetail`, `handleGetFileDiff`) | `selectedDashboardCommit`, `selectedDashboardFile`, `comparisonSource`, `commitCompareSelection` | `getCommitDetail`, `getFileDiff` |
+| Uncommitted changes | **`workingTreeHandlers.ts`**: status, previews, Discard and Undo, Stash…, Apply / Pop / Drop | `workingTree`, `workingTreeStatusSeen`, `workingSelection`, `discarding`, `workingPreviewRequestId` | `getWorkingTreeChanges` → `workingTreeChangesLoaded` (numbered), `getWorkingTreePreview`, `discardChanges`, `stashChanges`, `stashAction`, `discardStarted` / `discardFinished`, `stashActionCompleted` |
+| Commit dialog | `webviewMessageHandler.ts` (`handleCommitFiles`), `commitMessageController.ts` | `workingTreeChanges`, `commitScope`, `commitDraftRepository`, `copilotCommitMessage` | `commitFiles` → `commitFilesResult`, `generateCommitMessage` |
+| Review | `reviewController.ts`, routed by `reviewBridge.ts` | `reviewStatus` | review messages (see `docs/security-compliance-review-engine.md`) |
+
+- `handlerSupport.ts` holds what every handler shares and no handler: `MessageHandlerContext`,
+  `sendToWebview`, `showResult`, the payload checks and `sendDashboardError`. Feature modules import
+  it; they never import each other.
+- `webviewMessageHandler.ts` stays the single routing table (`messageHandlers`) and re-exports the
+  moved handlers, so the panel and tests keep one entry point.
+- A reply that can race another of its kind carries an id the page checks (`historyRequestId`,
+  `workingPreviewRequestId`, the status `sequence`); the page owns the latest id it accepted.
+- Next extractions, one feature per change: the commit dialog's handlers, then history actions
+  and rewrites. Splitting `webview.js` needs the page to load more than one script
+  (`src/webview/template.ts`) and the Node suites that evaluate it as one file to load them all;
+  that is its own change.
+
 Existing write services remain separate:
 
 - `BranchService`: create, checkout, pull, push, fetch, and delete branches. Push uses the branch's own remote (`branch.<name>.remote`, else `origin`) and refuses a detached HEAD with a message instead of a Git error. Push after creating a branch (Confirm & Push) pushes that branch by name, says for each repository that failed why, and reloads the history of those pushed so their new remote branch shows.
