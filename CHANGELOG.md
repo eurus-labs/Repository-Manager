@@ -5,6 +5,12 @@ All notable changes to Repository Manager will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- A Studio code step cut short because VS Code closed while it ran no longer leaves its edits behind: each write is recorded before it reaches the disk, and on the next start the step's files are put back as they were (a file you changed since is left alone and named), the run is shown as interrupted, and a message says what was undone. Changes already waiting for your review are kept. A run left running when VS Code closed is marked interrupted too.
+
 ## [3.3.0] - 2026-11-15
 
 ### Added

@@ -8,6 +8,8 @@
  */
 import { AgentMessage, CancelToken, ContentBlock } from '../agent/lmRouter';
 import { cleanPath, revertChanges, StepWorkspace, ToolOutcome } from '../agent/agentTools';
+import { WriteJournal } from '../agent/writeJournal';
+import * as fs from 'fs';
 import { isDocumentation } from '../agent/agentRunner';
 import { AgentToolName, AiTextWarning, CheckResult, FileChange, StepVerification, ToolCallRecord } from '../agent/types';
 import { skillsPrompt } from './skills';
@@ -231,7 +233,9 @@ export const codeStep: StepDefinition = {
     // The run's Cancel reaches a running check too: the npm script is stopped, not waited out.
     const token = cancelToken(context.signal);
     const tools: AgentToolName[] = checks.length ? ['edit_file', 'create_file', 'run_check'] : ['edit_file', 'create_file'];
-    const workspace = new StepWorkspace({ root, isDirty: code.isDirty, allowedScripts: () => code.allowedScripts(root), runScript: script => code.runScript(root, script, token) }, { tools, paths });
+    // Each write is journaled first, so a step cut short by a closed window is undone on the next start (#140).
+    const journal = context.journalFile ? new WriteJournal(context.journalFile, fs.realpathSync(root)) : undefined;
+    const workspace = new StepWorkspace({ root, isDirty: code.isDirty, allowedScripts: () => code.allowedScripts(root), runScript: script => code.runScript(root, script, token), journal }, { tools, paths });
     const toolCalls: ToolCallRecord[] = [];
     try {
       const input = [
@@ -262,6 +266,8 @@ export const codeStep: StepDefinition = {
     } catch (error) {
       // A run that failed keeps nothing: what it wrote is undone.
       const kept = revertChanges(root, [...workspace.changes.values()], code.isDirty);
+      // Undone here: nothing left for a restart to recover.
+      journal?.clear();
       const message = error instanceof Error ? error.message : String(error);
       throw new StepError(`${message}${kept.length ? ` (not undone, changed since: ${kept.join(', ')})` : ''}`);
     } finally {

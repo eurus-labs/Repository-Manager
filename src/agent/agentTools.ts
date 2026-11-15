@@ -31,6 +31,8 @@ export interface ToolHost {
    */
   allowedScripts(): string[];
   runScript(script: string): Promise<CheckResult>;
+  /** Records each write before it happens, so a step cut short can be undone on the next start (#140). */
+  journal?: { record(entry: { path: string; before: string | null; after: string }): void };
 }
 
 export interface ToolOutcome { ok: boolean; content: string; note: string }
@@ -251,6 +253,7 @@ export class StepWorkspace {
     if (text.indexOf(input.oldText, first + 1) >= 0) { throw new Error(`oldText occurs more than once in ${file}; include more lines.`); }
     const after = text.slice(0, first) + input.newText + text.slice(first + input.oldText.length);
     if (Buffer.byteLength(after) > MAX_FILE_BYTES) { throw new Error(`The result is larger than ${MAX_FILE_BYTES / 1024} KB`); }
+    this.host.journal?.record({ path: target, before: text, after });
     fs.writeFileSync(absolute, after);
     this.record(target, text, after);
     return { ok: true, content: `Edited ${file}.`, note: file };
@@ -262,6 +265,7 @@ export class StepWorkspace {
     if (Buffer.byteLength(input.content) > MAX_FILE_BYTES) { throw new Error(`The content is larger than ${MAX_FILE_BYTES / 1024} KB`); }
     const { absolute, target } = this.checkWritable(file);
     if (fs.existsSync(absolute)) { throw new Error(`${file} exists; use edit_file.`); }
+    this.host.journal?.record({ path: target, before: null, after: input.content });
     fs.mkdirSync(path.dirname(absolute), { recursive: true });
     fs.writeFileSync(absolute, input.content);
     this.record(target, null, input.content);

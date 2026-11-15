@@ -8,7 +8,7 @@ import * as vscode from 'vscode';
 import { promises as fs } from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { RunState, RunStore, WorkflowEngine, workflowEffects, workflowModels, workflowSkills } from './engine';
+import { recoverInterruptedSteps, RunState, RunStore, WorkflowEngine, workflowEffects, workflowModels, workflowSkills } from './engine';
 import { skillSources, StudioSkills, studioSkills } from './githubSkills';
 import { approveChecks, codeServices } from './codeHost';
 import { StepDefinition } from './steps';
@@ -42,7 +42,16 @@ export function registerStudio(context: vscode.ExtensionContext, workspaceRoot: 
   const library = path.join(context.globalStorageUri.fsPath, 'studio', 'workflows');
   const store = new RunStore(path.join(context.storageUri?.fsPath ?? context.globalStorageUri.fsPath, 'studio', 'runs'));
   const skills = studioSkills(context);
-  const engine = new WorkflowEngine({ root: workspaceRoot, steps, store, model: studioModel(context), skills, code: codeServices(context) });
+  const code = codeServices(context);
+  const engine = new WorkflowEngine({ root: workspaceRoot, steps, store, model: studioModel(context), skills, code });
+  // Runs cut short when VS Code last closed: a step's writes are undone, and the run says so (#140).
+  void recoverInterruptedSteps(store, code.isDirty).then(found => {
+    const undone = found.filter(item => item.restored.length || item.kept.length);
+    if (!undone.length) { return; }
+    const kept = undone.flatMap(item => item.kept);
+    void vscode.window.showWarningMessage(
+      `VS Code closed while ${undone.length === 1 ? `a step of "${undone[0].workflow ?? undone[0].runId}" was` : `${undone.length} workflow steps were`} changing files. ${undone.reduce((sum, item) => sum + item.restored.length, 0)} file(s) were put back as before the step.${kept.length ? ` Changed since, left as they are: ${kept.join(', ')}.` : ''}`);
+  }, error => console.error('[RepositoryManager] Studio recovery:', error));
   const samples = path.join(context.extensionUri.fsPath, 'resources', 'studio', 'samples');
   const load = async (file: string): Promise<{ workflow: Workflow; hash: string } | undefined> => {
     const text = await fs.readFile(file, 'utf8');
