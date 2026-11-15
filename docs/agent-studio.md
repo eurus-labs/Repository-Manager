@@ -824,11 +824,21 @@ people by chat or email, before any usage data; see Risks.)*
 - **`about`** (optional): `authors` (up to 20), `license` (an SPDX identifier
   or expression), `homepage` (`https://`), `keywords` (up to 10). Validated
   with the rest of the file.
-- Not yet: the Studio view listing workflows and runs (the run history is
-  stored by `RunStore` and opened by Show Workflow Runs as JSON); export from
-  the Chat without saving the plan first; importing from a URL.
-- Tested by `src/test/studioSharingSmoke.js` and `studioCommandsSmoke.js`
-  (scripted `vscode`, the real engine and files).
+- **Export… on the Chat's plan card** exports the accepted plan through the
+  same `exportWorkflow`, without saving it first and without a folder; a plan
+  with problems is not exported. The plan's own file is not changed.
+- **Import from a URL**: Import Workflow… asks "From a file…" or "From a
+  URL…". A URL is fetched by `src/studio/fetchShared.ts` (no `vscode`): https
+  only, checked again after each redirect; at most 5 redirects; one 15 s
+  deadline for the whole fetch; refused by its declared length or as soon as
+  the body passes 1 MB; any status but 200 refused. The text then goes through
+  the same checks and question as a file, which also says where it came from
+  (the final address). Nothing is fetched again when it runs.
+- The Runs view is described below.
+- Tested by `src/test/studioSharingSmoke.js`, `studioFetchSmoke.js` (a real
+  local server) and `studioCommandsSmoke.js` (scripted `vscode`, the real
+  engine and files: Export → Import from a URL → Run), and the Chat's Export
+  by `studioChatSmoke.js` and `studioChatUi.js`.
 
 ## Phase 3 as built: the Runs view
 

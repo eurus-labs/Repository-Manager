@@ -131,6 +131,7 @@ async function main() {
 
     // Import says what it does and runs nothing; cancelling keeps the library empty.
     asked.length = 0;
+    answers.quickPick.push(item => item === 'From a file…');
     answers.open.push([{ fsPath: exported }]);
     answers.warning.push(undefined);
     await commands.get('repositoryManager.studio.importWorkflow')();
@@ -140,6 +141,7 @@ async function main() {
     assert.match(question[2], /Importing runs nothing\./);
     assert.doesNotMatch(question[2], /did not match/, 'an exported file warned');
     assert.equal(fs.existsSync(path.join(library, 'note.workflow.json')), false, 'imported though cancelled');
+    answers.quickPick.push(item => item === 'From a file…');
     answers.open.push([{ fsPath: exported }]);
     answers.warning.push('Import');
     await commands.get('repositoryManager.studio.importWorkflow')();
@@ -151,6 +153,7 @@ async function main() {
     fs.writeFileSync(edited, JSON.stringify({ ...shared, title: 'Write a note (edited)', about: { authors: ['Ana'], license: 'MIT', homepage: 'https://example.com/w' },
       requires: { ...shared.requires, steps: ['prompt'], scripts: ['test'] } }));
     asked.length = 0;
+    answers.quickPick.push(item => item === 'From a file…');
     answers.open.push([{ fsPath: edited }]);
     answers.warning.push('Import', 'Keep Both');
     await commands.get('repositoryManager.studio.importWorkflow')();
@@ -168,6 +171,7 @@ async function main() {
     // import moves on to the next free id instead of overwriting the other one.
     const raced = path.join(base, 'shared', 'raced.workflow.json');
     fs.writeFileSync(raced, JSON.stringify({ ...shared, title: 'Write a note (raced)' }));
+    answers.quickPick.push(item => item === 'From a file…');
     answers.open.push([{ fsPath: raced }]);
     answers.warning.push('Import', () => {
       fs.writeFileSync(path.join(library, 'note-3.workflow.json'), JSON.stringify({ ...shared, id: 'note-3', title: 'Other window' }));
@@ -182,6 +186,7 @@ async function main() {
     const newer = path.join(base, 'shared', 'newer.workflow.json');
     fs.writeFileSync(newer, JSON.stringify({ ...shared, id: 'newer', requires: { ...shared.requires, extension: '>=9.1.0' } }));
     asked.length = 0;
+    answers.quickPick.push(item => item === 'From a file…');
     answers.open.push([{ fsPath: newer }]);
     answers.warning.push(undefined);
     await commands.get('repositoryManager.studio.importWorkflow')();
@@ -189,15 +194,49 @@ async function main() {
     const broken = path.join(base, 'shared', 'broken.workflow.json');
     fs.writeFileSync(broken, '{"schema": "repository-manager/workflow@1"');
     asked.length = 0;
+    answers.quickPick.push(item => item === 'From a file…');
     answers.open.push([{ fsPath: broken }]);
     await commands.get('repositoryManager.studio.importWorkflow')();
     assert.deepEqual(asked.map(entry => entry.slice(0, 2)), [['error', 'broken.workflow.json cannot be imported.']]);
+
+    // From a URL: the same checks and question, with where it came from; then it runs.
+    const fetchModule = require('../../out/studio/fetchShared.js');
+    const realFetch = fetchModule.fetchSharedWorkflow;
+    const served = JSON.stringify({ ...shared, id: 'from-url', title: 'Write a note (from a URL)' });
+    const fetched = [];
+    fetchModule.fetchSharedWorkflow = async address => { fetched.push(address); return { text: served, url: 'https://example.com/final/from-url.workflow.json' }; };
+    asked.length = 0;
+    answers.quickPick.push(item => item === 'From a URL…');
+    answers.input.push('https://example.com/from-url.workflow.json');
+    answers.warning.push('Import');
+    await commands.get('repositoryManager.studio.importWorkflow')();
+    assert.deepEqual(fetched, ['https://example.com/from-url.workflow.json']);
+    const urlQuestion = asked.find(entry => entry[0] === 'warning');
+    assert.match(urlQuestion[2], /^Write a note \(from a URL\) 1\.0\.0\nFrom https:\/\/example\.com\/final\/from-url\.workflow\.json\n/);
+    assert.equal(JSON.parse(fs.readFileSync(path.join(library, 'from-url.workflow.json'), 'utf8')).title, 'Write a note (from a URL)');
+    // A fetch that fails says why and imports nothing.
+    fetchModule.fetchSharedWorkflow = async () => { throw new Error('The file is larger than 1024 KB.'); };
+    asked.length = 0;
+    answers.quickPick.push(item => item === 'From a URL…');
+    answers.input.push('https://example.com/huge.workflow.json');
+    await commands.get('repositoryManager.studio.importWorkflow')();
+    assert.deepEqual(asked.map(entry => entry.slice(0, 2)), [['error', 'Could not import from https://example.com/huge.workflow.json: The file is larger than 1024 KB.']]);
+    fetchModule.fetchSharedWorkflow = realFetch;
+    // Export → Import → Run: the imported workflow runs from the library like any other.
+    fs.rmSync(path.join(workspace, 'notes'), { recursive: true, force: true });
+    asked.length = 0;
+    answers.quickPick.push(item => item.label === 'from-url' && item.description === 'Library');
+    answers.input.push('round trip');
+    answers.info.push('Run');
+    answers.warning.push('Approve');
+    await commands.get('repositoryManager.studio.runWorkflow')();
+    assert.equal(fs.readFileSync(path.join(workspace, 'notes', 'note.txt'), 'utf8'), 'round trip');
 
     // The imported workflows are offered by Run Workflow… under Library.
     let offered = [];
     answers.quickPick.push(item => { offered.push(`${item.label} ${item.description}`); return false; });
     await commands.get('repositoryManager.studio.runWorkflow')();
-    assert.ok(['note', 'note-2', 'note-3', 'note-4'].every(id => offered.includes(`${id} Library`)), offered.join(', '));
+    assert.ok(['note', 'note-2', 'note-3', 'note-4', 'from-url'].every(id => offered.includes(`${id} Library`)), offered.join(', '));
     console.log('Studio commands smoke passed');
   } finally {
     fs.rmSync(base, { recursive: true, force: true });

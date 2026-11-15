@@ -126,7 +126,9 @@
           title: !state.folder ? 'Open a folder to run a plan' : draft.problems.length ? 'Fix the problems first' : 'Run this plan',
           onclick: () => vscode.postMessage({ type: 'run' }) }, 'Run'),
         el('button', { type: 'button', disabled: busy || !state.folder, onclick: () => vscode.postMessage({ type: 'openDiagram' }) }, 'Open in diagram'),
-        el('button', { type: 'button', disabled: busy || !state.folder, onclick: () => vscode.postMessage({ type: 'save' }) }, state.file ? 'Saved' : 'Save as workflow'));
+        el('button', { type: 'button', disabled: busy || !state.folder, onclick: () => vscode.postMessage({ type: 'save' }) }, state.file ? 'Saved' : 'Save as workflow'),
+        el('button', { type: 'button', disabled: busy || draft.problems.length > 0, title: draft.problems.length ? 'Fix the problems first' : 'Export this plan as a .workflow.json to share',
+          onclick: () => vscode.postMessage({ type: 'export' }) }, 'Export…'));
     } else if (draft.status === 'proposed') {
       actions = el('div', { class: 'actions' },
         el('button', { type: 'button', class: 'primary', disabled: busy, onclick: () => vscode.postMessage({ type: 'accept', id: message.id }) }, 'Accept change'),
