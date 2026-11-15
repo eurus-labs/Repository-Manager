@@ -17,15 +17,21 @@ fs.writeFileSync(path.join(workspace, '.repository-manager', 'workflows', 'note.
 
 const commands = new Map();
 const asked = [];
-const answers = { quickPick: [], warning: [], info: [], input: [] };
+const answers = { quickPick: [], warning: [], info: [], input: [], save: [], open: [] };
 const fakeVscode = {
   commands: { registerCommand: (id, run) => { commands.set(id, run); return { dispose() {} }; } },
   window: {
     showQuickPick: async items => { const pick = answers.quickPick.shift(); return items.find(pick); },
     showInputBox: async () => answers.input.shift(),
-    showWarningMessage: async (message, options) => { asked.push(['warning', message, options.detail]); return answers.warning.shift(); },
+    showSaveDialog: async () => answers.save.shift(),
+    showOpenDialog: async () => answers.open.shift(),
+    showWarningMessage: async (message, options) => {
+      asked.push(['warning', message, options.detail]);
+      const answer = answers.warning.shift();
+      return typeof answer === 'function' ? answer() : answer;
+    },
     showInformationMessage: async (message, ...rest) => { asked.push(['info', message]); return answers.info.shift(); },
-    showErrorMessage: async message => { asked.push(['error', message]); },
+    showErrorMessage: async (message, options) => { asked.push(['error', message, options && options.detail]); },
     withProgress: async (_options, task) => task({ report() {} }, { isCancellationRequested: false }),
     showTextDocument: async () => undefined,
     registerCustomEditorProvider: (viewType) => { commands.set(`editor:${viewType}`, true); return { dispose() {} }; }
@@ -48,7 +54,8 @@ const context = () => ({
   globalStorageUri: { fsPath: path.join(base, 'global') },
   storageUri: { fsPath: path.join(base, 'storage') },
   extensionUri: { fsPath: path.join(__dirname, '../..') },
-  globalState: { get: () => undefined }
+  globalState: { get: () => undefined },
+  extension: { packageJSON: { version: '3.3.0' } }
 });
 
 async function main() {
@@ -96,6 +103,92 @@ async function main() {
     answers.warning.push('Approve');
     await commands.get('repositoryManager.studio.runWorkflow')({ fsPath: path.join(workspace, '.repository-manager', 'workflows', 'note.workflow.json') });
     assert.equal(fs.readFileSync(note, 'utf8'), 'from the editor');
+
+    // Sharing (phase 3). Export writes the workflow with the requirements read from it.
+    const library = path.join(base, 'global', 'studio', 'workflows');
+    const exported = path.join(base, 'shared', 'note.workflow.json');
+    fs.mkdirSync(path.dirname(exported), { recursive: true });
+    asked.length = 0;
+    answers.quickPick.push(item => item.label === 'note');
+    answers.save.push({ fsPath: exported });
+    await commands.get('repositoryManager.studio.exportWorkflow')();
+    const shared = JSON.parse(fs.readFileSync(exported, 'utf8'));
+    assert.deepEqual(shared.requires, { extension: '>=3.3.0', steps: ['file.write'], models: [], skills: [], scripts: [] });
+    assert.equal(shared.title, 'Write a note', 'export changed the workflow');
+    // Cancelling the save dialog writes nothing.
+    answers.quickPick.push(item => item.label === 'note');
+    answers.save.push(undefined);
+    await commands.get('repositoryManager.studio.exportWorkflow')();
+
+    // Import says what it does and runs nothing; cancelling keeps the library empty.
+    asked.length = 0;
+    answers.open.push([{ fsPath: exported }]);
+    answers.warning.push(undefined);
+    await commands.get('repositoryManager.studio.importWorkflow')();
+    const question = asked.find(entry => entry[0] === 'warning');
+    assert.equal(question[1], 'Import "Write a note" into your library?');
+    assert.match(question[2], /When it runs, it:\n• .*\n• Asks you before write \(file\.write\) writes files\./);
+    assert.match(question[2], /Importing runs nothing\./);
+    assert.doesNotMatch(question[2], /did not match/, 'an exported file warned');
+    assert.equal(fs.existsSync(path.join(library, 'note.workflow.json')), false, 'imported though cancelled');
+    answers.open.push([{ fsPath: exported }]);
+    answers.warning.push('Import');
+    await commands.get('repositoryManager.studio.importWorkflow')();
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(library, 'note.workflow.json'), 'utf8')), shared);
+
+    // A file whose requires was edited by hand: warned, the computed one kept. Same id, other
+    // content: Keep Both imports it under a free id.
+    const edited = path.join(base, 'shared', 'edited.workflow.json');
+    fs.writeFileSync(edited, JSON.stringify({ ...shared, title: 'Write a note (edited)', about: { authors: ['Ana'], license: 'MIT', homepage: 'https://example.com/w' },
+      requires: { ...shared.requires, steps: ['prompt'], scripts: ['test'] } }));
+    asked.length = 0;
+    answers.open.push([{ fsPath: edited }]);
+    answers.warning.push('Import', 'Keep Both');
+    await commands.get('repositoryManager.studio.importWorkflow')();
+    const [importQuestion, conflict] = asked.filter(entry => entry[0] === 'warning');
+    assert.match(importQuestion[2], /^Write a note \(edited\) 1\.0\.0 by Ana · MIT\nhttps:\/\/example\.com\/w/);
+    assert.match(importQuestion[2], /"requires\.steps" does not match the workflow; it uses file\.write; it does not use prompt\./);
+    assert.match(importQuestion[2], /"requires\.scripts" does not match the workflow; it does not use test\./);
+    assert.equal(conflict[1], 'Your library already has a workflow "note".');
+    const both = JSON.parse(fs.readFileSync(path.join(library, 'note-2.workflow.json'), 'utf8'));
+    assert.equal(both.id, 'note-2');
+    assert.deepEqual(both.requires, shared.requires, 'the hand-edited requires was kept');
+    assert.equal(JSON.parse(fs.readFileSync(path.join(library, 'note.workflow.json'), 'utf8')).title, 'Write a note', 'Keep Both replaced the first');
+
+    // Keep Both while another window takes the same new id: the file is created exclusively, so this
+    // import moves on to the next free id instead of overwriting the other one.
+    const raced = path.join(base, 'shared', 'raced.workflow.json');
+    fs.writeFileSync(raced, JSON.stringify({ ...shared, title: 'Write a note (raced)' }));
+    answers.open.push([{ fsPath: raced }]);
+    answers.warning.push('Import', () => {
+      fs.writeFileSync(path.join(library, 'note-3.workflow.json'), JSON.stringify({ ...shared, id: 'note-3', title: 'Other window' }));
+      return 'Keep Both';
+    });
+    await commands.get('repositoryManager.studio.importWorkflow')();
+    assert.equal(JSON.parse(fs.readFileSync(path.join(library, 'note-3.workflow.json'), 'utf8')).title, 'Other window', 'the other window\'s import was overwritten');
+    const next = JSON.parse(fs.readFileSync(path.join(library, 'note-4.workflow.json'), 'utf8'));
+    assert.deepEqual([next.id, next.title], ['note-4', 'Write a note (raced)']);
+
+    // A newer extension's file says what is missing; a broken file is refused.
+    const newer = path.join(base, 'shared', 'newer.workflow.json');
+    fs.writeFileSync(newer, JSON.stringify({ ...shared, id: 'newer', requires: { ...shared.requires, extension: '>=9.1.0' } }));
+    asked.length = 0;
+    answers.open.push([{ fsPath: newer }]);
+    answers.warning.push(undefined);
+    await commands.get('repositoryManager.studio.importWorkflow')();
+    assert.match(asked.find(entry => entry[0] === 'warning')[2], /Missing here:\n• Repository Manager 9\.1\.0 or later \(this is 3\.3\.0\)\./);
+    const broken = path.join(base, 'shared', 'broken.workflow.json');
+    fs.writeFileSync(broken, '{"schema": "repository-manager/workflow@1"');
+    asked.length = 0;
+    answers.open.push([{ fsPath: broken }]);
+    await commands.get('repositoryManager.studio.importWorkflow')();
+    assert.deepEqual(asked.map(entry => entry.slice(0, 2)), [['error', 'broken.workflow.json cannot be imported.']]);
+
+    // The imported workflows are offered by Run Workflow… under Library.
+    let offered = [];
+    answers.quickPick.push(item => { offered.push(`${item.label} ${item.description}`); return false; });
+    await commands.get('repositoryManager.studio.runWorkflow')();
+    assert.ok(['note', 'note-2', 'note-3', 'note-4'].every(id => offered.includes(`${id} Library`)), offered.join(', '));
     console.log('Studio commands smoke passed');
   } finally {
     fs.rmSync(base, { recursive: true, force: true });

@@ -767,6 +767,44 @@ how many moved, with **Open Chat History**:
 - Tested by `src/test/agentMigrationSmoke.js`, including the moved plan's
   next step running on the task's branch.
 
+## Phase 3 as built: sharing one workflow
+
+*(decided 2026-11-15: started on a direct need to send a workflow to other
+people by chat or email, before any usage data; see Risks.)*
+
+- **Export Workflow…** (`repositoryManager.studio.exportWorkflow`) picks a
+  workflow from `.repository-manager/workflows/` or the library and writes it
+  where the person chooses, with `requires` computed from it
+  (`src/studio/sharing.ts`, no `vscode`). Nothing else in the file changes.
+- **`requires`** *(decided: written by Export, never by hand)*:
+  - `extension`: `>=` the version that exported it;
+  - `steps`: the step types the nodes use;
+  - `models`: the model selectors it names;
+  - `skills`: its skills, pinned to a commit;
+  - `scripts`: the checks its code steps run, by name (a `${…}` check is
+    resolved at run time and not listed). These belong to the repository it
+    runs in, not to the machine.
+- **Import Workflow…** (`repositoryManager.studio.importWorkflow`) takes a
+  file of at most 1 MB and validates it as Run does. It computes `requires`
+  again; where the file's lists differ, or it has none, it warns and keeps the
+  computed one *(decided)*. The file's `extension` version is kept (the
+  workflow cannot tell it). The question shows the title, version, `about`,
+  what the workflow does when it runs (the same lines as Run's consent), what
+  is missing here (a newer extension, scripts the open repository lacks), and
+  that importing runs nothing. The file goes to the library as
+  `<id>.workflow.json`; an id already there with other content asks
+  **Replace** or **Keep Both** (`<id>-2`, …). Run Workflow… then lists it
+  under Library, and each run asks as before: consent, skill sources, models,
+  script approvals.
+- **`about`** (optional): `authors` (up to 20), `license` (an SPDX identifier
+  or expression), `homepage` (`https://`), `keywords` (up to 10). Validated
+  with the rest of the file.
+- Not yet: the Studio view listing workflows and runs (the run history is
+  stored by `RunStore` and opened by Show Workflow Runs as JSON); export from
+  the Chat without saving the plan first; importing from a URL.
+- Tested by `src/test/studioSharingSmoke.js` and `studioCommandsSmoke.js`
+  (scripted `vscode`, the real engine and files).
+
 ## Phases
 
 Each phase ends with something usable on its own.
@@ -794,8 +832,10 @@ Each phase ends with something usable on its own.
   - no code runs from a workflow.
 - **A diagram and JSON that disagree.** Mitigation: the JSON is the only
   source, the diagram is rendered from it, and the round-trip is tested.
-- **Scope.** Mitigation: usage metrics (`docs/usage-metrics.md`) show whether
-  each phase is used before the next one starts.
+- **Scope.** Mitigation: a phase starts on evidence that the one before is
+  used: the run history (`RunStore`, Show Workflow Runs) or a direct need from
+  its users *(decided 2026-11-15; replaces "usage metrics show whether each
+  phase is used", since `docs/usage-metrics.md` records no Studio events)*.
 
 ## Open questions
 
