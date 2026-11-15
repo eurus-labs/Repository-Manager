@@ -49,7 +49,8 @@ const fakeVscode = {
   window: {
     registerWebviewViewProvider: (_id, provider) => { viewProvider = provider; return { dispose() {} }; },
     showWarningMessage: async (message) => { asked.push(['warning', message]); return answers.warning.shift(); },
-    showQuickPick: async items => { const pick = answers.quickPick.shift(); return pick ? items.find(pick) : undefined; }
+    showQuickPick: async items => { const pick = answers.quickPick.shift(); return pick ? items.find(pick) : undefined; },
+    showSaveDialog: async () => answers.save?.shift()
   },
   commands: {
     registerCommand: (id, run) => { commands.set(id, run); return { dispose() {} }; },
@@ -334,11 +335,34 @@ async function main() {
     await receive({ type: 'accept', id: proposed[0].id }); await settle();
     assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')).criteria, ['Two criteria now', 'and this']);
 
+    // Export… writes the accepted plan to share, with requires computed by the same Export; the
+    // plan's file is not touched. Cancelling the save dialog writes nothing.
+    const exportedPlan = path.join(base, 'shared', 'summarize-notes.workflow.json');
+    fs.mkdirSync(path.dirname(exportedPlan), { recursive: true });
+    answers.save = [{ fsPath: exportedPlan }];
+    await receive({ type: 'export' }); await settle();
+    const sharedPlan = JSON.parse(fs.readFileSync(exportedPlan, 'utf8'));
+    assert.deepEqual(sharedPlan.criteria, ['Two criteria now', 'and this'], 'Export did not take the accepted plan');
+    assert.deepEqual([sharedPlan.requires.steps, sharedPlan.requires.scripts], [['file.write', 'prompt'], []]);
+    assert.match(sharedPlan.requires.extension, /^>=\d+\.\d+\.\d+$/);
+    assert.match(last().notice, /^Exported to .*summarize-notes\.workflow\.json\./);
+    assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).requires, undefined, 'Export wrote into the plan\'s file');
+    fs.rmSync(exportedPlan);
+    answers.save = [undefined];
+    await receive({ type: 'export' }); await settle();
+    assert.equal(fs.existsSync(exportedPlan), false);
+
     // A plan with problems does not run; the page is told why.
     await receive({ type: 'edit', operation: { op: 'setCriteria', criteria: [] } }); await settle();
     await receive({ type: 'run' }); await settle();
     assert.equal(ran.length, 1);
     assert.match(last().notice, /cannot run yet: criteria/);
+    // Nor is it exported.
+    answers.save = [{ fsPath: exportedPlan }];
+    await receive({ type: 'export' }); await settle();
+    assert.match(last().notice, /cannot be exported yet: criteria/);
+    assert.equal(fs.existsSync(exportedPlan), false);
+    answers.save = [];
 
     // A plan moved from an agent task runs only in the repository it was made for.
     await receive({ type: 'edit', operation: { op: 'setCriteria', criteria: ['Two criteria now'] } }); await settle();

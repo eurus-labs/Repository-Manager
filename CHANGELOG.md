@@ -10,6 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **Runs** in the Studio (next to Chat): every workflow run with its status, filters by workflow and status, and what they add up to: runs, the completion rate (done of finished runs; running and waiting runs are counted apart, and done means the run finished, not that the code is right), interrupted runs, retries, and how accepted code steps were verified. A run's detail shows each step: how many times it ran, time executing and time waiting for you, its result or error, and what was undone if VS Code closed while it ran. A waiting run can be resumed from there, and **Open raw log** shows its state and log. A time the log does not have shows "no data".
+- **Export…** on the Studio Chat's plan card exports the accepted plan as a `.workflow.json` to share, as Export Workflow… does, without saving it first or opening a folder.
+- **Import Workflow…** can take a URL: an https address of a `.workflow.json` (at most 1 MB, redirects followed and checked, 15 s at most). It is checked and shown like a file, with where it came from.
 
 ### Fixed
 

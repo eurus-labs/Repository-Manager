@@ -22,6 +22,8 @@ import { StudioRuns } from './studioCommands';
 import { EditOperation, serializeWorkflow } from './workflowEdit';
 import { WORKFLOW_EDITOR } from './workflowEditorProvider';
 import { Workflow, workflowHash } from './workflow';
+import { exportWorkflow } from './sharing';
+import * as os from 'os';
 
 export const CHAT_VIEW = 'repositoryManager.studio.chat';
 const CURRENT_KEY = 'repositoryManager.studio.currentChat';
@@ -31,7 +33,7 @@ type Incoming =
   | { type: 'ready' } | { type: 'send'; text: string } | { type: 'cancel' }
   | { type: 'setModel'; selector: string } | { type: 'accept'; id: string } | { type: 'discard'; id: string }
   | { type: 'edit'; operation: EditOperation } | { type: 'run' } | { type: 'save' } | { type: 'openDiagram' }
-  | { type: 'addSkill'; id: string } | { type: 'refreshModels' };
+  | { type: 'addSkill'; id: string } | { type: 'refreshModels' } | { type: 'export' };
 
 export class StudioChatProvider implements vscode.WebviewViewProvider {
   private view?: vscode.WebviewView;
@@ -204,6 +206,7 @@ export class StudioChatProvider implements vscode.WebviewViewProvider {
         }
         case 'run': return await this.run();
         case 'save': await this.save(); return;
+        case 'export': await this.exportPlan(); return;
         case 'addSkill': await this.addSkill(message.id); return;
         case 'refreshModels': await this.refreshModels(); return;
         case 'openDiagram': {
@@ -356,6 +359,26 @@ export class StudioChatProvider implements vscode.WebviewViewProvider {
     await this.saveConversation();
     this.post();
     return target;
+  }
+
+  /**
+   * Export… on the plan card: the accepted plan as a file to share, written by the same Export as
+   * Export Workflow… (requires computed from it). No folder needed: nothing runs.
+   */
+  private async exportPlan(): Promise<void> {
+    const conversation = await this.ensureConversation();
+    await this.syncFromFile();
+    if (!conversation.plan) { this.say('There is no plan to export yet.'); return; }
+    const problems = planProblems(conversation.plan, this.steps);
+    if (problems.length) { this.say(`The plan cannot be exported yet: ${problems[0].where}: ${problems[0].message}`); return; }
+    const version = String((this.context.extension?.packageJSON as { version?: unknown } | undefined)?.version ?? '0.0.0');
+    const result = exportWorkflow(serializeWorkflow(conversation.plan), this.steps, version);
+    if (!result.text) { this.say(`The plan cannot be exported: ${result.problems[0]?.where}: ${result.problems[0]?.message}`); return; }
+    const target = await vscode.window.showSaveDialog({ title: 'Export Plan as Workflow', saveLabel: 'Export',
+      defaultUri: vscode.Uri.file(path.join(this.root ?? os.homedir(), `${conversation.plan.id || 'plan'}.workflow.json`)), filters: { workflow: ['json'] } });
+    if (!target) { return; }
+    await fs.writeFile(target.fsPath, result.text, 'utf8');
+    this.say(`Exported to ${target.fsPath}. Whoever imports it sees what it does and what it needs.`);
   }
 
   /** Once saved, the file is the plan: an edit in the diagram or the JSON shows here. */

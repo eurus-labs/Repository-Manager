@@ -15,7 +15,8 @@ import { StepDefinition } from './steps';
 import { studioSteps } from './registry';
 import { listModels, resolveSelector, studioModel } from './studioModels';
 import { parseWorkflow, Workflow, workflowHash } from './workflow';
-import { checkImport, exportWorkflow, freeId, withId } from './sharing';
+import { checkImport, exportWorkflow, freeId, MAX_SHARED_BYTES, withId } from './sharing';
+import { fetchSharedWorkflow } from './fetchShared';
 import { readScripts } from '../agent/repositoryScripts';
 
 const REPOSITORY_FOLDER = path.join('.repository-manager', 'workflows');
@@ -272,12 +273,43 @@ export function registerStudio(context: vscode.ExtensionContext, workspaceRoot: 
       await fs.writeFile(target.fsPath, result.text, 'utf8');
       void vscode.window.showInformationMessage(`Exported to ${target.fsPath}. It lists what it needs (requires); the person who imports it sees that and what it does.`);
     }),
-    vscode.commands.registerCommand('repositoryManager.studio.importWorkflow', async (given?: vscode.Uri) => {
-      const source = given ?? (await vscode.window.showOpenDialog({ title: 'Import Workflow', openLabel: 'Import', canSelectMany: false, filters: { Workflow: ['json'] } }))?.[0];
-      if (!source) { return; }
-      const check = checkImport(await fs.readFile(source.fsPath, 'utf8'), steps, { extensionVersion, scripts: Object.keys(readScripts(workspaceRoot)) });
+    vscode.commands.registerCommand('repositoryManager.studio.importWorkflow', async (given?: vscode.Uri | string) => {
+      // A file (given, or picked) or an https URL: both go through the same checks and question.
+      let address = typeof given === 'string' ? given : undefined;
+      let file = typeof given === 'object' ? given.fsPath : undefined;
+      if (!address && !file) {
+        const fromFile = 'From a file…';
+        const fromUrl = 'From a URL…';
+        const way = await vscode.window.showQuickPick([fromFile, fromUrl], { title: 'Import Workflow', placeHolder: 'Where is the .workflow.json?' });
+        if (!way) { return; }
+        if (way === fromUrl) {
+          address = await vscode.window.showInputBox({ title: 'Import Workflow from a URL', prompt: `An https:// address of a .workflow.json (at most ${MAX_SHARED_BYTES / 1024} KB). Nothing runs on import.`,
+            placeHolder: 'https://…/name.workflow.json', ignoreFocusOut: true,
+            validateInput: value => /^https:\/\/\S+$/i.test(value.trim()) ? undefined : 'Enter an https:// address.' });
+          if (!address) { return; }
+        } else {
+          file = (await vscode.window.showOpenDialog({ title: 'Import Workflow', openLabel: 'Import', canSelectMany: false, filters: { Workflow: ['json'] } }))?.[0]?.fsPath;
+          if (!file) { return; }
+        }
+      }
+      let incoming: string;
+      let origin: string;
+      if (address) {
+        try {
+          const fetched = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: `Fetching ${address}` }, () => fetchSharedWorkflow(address!));
+          incoming = fetched.text;
+          origin = fetched.url;
+        } catch (error) {
+          void vscode.window.showErrorMessage(`Could not import from ${address}: ${error instanceof Error ? error.message : String(error)}`);
+          return;
+        }
+      } else {
+        incoming = await fs.readFile(file!, 'utf8');
+        origin = file!;
+      }
+      const check = checkImport(incoming, steps, { extensionVersion, scripts: Object.keys(readScripts(workspaceRoot)) });
       if (!check.workflow || !check.text) {
-        void vscode.window.showErrorMessage(`${path.basename(source.fsPath)} cannot be imported.`, { modal: true,
+        void vscode.window.showErrorMessage(`${address ? origin : path.basename(origin)} cannot be imported.`, { modal: true,
           detail: check.problems.slice(0, 8).map(problem => `• ${problem.where}: ${problem.message}`).join('\n') });
         return;
       }
@@ -285,6 +317,7 @@ export function registerStudio(context: vscode.ExtensionContext, workspaceRoot: 
       const about = workflow.about;
       const detail = [
         `${workflow.title} ${workflow.version}${about?.authors?.length ? ` by ${about.authors.join(', ')}` : ''}${about?.license ? ` · ${about.license}` : ''}`,
+        ...(address ? [`From ${origin}`] : []),
         ...(about?.homepage ? [about.homepage] : []),
         ...(workflow.description ? [workflow.description] : []),
         '', 'When it runs, it:', ...describe(workflow, {}).map(line => `• ${line}`),

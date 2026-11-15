@@ -185,6 +185,8 @@ async function main() {
     await card.locator('.criteria button.icon').click();
     await page.locator('.card[data-card="current"] .problems').waitFor();
     assert.equal(await page.locator('.card[data-card="current"] button:has-text("Run")').isDisabled(), true);
+    // Nor can it be exported; once fixed, Export… is offered.
+    assert.equal(await page.locator('.card[data-card="current"] button:has-text("Export…")').isDisabled(), true);
     await page.click('.card[data-card="current"] button.link');
     await page.locator('.card[data-card="current"] .problems').waitFor({ state: 'detached' });
 
@@ -247,6 +249,8 @@ async function main() {
     await lone.press('#message', 'Enter');
     await lone.locator('.card[data-card="current"]').waitFor();
     assert.equal(await lone.locator('.card[data-card="current"] button:has-text("Run")').isDisabled(), true);
+    // Without a folder a plan cannot run or be saved, but it can be exported to share.
+    assert.equal(await lone.locator('.card[data-card="current"] button:has-text("Export…")').isDisabled(), false);
     await snap(lone, '44-studio-chat-light');
 
     assert.deepEqual(errors, []);
