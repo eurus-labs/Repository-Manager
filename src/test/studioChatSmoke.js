@@ -412,7 +412,8 @@ async function main() {
     const manifest = JSON.parse(fs.readFileSync(path.resolve(__dirname, '../../package.json'), 'utf8'));
     const containers = manifest.contributes.viewsContainers;
     assert.deepEqual(containers.secondarySidebar.map(container => container.id), ['repository-manager-studio']);
-    assert.deepEqual(manifest.contributes.views['repository-manager-studio'].map(view => view.id), ['repositoryManager.studio.chat']);
+    // Chat first; the Runs view (phase 3) next to it.
+    assert.deepEqual(manifest.contributes.views['repository-manager-studio'].map(view => view.id), ['repositoryManager.studio.chat', 'repositoryManager.studio.runs']);
     assert.ok(!containers.activitybar.some(container => /agent|studio/.test(container.id)), 'no Activity Bar icon for the Studio');
     assert.deepEqual(manifest.contributes.commands.filter(command => command.command.startsWith('repositoryManager.agent.')), []);
     assert.equal(JSON.stringify(manifest.contributes).includes('repositoryManager.agent.'), false);
