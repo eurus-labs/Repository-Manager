@@ -8,7 +8,7 @@ import * as vscode from 'vscode';
 import { promises as fs } from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { RunState, RunStore, WorkflowEngine, workflowEffects, workflowModels, workflowSkills } from './engine';
+import { recoverInterruptedSteps, RunState, RunStore, WorkflowEngine, workflowEffects, workflowModels, workflowSkills } from './engine';
 import { skillSources, StudioSkills, studioSkills } from './githubSkills';
 import { approveChecks, codeServices } from './codeHost';
 import { StepDefinition } from './steps';
@@ -42,7 +42,22 @@ export function registerStudio(context: vscode.ExtensionContext, workspaceRoot: 
   const library = path.join(context.globalStorageUri.fsPath, 'studio', 'workflows');
   const store = new RunStore(path.join(context.storageUri?.fsPath ?? context.globalStorageUri.fsPath, 'studio', 'runs'));
   const skills = studioSkills(context);
-  const engine = new WorkflowEngine({ root: workspaceRoot, steps, store, model: studioModel(context), skills, code: codeServices(context) });
+  const code = codeServices(context);
+  const engine = new WorkflowEngine({ root: workspaceRoot, steps, store, model: studioModel(context), skills, code });
+  // Runs cut short when VS Code last closed: a step's writes are undone, and the run says so (#140).
+  // Every run waits for this first, so recovery only ever meets runs nothing is running.
+  const recovery: Promise<unknown> = recoverInterruptedSteps(store, code.isDirty).then(found => {
+    const unreadable = found.filter(item => item.unreadable);
+    if (unreadable.length) {
+      void vscode.window.showErrorMessage(`A workflow step's record of its writes could not be read, so its changes were not undone; it is kept to try again next time. ${unreadable[0].unreadable}`);
+    }
+    const undone = found.filter(item => item.restored.length || item.kept.length);
+    if (!undone.length) { return; }
+    const kept = undone.flatMap(item => item.kept);
+    void vscode.window.showWarningMessage(
+      `VS Code closed while ${undone.length === 1 ? `a step of "${undone[0].workflow ?? undone[0].runId}" was` : `${undone.length} workflow steps were`} changing files. ${undone.reduce((sum, item) => sum + item.restored.length, 0)} file(s) were put back as before the step.${kept.length ? ` Changed since, left as they are: ${kept.join(', ')}.` : ''}`);
+  }, error => console.error('[RepositoryManager] Studio recovery:', error));
+  const recovered = () => recovery.catch(() => undefined);
   const samples = path.join(context.extensionUri.fsPath, 'resources', 'studio', 'samples');
   const load = async (file: string): Promise<{ workflow: Workflow; hash: string } | undefined> => {
     const text = await fs.readFile(file, 'utf8');
@@ -123,6 +138,7 @@ export function registerStudio(context: vscode.ExtensionContext, workspaceRoot: 
 
   /** Runs on, asking at each gate, until the run is done, stopped, failed, or left waiting. */
   const drive = async (workflow: Workflow, state: RunState, onUpdate?: (state: RunState) => void): Promise<RunState> => {
+    await recovered();
     let current = state;
     onUpdate?.(current);
     // A run reopened from Show Workflow Runs may already be waiting: ask first, then go on.
@@ -175,6 +191,7 @@ export function registerStudio(context: vscode.ExtensionContext, workspaceRoot: 
   };
 
   const run = async (workflow: Workflow, hash: string, onUpdate?: (state: RunState) => void): Promise<RunState | undefined> => {
+    await recovered();
     const inputs = await askInputs(workflow);
     if (!inputs) { return undefined; }
     const models = await replacements(workflow);
@@ -288,6 +305,7 @@ export function registerStudio(context: vscode.ExtensionContext, workspaceRoot: 
       void vscode.window.showInformationMessage(`Imported "${workflow.title}" into your library as ${id}. Run it from Run Workflow….`);
     }),
     vscode.commands.registerCommand('repositoryManager.studio.showRuns', async () => {
+      await recovered();
       const runs = await store.list();
       const picked = await vscode.window.showQuickPick(runs.slice(0, 50).map(run => ({
         label: run.workflow.title, description: `${run.status}${run.waiting ? `: ${run.waiting.title}` : ''}`, detail: `${run.startedAt} · ${run.id}`, run

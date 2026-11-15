@@ -73,6 +73,8 @@ export interface StepContext {
   /** For a retried step: what went wrong last time. */
   feedback?: string;
   code?: CodeServices;
+  /** Where a step that writes files journals each write first (#140); removed once its result is saved. */
+  journalFile?: string;
   signal: CancelSignal;
   workflow: Workflow;
   node: WorkflowNode;

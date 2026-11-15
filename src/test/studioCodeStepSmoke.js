@@ -113,6 +113,8 @@ async function main() {
     assert.deepEqual(seen[0].tools, ['read_file', 'list_files', 'search_code', 'edit_file', 'create_file', 'run_check']);
     assert.match(seen[0].first, /Criteria:\n1\. src\/value\.txt says fixed/);
     assert.equal(state.waiting.kind, 'review');
+    // The step's writes were journaled first (#140); once the result is saved for review the journal goes.
+    assert.equal(fs.existsSync(path.join(base, 'runs', state.id, 'fix.writes.jsonl')), false, 'the write journal outlived the saved result');
     assert.equal(state.waiting.verdict, 'failed');
     assert.equal(state.waiting.attempts, 1);
     assert.match(state.waiting.preview, /^A check FAILED\./);

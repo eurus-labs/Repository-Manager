@@ -11,6 +11,7 @@ import { condition, resolve, Scope } from './expressions';
 import { CancelSignal, CodeServices, StepContext, StepDefinition, StepError, StudioModel } from './steps';
 import { runOrder, Workflow, WorkflowNode } from './workflow';
 import { LoadedSkill } from './skills';
+import { journalTime, recoverJournal } from '../agent/writeJournal';
 
 export type RunStatus = 'running' | 'waiting' | 'done' | 'failed' | 'stopped';
 export type NodeStatus = 'pending' | 'done' | 'skipped' | 'failed';
@@ -56,9 +57,87 @@ export interface RunState {
   attempts?: Record<string, number>;
   feedback?: Record<string, string>;
   error?: string;
+  /** Set when VS Code closed while the run was running: which node, and what recovery did (#140). */
+  interrupted?: { node?: string; restored: string[]; kept: string[]; at: string };
 }
 
 export type RunLogEntry = Record<string, unknown> & { at: string; type: string };
+
+/** The write journal of a node of a run (see src/agent/writeJournal.ts). */
+export function journalFile(store: RunStore, runId: string, node: string): string {
+  return path.join(store.folder, runId, `${node}.writes.jsonl`);
+}
+
+export interface InterruptedStep { runId: string; node: string; restored: string[]; kept: string[]; workflow?: string; unreadable?: string }
+
+/**
+ * After a restart: every write journal left means VS Code closed while a step wrote files. Unless
+ * the run waits for the review of that very node (its result was saved just before the journal
+ * would have gone), the step's files are put back and the run is marked failed, saying so.
+ */
+export async function recoverInterruptedSteps(store: RunStore, isDirty?: (absolutePath: string) => boolean): Promise<InterruptedStep[]> {
+  const recovered: InterruptedStep[] = [];
+  const journals: Array<{ runId: string; node: string; file: string; at: number }> = [];
+  for (const runId of await fs.readdir(store.folder).catch(() => [] as string[])) {
+    const names = await fs.readdir(path.join(store.folder, runId)).catch(() => [] as string[]);
+    for (const name of names.filter(item => item.endsWith('.writes.jsonl'))) {
+      const file = path.join(store.folder, runId, name);
+      let at = 0;
+      try { at = journalTime(file); } catch { at = Number.MAX_SAFE_INTEGER; }
+      journals.push({ runId, node: name.slice(0, -'.writes.jsonl'.length), file, at });
+    }
+  }
+  // Newest first: when two runs wrote the same file, the later writes are undone before the earlier
+  // ones, so each journal meets a state of its own chain.
+  journals.sort((a, b) => b.at - a.at);
+  for (const { runId, node, file } of journals) {
+    {
+      const state = await store.load(runId).catch(() => undefined);
+      if (state?.status === 'waiting' && state.waiting?.kind === 'review' && state.waiting.node === node) {
+        await fs.rm(file, { force: true });
+        continue;
+      }
+      let restored: string[];
+      let kept: string[];
+      try {
+        ({ restored, kept } = recoverJournal(file, isDirty));
+      } catch (error) {
+        // Kept for another try; the run is left as it is.
+        recovered.push({ runId, node, restored: [], kept: [], workflow: state?.workflow.title, unreadable: error instanceof Error ? error.message : String(error) });
+        continue;
+      }
+      recovered.push({ runId, node, restored, kept, workflow: state?.workflow.title });
+      if (state && (state.status === 'running' || state.status === 'waiting')) {
+        const message = `VS Code closed while this step ran; ${restored.length ? `its changes were undone (${restored.join(', ')})` : 'it had written nothing that needed undoing'}${kept.length ? `; changed since, left as they are: ${kept.join(', ')}` : ''}.`;
+        if (state.nodes[node]) { state.nodes[node] = { status: 'failed', error: message }; }
+        state.status = 'failed';
+        state.error = `${node}: ${message}`;
+        delete state.waiting;
+        state.interrupted = { node, restored, kept, at: new Date().toISOString() };
+        state.updatedAt = new Date().toISOString();
+        await store.save(state);
+      }
+      await store.log(runId, { type: 'recovered', node, restored, kept });
+    }
+  }
+  // A run still "running" with no journal stopped between steps or inside one that writes no file:
+  // nothing to undo, but it cannot go on (only a waiting run can), so it is marked as cut short.
+  const unreadable = new Set(recovered.filter(item => item.unreadable).map(item => item.runId));
+  for (const state of await store.list()) {
+    if (state.status !== 'running' || unreadable.has(state.id)) { continue; }
+    const node = Object.entries(state.nodes).find(([, value]) => value.status === 'pending')?.[0];
+    const message = 'VS Code closed while this run was running; nothing it wrote needed undoing.';
+    if (node && state.nodes[node]) { state.nodes[node] = { status: 'failed', error: message }; }
+    state.status = 'failed';
+    state.error = node ? `${node}: ${message}` : message;
+    state.interrupted = { node, restored: [], kept: [], at: new Date().toISOString() };
+    state.updatedAt = new Date().toISOString();
+    await store.save(state);
+    await store.log(state.id, { type: 'recovered', node, restored: [], kept: [] });
+    recovered.push({ runId: state.id, node: node ?? '', restored: [], kept: [], workflow: state.workflow.title });
+  }
+  return recovered;
+}
 
 /** Where runs are kept: one folder per run, its state and an append-only log. */
 export class RunStore {
@@ -324,6 +403,8 @@ export class WorkflowEngine {
           };
           await store.log(state.id, { type: 'waiting', node: id, kind: 'review', verdict: state.waiting.verdict });
           await this.save(state);
+          // The changes are in the saved state now: the write journal is no longer needed (#140).
+          await fs.rm(journalFile(store, state.id, id), { force: true });
           return state;
         }
         state.nodes[id] = { status: 'done', output: items ? outputs : outputs[0] };
@@ -349,6 +430,7 @@ export class WorkflowEngine {
       modelSelector: named ? state.models?.[named] ?? named : undefined,
       run: { id: state.id, data: state.data, criteria: state.criteria ?? [] },
       feedback: state.feedback?.[node.id],
+      journalFile: journalFile(this.options.store, state.id, node.id),
       log: event => { void this.options.store.log(state.id, event); }
     };
   }

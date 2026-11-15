@@ -728,10 +728,33 @@ side panel (the chat's plan card and the JSON do it; the diagram keeps it).
   Tasks view, task page or agent commands. Its runner, tools and script
   approvals stay: the code step uses them (`src/agent/repositoryScripts.ts`
   holds the scripts and Git helpers).
-- **Not done here:** undoing a code step's changes when VS Code closes while
-  it runs (the agent does this for its tasks; here the files stay as written,
-  on the current branch unless the plan named one); per-file Diff buttons (the
-  review shows the diff as text); the review step (phase 4).
+- **A window closed while a step runs** *(#140)*: each `edit_file` and
+  `create_file` writes a line to `<runs>/<run>/<node>.writes.jsonl` (path,
+  content before, content after), flushed to disk, before the file changes
+  (`src/agent/writeJournal.ts`). The engine removes the journal right after
+  it saves the step's result for review; a failed or cancelled step undoes its
+  writes and removes it. A journal found when the Studio starts means the step
+  was cut short: each file whose content is any state of that step's writes
+  goes back to what it was before the step (a write that never reached the
+  disk leaves the previous one, a torn last line is ignored); a file changed
+  since, or unsaved in an editor, is left as it is and named. The run is marked
+  failed with `interrupted` (node, files restored, files kept), and a message
+  says so. A run waiting for the review of that node keeps its changes. A run
+  still `running` with no journal (cut short between steps, or in a step that
+  writes no file) is marked the same way with nothing to undo. Files a check
+  script changes are not journaled (#139).
+  - Journaled writes go through a temporary file and a rename, so a file is
+    always one whole state of the chain, never half written.
+  - Recovery never writes through a link: a path that, resolved, leaves the
+    root (a link put in the file's place or a parent's) is kept and named.
+  - Journals of several runs are undone newest first, so two runs that wrote
+    the same file both go back.
+  - A journal that exists but cannot be read is kept and reported, and its run
+    is left as it is, for another try at the next start.
+  - Run Workflow…, Show Workflow Runs and the Chat's Run wait for recovery to
+    finish, so it only meets runs that nothing is running.
+- **Not done here:** per-file Diff buttons (the review shows the diff as
+  text); the review step (phase 4).
 - **Tests.** `src/test/studioCodeStepSmoke.js` (a real Git repository and
   check, scripted tool calls), `src/test/studioSkillsSmoke.js`, and
   screenshot 45 of `src/test/studioChatUi.js`.
@@ -810,6 +833,34 @@ people by chat or email, before any usage data; see Risks.)*
 ## Phases
 
 Each phase ends with something usable on its own.
+
+### Plan from 2026-11-15 *(decided)*
+
+The first round is the Runs view and the two sharing flows; upgrading
+Playwright is a separate maintenance change, and splitting the dashboard's
+`webview.js` does not block phase 3. Crash recovery of code steps (#140, done)
+comes before phase 6.
+
+| Order | Item | Scope and done when |
+| --- | --- | --- |
+| 1 | Runs view (phase 3) | Runs listed, filtered by workflow and status; run count and completion rate. A run's detail shows a timeline per node: retries, gates, errors and results. A waiting run can be resumed; the raw log stays one action away. Old runs with missing data still open. Interrupted runs are shown as such. |
+| 2 | Export from the Chat, Import from a URL | Export the plan the person accepted, through `sharing.ts`. Import a URL through the same validator and question as a file: 1 MB limit, a timeout, redirects handled. Tested Export → Import → Run. |
+| 3 | Playwright and CI | Upgrade the dependency and lockfile, check Chromium, every UI test and the VSIX. Keep the pinned runner that works; plan when to check the next upgrade rather than moving back to `ubuntu-latest`. |
+| 4 | Split `webview.js` further | Settle state ownership and message routing; change the script loader and the test harness first, then one feature at a time; check repository switches, stale replies and restored state. Its own pull requests, apart from Studio behavior. |
+| 5 | Review step (phase 4) | The review engine as a step: findings, verdict and evidence; review history in the Studio linked to the run, node and reviewed revision. A finished review is distinct from a passing one. |
+| 6 | MCP steps (phase 5) | One whole Jira workflow: plan → preview → approval → create issue → write the key back to the plan; mapping, partial failures, and resuming without duplicate issues. The MCP server is chosen first. |
+| 7 | Container (phase 6) | A CLI that runs workflows outside VS Code first, then the image: model provider, credentials, run storage and approvals over CLI or HTTP; a restart continues a waiting run. |
+
+How the Runs view measures *(decided)*:
+
+- `done` means the engine finished, not that the code is right (Accept Anyway
+  and Accept as Unverified exist): completion rate, verification results and
+  retries are shown apart.
+- Running and waiting runs are not in the denominator of finished runs.
+- The timeline separates execution time from time waiting for a person. Where
+  an old log lacks a time, it says "no data" and infers nothing.
+- Workflow runs and tool calls are different counts; tool statistics wait
+  until the events are checked for completeness.
 
 1. **Engine and workflow JSON** (format, validation, runs, gates), with prompt
    and Docs steps. It runs from a command, and its tests run in Node without
