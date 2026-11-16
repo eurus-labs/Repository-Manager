@@ -6,6 +6,9 @@
   const vscode = acquireVsCodeApi();
   // Shared helpers from dashboardFormat.js, which the page loads before this script.
   const { escapeHtml, shortRevision } = window.RepositoryDashboardFormat;
+  const { createWorkingTreeState, workingTreeCountText, workingChangeStatus } = window.RepositoryDashboardWorkingTree;
+  // The Uncommitted changes state (status, selection, discard, status requests): resources/dashboardWorkingTree.js.
+  const workingState = createWorkingTreeState();
 
   // Restore state from previous session
   const previousState = vscode.getState() || {};
@@ -61,18 +64,11 @@
   // Uncommitted changes: a row above the history and the working tree in the detail pane. They are
   // shown by default when there are changes and no commit was picked (commitChosen).
   const WORKING_TREE = '__working_tree__';
-  let workingTree = { repositoryPath: null, changes: [] };
   let commitChosen = false;
   // Apart from the commit dialog's preview ids, so each side knows its own replies.
   let workingPreviewRequestId = 1000000;
   let workingDiffMode = null;
   let uncommittedRowRendered = false;
-  // Uncommitted files picked for Discard: the Side Bar's Changes and the files list share them.
-  // Shift extends from the anchor, the last file toggled on its own.
-  const workingSelection = new Set();
-  let workingSelectionAnchor = null;
-  // Files a confirmed discard is removing (discardStarted): left out of every list until Git is done.
-  let discarding = { repositoryPath: null, paths: new Set() };
   // Side Bar sections folded away (Branches, Changes), kept with the page's state.
   const collapsedSidebarSections = new Set(Array.isArray(previousState.collapsedSidebarSections)
     ? previousState.collapsedSidebarSections.filter(name => typeof name === 'string') : []);
@@ -765,16 +761,11 @@
     },
     toggleWorkingSelection: (el, event) => { if (el.dataset.path) toggleWorkingSelection(el.dataset.path, event); },
     toggleAllWorkingSelection: () => {
-      const changes = dashboardWorkingChanges();
-      const all = changes.length > 0 && changes.every(change => workingSelection.has(change.path));
-      workingSelection.clear();
-      if (!all) changes.forEach(change => workingSelection.add(change.path));
-      workingSelectionAnchor = null;
+      workingState.selectAllOrClear(activeDashboardRepository);
       syncWorkingSelection();
     },
     clearWorkingSelection: () => {
-      workingSelection.clear();
-      workingSelectionAnchor = null;
+      workingState.clearSelection();
       syncWorkingSelection();
     },
     discardWorkingSelection: () => {
@@ -1903,9 +1894,7 @@
     }
     if (repositoryPath !== activeDashboardRepository) {
       commitChosen = false;
-      workingTree = { repositoryPath: null, changes: [] };
-      workingSelection.clear();
-      workingSelectionAnchor = null;
+      workingState.reset();
     }
     activeDashboardRepository = repositoryPath;
     resetChangeSummary();
@@ -2239,54 +2228,33 @@
   let openWorkingTreeAfterStash = null;
 
   // One status request at a time per repository: a second ask while one runs asks once more afterwards.
-  let workingSummaryInFlight = null;
-  let workingSummaryAgain = false;
   function requestWorkingTreeSummary() {
-    if (!activeDashboardRepository) return;
-    if (workingSummaryInFlight === activeDashboardRepository) { workingSummaryAgain = true; return; }
-    workingSummaryInFlight = activeDashboardRepository;
-    workingSummaryAgain = false;
+    if (!workingState.requestSummary(activeDashboardRepository)) return;
     postMessage('getWorkingTreeChanges', { repositoryPath: activeDashboardRepository, purpose: 'dashboard' });
   }
 
   function workingSummaryAnswered(repositoryPath) {
-    if (workingSummaryInFlight !== repositoryPath) return;
-    workingSummaryInFlight = null;
-    if (workingSummaryAgain) requestWorkingTreeSummary();
+    if (workingState.summaryAnswered(repositoryPath)) requestWorkingTreeSummary();
   }
 
   // The active repository's uncommitted changes, without the files a confirmed discard is removing.
   function dashboardWorkingChanges() {
-    if (workingTree.repositoryPath !== activeDashboardRepository) return [];
-    if (discarding.repositoryPath !== activeDashboardRepository || !discarding.paths.size) return workingTree.changes;
-    return workingTree.changes.filter(change => !discarding.paths.has(change.path));
+    return workingState.changes(activeDashboardRepository);
   }
 
   // The selected files in list order (the order Discard names them).
   function selectedWorkingPaths() {
-    return dashboardWorkingChanges().map(change => change.path).filter(filePath => workingSelection.has(filePath));
+    return workingState.selectedPaths(activeDashboardRepository);
   }
 
   // A click toggles one file; Shift adds the files from the anchor to it.
   function toggleWorkingSelection(filePath, event) {
-    const order = dashboardWorkingChanges().map(change => change.path);
-    const to = order.indexOf(filePath);
-    if (to < 0) return;
-    const from = event && event.shiftKey && workingSelectionAnchor ? order.indexOf(workingSelectionAnchor) : -1;
-    if (from >= 0) {
-      order.slice(Math.min(from, to), Math.max(from, to) + 1).forEach(item => workingSelection.add(item));
-    } else {
-      if (workingSelection.has(filePath)) workingSelection.delete(filePath); else workingSelection.add(filePath);
-      workingSelectionAnchor = filePath;
-    }
-    syncWorkingSelection();
+    if (workingState.toggle(filePath, Boolean(event && event.shiftKey), activeDashboardRepository)) syncWorkingSelection();
   }
 
   // Files no longer changed (discarded, committed) leave the selection.
   function pruneWorkingSelection() {
-    const present = new Set(dashboardWorkingChanges().map(change => change.path));
-    workingSelection.forEach(item => { if (!present.has(item)) workingSelection.delete(item); });
-    if (workingSelectionAnchor && !present.has(workingSelectionAnchor)) workingSelectionAnchor = null;
+    workingState.prune(activeDashboardRepository);
   }
 
   function checkboxHtml(checked, action, label, filePath) {
@@ -2301,7 +2269,7 @@
     const selected = selectedWorkingPaths().length;
     const all = selected > 0 && selected === changes.length ? 'true' : selected ? 'mixed' : 'false';
     document.querySelectorAll('[data-action="toggleWorkingSelection"]').forEach(box => {
-      const on = workingSelection.has(box.dataset.path);
+      const on = workingState.has(box.dataset.path);
       if (box.getAttribute('aria-checked') !== String(on)) box.setAttribute('aria-checked', String(on));
       const row = box.parentElement;
       if (row && row.classList.contains('selected') !== on) row.classList.toggle('selected', on);
@@ -2319,13 +2287,6 @@
     }
   }
 
-  function workingChangeStatus(change) {
-    const status = change.conflicted ? 'unmerged' : change.untracked ? 'added' : change.originalPath ? 'renamed'
-      : (change.indexStatus === 'D' || change.workTreeStatus === 'D') ? 'deleted' : (change.indexStatus === 'A') ? 'added' : 'modified';
-    const state = change.conflicted ? 'conflict' : change.untracked ? 'new' : change.staged && change.unstaged ? 'staged + modified' : change.staged ? 'staged' : 'modified';
-    return { status, state };
-  }
-
   // The Side Bar draws at most this many changed files; the dashboard's list has them all.
   const SIDEBAR_CHANGES_SHOWN = 500;
 
@@ -2336,7 +2297,7 @@
     const list = document.getElementById('dashboardChanges');
     const count = document.getElementById('changesRefCount');
     if (!list) return;
-    const known = workingTree.repositoryPath === activeDashboardRepository;
+    const known = workingState.isKnown(activeDashboardRepository);
     const changes = dashboardWorkingChanges();
     if (count) count.textContent = known ? String(changes.length) : '—';
     const rows = changes.slice(0, SIDEBAR_CHANGES_SHOWN).map(change => {
@@ -2344,7 +2305,7 @@
       const slash = change.path.replace(/\/$/, '').lastIndexOf('/');
       const name = slash >= 0 ? change.path.slice(slash + 1) : change.path;
       const folder = slash >= 0 ? change.path.slice(0, slash) : '';
-      const selected = workingSelection.has(change.path);
+      const selected = workingState.has(change.path);
       const where = change.originalPath ? `${change.originalPath} → ${change.path}` : change.path;
       const shown = selectedDashboardCommit === WORKING_TREE && selectedDashboardFile === change.path;
       return `<div class="sidebar-change-row${selected ? ' selected' : ''}${shown ? ' shown' : ''}" role="listitem">` +
@@ -2389,16 +2350,6 @@
     });
   }
 
-  function workingTreeCountText(changes) {
-    const count = predicate => changes.filter(predicate).length;
-    return [
-      [count(change => change.staged && !change.conflicted), 'staged'],
-      [count(change => change.unstaged && !change.conflicted), 'modified'],
-      [count(change => change.untracked), 'new'],
-      [count(change => change.conflicted), 'conflicted']
-    ].filter(([value]) => value > 0).map(([value, label]) => `${value} ${label}`).join(' · ');
-  }
-
   function uncommittedRowHtml() {
     const changes = dashboardWorkingChanges();
     if (!changes.length) return '';
@@ -2424,22 +2375,11 @@
   }
 
   // The status of the active repository arrived (on load, after a refresh or a live update).
-  // The newest status read seen per purpose and repository (the host numbers each read as it starts).
-  const workingTreeStatusSeen = new Map();
-  // False for a reply older than one already shown: concurrent reads can answer out of order.
-  function isLatestWorkingTreeStatus(payload, purpose) {
-    if (!payload || typeof payload.sequence !== 'number') return true;
-    const key = `${purpose}\u0000${payload.repositoryPath}`;
-    if (payload.sequence < (workingTreeStatusSeen.get(key) || 0)) return false;
-    workingTreeStatusSeen.set(key, payload.sequence);
-    return true;
-  }
-
   function applyWorkingTreeSummary(payload) {
     if (payload) workingSummaryAnswered(payload.repositoryPath);
     if (!payload || payload.repositoryPath !== activeDashboardRepository) return;
-    if (!isLatestWorkingTreeStatus(payload, 'dashboard')) return;
-    workingTree = { repositoryPath: payload.repositoryPath, changes: Array.isArray(payload.changes) ? payload.changes : [] };
+    if (!workingState.isLatestStatus(payload, 'dashboard')) return;
+    workingState.setStatus(payload.repositoryPath, payload.changes);
     pruneWorkingSelection();
     updateUncommittedRow();
     renderSidebarChanges();
@@ -2479,15 +2419,13 @@
   // A confirmed discard: its files leave every list at once; Git's result (discardFinished, after the
   // new status) puts back any it could not discard.
   function startDiscard(payload) {
-    if (!payload || payload.repositoryPath !== activeDashboardRepository || !Array.isArray(payload.paths)) return;
-    discarding = { repositoryPath: payload.repositoryPath, paths: new Set(payload.paths) };
+    if (!workingState.startDiscard(payload, activeDashboardRepository)) return;
     refreshWorkingViews(true);
   }
 
   function finishDiscard(payload) {
-    if (!payload || payload.repositoryPath !== discarding.repositoryPath) return;
-    discarding = { repositoryPath: null, paths: new Set() };
-    refreshWorkingViews(payload.success === true);
+    const result = workingState.finishDiscard(payload);
+    if (result.handled) refreshWorkingViews(result.success);
   }
 
   // Everything that shows the uncommitted changes, from the status already known.
@@ -2762,7 +2700,7 @@
       // The status could not be read: say so rather than keep showing the last one as current.
       workingSummaryAnswered(payload.repositoryPath);
       if (payload.repositoryPath !== activeDashboardRepository) return;
-      workingTree = { repositoryPath: payload.repositoryPath, changes: [] };
+      workingState.setStatus(payload.repositoryPath, []);
       updateUncommittedRow();
       if (selectedDashboardCommit === WORKING_TREE) {
         const summary = document.getElementById('dashboardCommitSummary');
@@ -2926,7 +2864,7 @@
       if (element.dataset.mirrorKey !== key) element.dataset.mirrorKey = key;
     });
     // The number of uncommitted changes becomes the Activity Bar icon's badge.
-    const changes = workingTree.repositoryPath === activeDashboardRepository ? workingTree.changes.length : 0;
+    const changes = workingState.count(activeDashboardRepository);
     postMessage('sidebarSnapshot', { html: dashboardSidebar.innerHTML, changes });
   }
   // After the changes of the current task, not at the next frame: a dashboard behind another
@@ -3014,7 +2952,7 @@
         }
         case 'workingTreeChangesLoaded':
           if (message.payload && message.payload.purpose === 'dashboard') applyWorkingTreeSummary(message.payload);
-          else if (isLatestWorkingTreeStatus(message.payload, 'dialog')) renderWorkingTreeChanges(message.payload);
+          else if (workingState.isLatestStatus(message.payload, 'dialog')) renderWorkingTreeChanges(message.payload);
           break;
 
         case 'discardStarted':

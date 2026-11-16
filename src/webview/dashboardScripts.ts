@@ -5,4 +5,4 @@
  * the UI snapshot harness and the Node suites all read this list.
  * No `vscode` import: Node tests require the compiled file directly.
  */
-export const DASHBOARD_SCRIPTS: readonly string[] = ['historyGraph.js', 'dashboardFormat.js', 'webview.js'];
+export const DASHBOARD_SCRIPTS: readonly string[] = ['historyGraph.js', 'dashboardFormat.js', 'dashboardWorkingTree.js', 'webview.js'];
