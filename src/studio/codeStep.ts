@@ -11,7 +11,7 @@ import { cleanPath, revertChanges, StepWorkspace, ToolOutcome } from '../agent/a
 import { WriteJournal } from '../agent/writeJournal';
 import * as fs from 'fs';
 import { isDocumentation } from '../agent/agentRunner';
-import { AgentToolName, AiTextWarning, CheckResult, FileChange, StepVerification, ToolCallRecord } from '../agent/types';
+import { AgentToolName, AiTextWarning, CheckResult, FileChange, ScriptEffectNote, StepVerification, ToolCallRecord } from '../agent/types';
 import { skillsPrompt } from './skills';
 import { StepContext, StepDefinition, StepError } from './steps';
 
@@ -26,6 +26,8 @@ export interface CodeResult {
   checks: CheckResult[];
   toolCalls: ToolCallRecord[];
   aiText: AiTextWarning[];
+  /** What scripts changed outside the step's paths or that cannot be undone (#139). */
+  scriptNotes?: ScriptEffectNote[];
   verification: StepVerification;
 }
 
@@ -95,6 +97,7 @@ export function codePreview(result: CodeResult): string {
     `Branch: ${result.branch}`,
     result.checks.length ? `Checks:\n${result.checks.map(check => `${check.passed ? '✓' : '✗'} ${check.script} (exit ${check.exitCode})${check.passed ? '' : `\n${check.output.slice(-1500)}`}`).join('\n')}` : 'Checks: none',
     result.aiText.length ? `Text in the repository speaks to an AI; the step read it. Check the change follows the plan:\n${result.aiText.map(item => `${item.path}:${item.line} ${item.text}`).join('\n')}` : '',
+    result.scriptNotes?.length ? `A script changed files this review cannot fully cover. Changes it made to text files are listed below and are undone with the step; check the rest with Git:\n${result.scriptNotes.map(note => `${note.path}: ${note.reason}`).join('\n')}` : '',
     files.length ? `Changes:\n${files.join('\n\n')}` : 'No file changed.'
   ].filter(Boolean).join('\n\n');
 }
@@ -251,7 +254,7 @@ export const codeStep: StepDefinition = {
       for (const script of checks) {
         // Approved for its command: a step that changed the command does not get it run.
         const check = code.allowedScripts(root).includes(script)
-          ? await code.runScript(root, script, token)
+          ? await workspace.tracked(() => code.runScript(root, script, token))
           : { script, passed: false, exitCode: null, output: `Not run: the command of "${script}" changed during the step. Retry undoes the change.`, durationMs: 0 };
         if (token.isCancellationRequested) { throw new StepError('Cancelled'); }
         results.push(check);
@@ -260,16 +263,19 @@ export const codeStep: StepDefinition = {
       const changes = [...workspace.changes.values()];
       const result: CodeResult = {
         summary: typeof summary === 'string' ? summary.trim().slice(0, 2000) : '', branch, changes, checks: results, toolCalls,
-        aiText: workspace.aiText, verification: codeVerification(changes, results)
+        aiText: workspace.aiText, scriptNotes: workspace.scriptNotes, verification: codeVerification(changes, results)
       };
       return result;
     } catch (error) {
       // A run that failed keeps nothing: what it wrote is undone.
       const kept = revertChanges(root, [...workspace.changes.values()], code.isDirty);
+      // What a script changed that cannot be undone outlives the discarded workspace: in the log, and in the error.
+      const manual = workspace.scriptNotes.filter(note => !note.undoable);
+      if (manual.length) { context.log({ type: 'script-changes', node: context.node.id, files: manual.map(note => ({ path: note.path, reason: note.reason })) }); }
       // Undone here: nothing left for a restart to recover.
       journal?.clear();
       const message = error instanceof Error ? error.message : String(error);
-      throw new StepError(`${message}${kept.length ? ` (not undone, changed since: ${kept.join(', ')})` : ''}`);
+      throw new StepError(`${message}${kept.length ? ` (not undone, changed since: ${kept.join(', ')})` : ''}${manual.length ? ` (changed by a script and not undone, check with Git: ${manual.map(note => note.path).join(', ')})` : ''}`);
     } finally {
       token.dispose();
     }

@@ -46,6 +46,16 @@ export interface ToolCallRecord {
   note: string;
 }
 
+/** A file a repository script changed that review must call out (#139). */
+export interface ScriptEffectNote {
+  path: string;
+  reason: string;
+  /** Outside the paths the step may change. */
+  outside: boolean;
+  /** Recorded with the step's changes, so Retry and Stop put it back; false: nothing can. */
+  undoable: boolean;
+}
+
 export interface AiTextWarning { path: string; line: number; text: string }
 
 export interface StepResult {
@@ -54,6 +64,8 @@ export interface StepResult {
   toolCalls: ToolCallRecord[];
   checks: CheckResult[];
   aiText: AiTextWarning[];
+  /** What scripts changed that is outside the step's paths or cannot be undone. */
+  scriptNotes?: ScriptEffectNote[];
   /** Set when the run ended without a summary from the model (an error, or cancelled). */
   error?: string;
 }
