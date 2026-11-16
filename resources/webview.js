@@ -50,17 +50,8 @@
   let historyGraphGeometrySignature = '';
   let historyColumnMinimums = [52, 80, 58, 54, 52];
   const runningToolbarOperations = new Set();
-  let workingTreeChanges = [];
-  // Files picked in the Side Bar's Changes when the commit dialog opened: the dialog lists only
-  // those (null: every changed file), so the commit and Write with Copilot take just them.
-  let commitScope = null;
-  // For the usage report: when the dialog opened, and the message Copilot last wrote in it.
-  let commitOpenedAt = 0;
-  let copilotCommitMessage = null;
-  // Repository whose unsent commit message is kept in the Commit dialog (Escape or Cancel keep the draft).
-  let commitDraftRepository = null;
-  let previewedWorkingTreeFile = null;
-  let workingTreePreviewMode = 'unstaged';
+  // The Commit dialog's state (files, scope, filter, preview, Copilot's message): dashboardCommitDialog.js.
+  const commitDialog = window.RepositoryDashboardCommitDialog.createCommitDialogState({ fileFilter: previousState.commitFileFilter });
   // Uncommitted changes: a row above the history and the working tree in the detail pane. They are
   // shown by default when there are changes and no commit was picked (commitChosen).
   const WORKING_TREE = '__working_tree__';
@@ -72,12 +63,9 @@
   // Side Bar sections folded away (Branches, Changes), kept with the page's state.
   const collapsedSidebarSections = new Set(Array.isArray(previousState.collapsedSidebarSections)
     ? previousState.collapsedSidebarSections.filter(name => typeof name === 'string') : []);
-  // The Commit dialog's file filter: all, tracked or untracked.
-  let commitFileFilter = ['all', 'tracked', 'untracked'].includes(previousState.commitFileFilter) ? previousState.commitFileFilter : 'all';
   // The active repository's branch and commit at the last repository list, to notice HEAD moving.
   let activeHeadSignature = { repositoryPath: null, head: '' };
   let historyDrawnReported = false;
-  let workingTreePreviewRequestId = 0;
   let changeSummaryRequestId = 0;
   let changeSummarySelection = null;
   let selectedSummaryModelId = '';
@@ -523,7 +511,7 @@
       filesPanelWidth,
       historyColumnWidths,
       collapsedSidebarSections: Array.from(collapsedSidebarSections),
-      commitFileFilter
+      commitFileFilter: commitDialog.filter()
     });
   }
 
@@ -788,8 +776,7 @@
       saveState();
     },
     setCommitFilter: (el) => {
-      if (!['all', 'tracked', 'untracked'].includes(el.dataset.filter)) return;
-      commitFileFilter = el.dataset.filter;
+      if (!commitDialog.setFilter(el.dataset.filter)) return;
       saveState();
       applyCommitFilter();
     },
@@ -962,7 +949,7 @@
 
     // The dialog opened with a Side Bar selection: list every changed file instead.
     showAllCommitFiles: () => {
-      commitScope = null;
+      commitDialog.showAll();
       postMessage('getWorkingTreeChanges', { repositoryPath: document.getElementById('commitChangesRepositoryPath').value });
     },
 
@@ -984,13 +971,8 @@
       if (repositoryLabel) repositoryLabel.textContent = repository ? repository.name : activeDashboardRepository;
       if (repositoryPath) repositoryPath.value = activeDashboardRepository;
       if (changesList) changesList.innerHTML = '<div class="dashboard-loading">Loading changed files…</div>';
-      workingTreeChanges = [];
-      commitOpenedAt = Date.now();
-      const picked = selectedWorkingPaths();
-      commitScope = picked.length ? new Set(picked) : null;
-      previewedWorkingTreeFile = null;
+      const { clearDraft } = commitDialog.open(activeDashboardRepository, selectedWorkingPaths(), Date.now());
       applyCommitFilter(); // the filter kept from last time, its counts until the files load
-      workingTreePreviewRequestId++;
       const previewPath = document.getElementById('commitPreviewPath');
       const previewModes = document.getElementById('commitPreviewModes');
       const previewDiff = document.getElementById('commitPreviewDiff');
@@ -1000,15 +982,13 @@
       if (previewDiff) previewDiff.innerHTML = '<span class="diff-placeholder">Select a file to preview its changes.</span>';
       if (truncated) truncated.textContent = '';
       // A kept draft keeps whether Copilot wrote it; a cleared one is no longer Copilot's.
-      if (message && commitDraftRepository !== activeDashboardRepository) { message.value = ''; copilotCommitMessage = null; }
-      commitDraftRepository = activeDashboardRepository;
+      if (message && clearDraft) message.value = '';
       if (result) result.textContent = '';
       if (selectAll) selectAll.checked = true;
       if (commitButton) commitButton.disabled = false;
       document.querySelectorAll('input[name="commitPartial"]').forEach(radio => { radio.checked = false; });
-      if (commitMessageRequest) postMessage('cancelCommitMessage', {});
+      if (commitDialog.messageRequest()) postMessage('cancelCommitMessage', {});
       endCommitMessageRequest('');
-      previousCommitMessage = null;
       updatePartialChoice();
       if (modal) modal.classList.add('active');
 
@@ -1017,7 +997,7 @@
 
     // Copilot writes the message for the selected files; a second click while it writes cancels.
     generateCommitMessage: () => {
-      if (commitMessageRequest) {
+      if (commitDialog.messageRequest()) {
         postMessage('cancelCommitMessage', {});
         endCommitMessageRequest('Cancelled.');
         return;
@@ -1034,19 +1014,17 @@
         setCommitMessageStatus('Choose how to commit the partly staged files first: the message describes that.');
         return;
       }
-      commitMessageRequest = ++commitMessageRequestId;
-      commitMessagePendingPartial = partialChoice ? partialChoice.value : null;
+      const requestId = commitDialog.startMessage(partialChoice ? partialChoice.value : null);
       const button = document.getElementById('commitMessageGenerate');
       if (button) button.textContent = 'Cancel';
       setCommitMessageStatus('Reading the selected changes…');
-      postMessage('generateCommitMessage', { requestId: commitMessageRequest, repositoryPath, files,
+      postMessage('generateCommitMessage', { requestId, repositoryPath, files,
         partial: partialChoice ? partialChoice.value : undefined, modelId: selectedSummaryModelId || undefined });
     },
     undoCommitMessage: () => {
       const draft = document.getElementById('commitMessage');
-      if (draft && previousCommitMessage !== null) draft.value = previousCommitMessage;
-      copilotCommitMessage = null; // your own message again
-      previousCommitMessage = null;
+      const previous = commitDialog.undoMessage(); // your own message again
+      if (draft && previous !== null) draft.value = previous;
       setCommitMessageStatus('Your earlier message is back.');
     },
 
@@ -1074,8 +1052,7 @@
 
       if (result) result.textContent = push ? 'Creating commit, then pushing…' : 'Creating commit…';
       if (commitButton) commitButton.disabled = true;
-      const metrics = { durationMs: commitOpenedAt ? Date.now() - commitOpenedAt : 0, copilot: copilotCommitMessage !== null,
-        editRatio: copilotCommitMessage !== null ? editRatio(copilotCommitMessage.trim(), message) : undefined };
+      const metrics = commitDialog.metrics(message, Date.now());
       postMessage('commitFiles', { repositoryPath, files, message, push, metrics,
         partial: selectedPartlyStaged().length ? partialChoice.value : undefined });
     },
@@ -1134,7 +1111,7 @@
       document.getElementById(modalId).classList.remove('active');
       if (modalId === 'createBranchModal') restoreBranchModalControls();
       // Closing the commit dialog stops a message still being written (the draft itself is kept).
-      if (modalId === 'commitChangesModal' && commitMessageRequest) {
+      if (modalId === 'commitChangesModal' && commitDialog.messageRequest()) {
         postMessage('cancelCommitMessage', {});
         endCommitMessageRequest('');
       }
@@ -1267,13 +1244,6 @@
     syncAll: () => postMessage('syncVersions', { submodules: [] })
   };
 
-  let commitMessageRequestId = 0;
-  let commitMessageRequest = 0;
-  // The partly staged choice the last written message describes.
-  let commitMessagePartial = null;
-  let commitMessagePendingPartial = null;
-  let previousCommitMessage = null;
-
   function setCommitMessageStatus(html, isHtml) {
     const status = document.getElementById('commitMessageStatus');
     if (!status) return;
@@ -1281,7 +1251,7 @@
   }
 
   function endCommitMessageRequest(message) {
-    commitMessageRequest = 0;
+    commitDialog.endMessage();
     const button = document.getElementById('commitMessageGenerate');
     if (button) button.textContent = 'Write with Copilot';
     if (message !== undefined) setCommitMessageStatus(message);
@@ -1289,19 +1259,6 @@
 
   // What a commit (and Write with Copilot) takes: the ticked files the filter shows. A ticked file
   // the filter hides is not committed, and the count says so.
-  // The share of Copilot's message changed before committing (as src/services/usageLog.ts editRatio).
-  function editRatio(before, after) {
-    const a = Array.from(before.slice(0, 2000)), b = Array.from(after.slice(0, 2000));
-    if (!a.length) return b.length ? 1 : 0;
-    let previous = Array.from({ length: b.length + 1 }, (_, j) => j);
-    for (let i = 1; i <= a.length; i++) {
-      const row = [i];
-      for (let j = 1; j <= b.length; j++) row[j] = Math.min(previous[j] + 1, row[j - 1] + 1, previous[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
-      previous = row;
-    }
-    return Math.min(1, previous[b.length] / Math.max(a.length, b.length));
-  }
-
   function commitCheckedFiles() {
     return Array.from(document.querySelectorAll('.commit-change-checkbox:checked'))
       .filter(checkbox => !checkbox.closest('.commit-change-row').hidden)
@@ -1320,35 +1277,31 @@
     updatePartialChoice();
   }
 
-  function commitFileShown(untracked) {
-    return commitFileFilter === 'all' || (commitFileFilter === 'untracked') === untracked;
-  }
-
   // All, Tracked or Untracked: rows the filter leaves out are hidden, and Select all ticks the rest.
   function applyCommitFilter() {
-    const counts = { all: workingTreeChanges.length, untracked: workingTreeChanges.filter(change => change.untracked).length };
-    counts.tracked = counts.all - counts.untracked;
+    const counts = commitDialog.counts();
+    const filter = commitDialog.filter();
     document.querySelectorAll('#commitFilter [data-filter]').forEach(button => {
-      button.setAttribute('aria-pressed', String(button.dataset.filter === commitFileFilter));
+      button.setAttribute('aria-pressed', String(button.dataset.filter === filter));
       const count = button.querySelector('span');
       if (count) count.textContent = String(counts[button.dataset.filter]);
     });
     let shown = 0;
     document.querySelectorAll('#commitChangesList .commit-change-row').forEach(row => {
-      row.hidden = !commitFileShown(row.dataset.untracked === 'true');
+      row.hidden = !window.RepositoryDashboardCommitDialog.fileShown(filter, row.dataset.untracked === 'true');
       if (!row.hidden) shown++;
     });
     const empty = document.getElementById('commitFilterEmpty');
     if (empty) {
-      empty.hidden = shown > 0 || !workingTreeChanges.length;
-      empty.textContent = commitFileFilter === 'untracked' ? 'No untracked files.' : 'No tracked files.';
+      empty.hidden = shown > 0 || !commitDialog.changes().length;
+      empty.textContent = filter === 'untracked' ? 'No untracked files.' : 'No tracked files.';
     }
     syncCommitSelectAll();
     updateCommitSelectionCount();
     // The preview follows the filter: a hidden file gives way to the first one shown.
-    const previewed = previewedWorkingTreeFile && workingTreeChanges.find(change => change.path === previewedWorkingTreeFile);
-    if (previewed && !commitFileShown(Boolean(previewed.untracked))) {
-      const first = workingTreeChanges.find(change => commitFileShown(Boolean(change.untracked)));
+    const previewed = commitDialog.previewedChange();
+    if (previewed && !commitDialog.shown(previewed)) {
+      const first = commitDialog.firstShownFile();
       if (first) selectWorkingTreePreview(first.path);
     }
   }
@@ -1388,9 +1341,8 @@
   }
 
   function selectWorkingTreePreview(filePath) {
-    const change = workingTreeChanges.find(item => item.path === filePath);
+    const change = commitDialog.previewFile(filePath);
     if (!change) return;
-    previewedWorkingTreeFile = filePath;
     document.querySelectorAll('.commit-change-preview-button').forEach(button => {
       button.classList.toggle('active', button.dataset.path === filePath);
     });
@@ -1412,11 +1364,8 @@
   }
 
   function requestWorkingTreePreview(mode) {
-    const change = workingTreeChanges.find(item => item.path === previewedWorkingTreeFile);
-    if (!change || (mode === 'staged' && !change.staged)
-      || (mode === 'unstaged' && !change.unstaged && !change.untracked)) return;
-    workingTreePreviewMode = mode;
-    workingTreePreviewRequestId++;
+    const next = commitDialog.nextPreview(mode);
+    if (!next) return;
     const modes = document.getElementById('commitPreviewModes');
     if (modes) modes.querySelectorAll('button').forEach(button => {
       button.classList.toggle('active', button.dataset.mode === mode);
@@ -1428,20 +1377,19 @@
     if (truncated) truncated.textContent = '';
     postMessage('getWorkingTreePreview', {
       repositoryPath: document.getElementById('commitChangesRepositoryPath').value,
-      path: previewedWorkingTreeFile,
+      path: commitDialog.previewedFile(),
       mode,
-      requestId: workingTreePreviewRequestId
+      requestId: next.requestId
     });
   }
 
   function isCurrentWorkingTreePreview(payload) {
     const modal = document.getElementById('commitChangesModal');
     const repositoryPath = document.getElementById('commitChangesRepositoryPath');
-    return modal && modal.classList.contains('active') && repositoryPath
-      && payload.repositoryPath === repositoryPath.value
-      && payload.path === previewedWorkingTreeFile
-      && payload.mode === workingTreePreviewMode
-      && payload.requestId === workingTreePreviewRequestId;
+    return commitDialog.isCurrentPreview(payload, {
+      open: Boolean(modal && modal.classList.contains('active')),
+      repositoryPath: repositoryPath ? repositoryPath.value : null
+    });
   }
 
   function renderWorkingTreeChanges(payload) {
@@ -1451,16 +1399,13 @@
     // Files the user unticked stay unticked when the list is drawn again (Show all files, a refresh).
     const unticked = new Set(Array.from(document.querySelectorAll('#commitChangesList .commit-change-checkbox:not(:checked)')).map(box => box.dataset.path));
     const all = Array.isArray(payload.changes) ? payload.changes : [];
-    const scoped = commitScope ? all.filter(change => commitScope.has(change.path)) : all;
     // Picked files that are no longer changed leave the scope; with none left, every file shows.
-    if (commitScope && !scoped.length) commitScope = null;
-    const changes = commitScope ? scoped : all;
-    workingTreeChanges = changes;
+    const { changes, scopeNote } = commitDialog.setChanges(all);
     const note = document.getElementById('commitScopeNote');
     if (note) {
-      const rest = all.length - changes.length;
-      note.hidden = !commitScope;
-      note.innerHTML = commitScope
+      const rest = scopeNote.rest;
+      note.hidden = !scopeNote.scoped;
+      note.innerHTML = scopeNote.scoped
         ? `<span>${changes.length} file${changes.length === 1 ? '' : 's'} selected in Changes${rest ? ` · ${rest} other${rest === 1 ? '' : 's'} not listed` : ''}</span>` +
           (rest ? '<button type="button" class="link-button" data-action="showAllCommitFiles" title="List every changed file in this dialog">Show all files</button>' : '')
         : '';
@@ -1499,15 +1444,14 @@
         '</button>' +
       '</div>';
     }).join('') + '<div class="dashboard-empty" id="commitFilterEmpty" hidden></div>';
-    const first = changes.find(change => commitFileShown(Boolean(change.untracked))) || changes[0];
+    const first = commitDialog.firstShownFile() || changes[0];
     selectWorkingTreePreview(first.path);
     applyCommitFilter();
   }
 
   // Selected files staged, then changed again: the commit takes either the staged part or the whole file.
   function selectedPartlyStaged() {
-    const selected = new Set(commitCheckedFiles());
-    return workingTreeChanges.filter(change => selected.has(change.path) && change.staged && change.unstaged && !change.untracked && !change.conflicted);
+    return commitDialog.partlyStaged(commitCheckedFiles());
   }
 
   function updatePartialChoice() {
@@ -2999,11 +2943,11 @@
         }
 
         case 'commitMessageProgress':
-          if (message.payload.requestId === commitMessageRequest) setCommitMessageStatus(message.payload.message || '');
+          if (commitDialog.isMessage(message.payload.requestId)) setCommitMessageStatus(message.payload.message || '');
           break;
 
         case 'commitMessageFailed':
-          if (message.payload.requestId === commitMessageRequest) endCommitMessageRequest(message.payload.message || 'Could not write a message.');
+          if (commitDialog.isMessage(message.payload.requestId)) endCommitMessageRequest(message.payload.message || 'Could not write a message.');
           break;
 
         case 'commitMessageGenerated': {
@@ -3011,14 +2955,12 @@
           // Only into the dialog it was asked from, still open on the same repository.
           const dialog = document.getElementById('commitChangesModal');
           const dialogRepository = document.getElementById('commitChangesRepositoryPath');
-          if (payload.requestId !== commitMessageRequest || !dialog || !dialog.classList.contains('active')
+          if (!commitDialog.isMessage(payload.requestId) || !dialog || !dialog.classList.contains('active')
             || !dialogRepository || dialogRepository.value !== payload.repositoryPath) break;
           const draft = document.getElementById('commitMessage');
           // Your own draft is kept for Undo, not lost.
-          previousCommitMessage = draft && draft.value.trim() ? draft.value : null;
+          const previousMessage = commitDialog.messageWritten(payload.message, draft ? draft.value : null);
           if (draft) draft.value = payload.message;
-          copilotCommitMessage = payload.message;
-          commitMessagePartial = commitMessagePendingPartial;
           endCommitMessageRequest();
           // "Written by Claude Haiku 4.5, following AGENTS.md and commitlint.config.js. Check it before committing."
           const sources = (payload.convention || []).filter(source => typeof source === 'string');
@@ -3029,7 +2971,7 @@
           const omitted = omittedCount === 1 ? ' 1 file was too large to send, so Copilot saw only its name.'
             : omittedCount > 1 ? ` ${omittedCount} files were too large to send, so Copilot saw only their names.` : '';
           setCommitMessageStatus(`Written by ${escapeHtml(payload.model || 'Copilot')}, ${escapeHtml(convention)}.${escapeHtml(omitted)} Check it before committing.` +
-            (previousCommitMessage !== null ? ' <button type="button" class="link-button" data-action="undoCommitMessage">Undo</button>' : ''), true);
+            (previousMessage !== null ? ' <button type="button" class="link-button" data-action="undoCommitMessage">Undo</button>' : ''), true);
           break;
         }
 
@@ -3042,11 +2984,10 @@
           if (commitButton) commitButton.disabled = false;
           if (message.payload.success) {
             // A message still being written was for the changes just committed.
-            if (commitMessageRequest) { postMessage('cancelCommitMessage', {}); endCommitMessageRequest(''); }
-            commitMessagePartial = null;
+            if (commitDialog.messageRequest()) { postMessage('cancelCommitMessage', {}); endCommitMessageRequest(''); }
+            commitDialog.committed();
             const draft = document.getElementById('commitMessage');
             if (draft) draft.value = '';
-            copilotCommitMessage = null;
             document.getElementById('commitChangesModal').classList.remove('active');
           }
           break;
@@ -3573,8 +3514,9 @@
   if (commitPartialChoice) {
     commitPartialChoice.addEventListener('change', function () {
       const choice = document.querySelector('input[name="commitPartial"]:checked');
-      if (commitMessagePartial && choice && choice.value !== commitMessagePartial) {
-        setCommitMessageStatus(`The message was written for ${commitMessagePartial === 'staged' ? 'the staged part only' : 'the whole files'}: write it again to match this choice.`);
+      const writtenPartial = commitDialog.writtenPartial();
+      if (writtenPartial && choice && choice.value !== writtenPartial) {
+        setCommitMessageStatus(`The message was written for ${writtenPartial === 'staged' ? 'the staged part only' : 'the whole files'}: write it again to match this choice.`);
       }
     });
   }
