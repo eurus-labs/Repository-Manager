@@ -273,6 +273,19 @@ async function main() {
     assert.equal(fs.readFileSync(path.join(outside, 'a.txt'), 'utf8'), 'outside changed by the script\n', 'an undo never writes through the link');
     g(['checkout', '-q', '--', '.']); fs.rmSync(path.join(work, 'lib'), { force: true, recursive: true }); g(['checkout', '-q', '--', '.']);
 
+    // 1b. A change recorded earlier, then its folder becomes a link before the undo: the undo skips it and names it.
+    fs.writeFileSync(path.join(outside, 'a.txt'), 'outside original\n');
+    workspace = new StepWorkspace(host(async () => { fs.writeFileSync(path.join(work, 'lib', 'a.txt'), 'inside changed\n'); }), { tools: ['run_check'], paths: ['src/'] });
+    await workspace.invoke('run_check', { script: 'x' });
+    assert.equal(workspace.changes.get('lib/a.txt').after, 'inside changed\n');
+    fs.rmSync(path.join(work, 'lib'), { recursive: true });
+    fs.symlinkSync(outside, path.join(work, 'lib'));
+    fs.writeFileSync(path.join(outside, 'a.txt'), 'inside changed\n');
+    const skipped = revertChanges(work, [...workspace.changes.values()], () => false);
+    assert.deepEqual(skipped, ['lib/a.txt'], 'the undo names what it did not put back');
+    assert.equal(fs.readFileSync(path.join(outside, 'a.txt'), 'utf8'), 'inside changed\n', 'the undo never wrote through the link');
+    fs.rmSync(path.join(work, 'lib')); g(['checkout', '-q', '--', '.']);
+
     // 2. A file with CRLF checkout: the "before" is the bytes on disk, so an undo restores them.
     workspace = new StepWorkspace(host(async () => { fs.writeFileSync(path.join(work, 'crlf.txt'), 'changed\r\n'); }), { tools: ['run_check'], paths: ['src/'] });
     await workspace.invoke('run_check', { script: 'x' });

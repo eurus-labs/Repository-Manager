@@ -320,14 +320,28 @@ export class StepWorkspace {
   }
 }
 
+/** Whether `absolute` is a plain path now: no link among its parent folders (so it stays inside the repository), and the file is not a link. */
+function plainPath(root: string, realRoot: string, absolute: string): boolean {
+  let probe = path.dirname(absolute);
+  while (!fs.existsSync(probe) && probe !== path.dirname(probe)) { probe = path.dirname(probe); }
+  try {
+    if (fs.realpathSync(probe) !== path.join(realRoot, path.relative(root, probe))) { return false; }
+    return !fs.lstatSync(absolute).isSymbolicLink();
+  } catch (error) { return (error as NodeJS.ErrnoException).code === 'ENOENT'; }
+}
+
 /**
  * Puts the files a step changed back as they were. A file that changed again since the step (the
  * person edited it, or it has unsaved changes) is left alone and returned, never overwritten.
  */
 export function revertChanges(root: string, changes: FileChange[], isDirty: (absolutePath: string) => boolean): string[] {
   const kept: string[] = [];
+  let realRoot: string | undefined;
+  try { realRoot = fs.realpathSync(root); } catch { realRoot = undefined; }
   for (const change of changes) {
     const absolute = path.join(root, change.path);
+    // A folder may have become a link since the change was recorded: never write through one.
+    if (!realRoot || !plainPath(root, realRoot, absolute)) { kept.push(change.path); continue; }
     let current: string | null = null;
     try { current = fs.readFileSync(absolute, 'utf8'); } catch { current = null; }
     if (current !== change.after || isDirty(absolute)) { kept.push(change.path); continue; }
