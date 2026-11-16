@@ -984,6 +984,34 @@ async function main() {
       [['Staged diff', false], ['Unstaged diff', false]]);
     await page.locator('#commitPartialChoice:not([hidden])').waitFor();
     assert.match(await page.textContent('#commitPartialLegend'), /^partly\.txt is partly staged/);
+    // A reply for an older request (the person clicked another file or mode since) is not shown:
+    // only the reply to the latest request, for the file and mode the dialog shows, reaches the diff.
+    await page.evaluate(() => {
+      const toHost = window.__postToHost;
+      window.__previewRestore = () => { window.__postToHost = toHost; };
+      window.__previewAsked = null;
+      window.__postToHost = message => { if (message.type === 'getWorkingTreePreview') window.__previewAsked = message.payload; return toHost(message); };
+    });
+    await page.click('#commitPreviewModes [data-mode="staged"]');
+    await page.waitForFunction(() => window.__previewAsked && window.__previewAsked.mode === 'staged');
+    const asked = await page.evaluate(() => { window.__previewRestore(); return window.__previewAsked; });
+    const previewReply = (marker, overrides) => page.evaluate(([reply, text]) => window.postMessage({ type: 'workingTreePreviewLoaded',
+      payload: { ...reply, patch: `+${text}`, truncated: false } }, '*'), [{ ...asked, ...overrides }, marker]);
+    // Every text the diff shows from now on is recorded, so a wrong reply cannot hide behind the right one.
+    await page.evaluate(() => {
+      window.__previewSeen = '';
+      new MutationObserver(() => { window.__previewSeen += document.getElementById('commitPreviewDiff').textContent; })
+        .observe(document.getElementById('commitPreviewDiff'), { childList: true, subtree: true, characterData: true });
+    });
+    await previewReply('stale-marker', { requestId: asked.requestId - 1 });
+    await previewReply('other-file-marker', { path: 'filter-new.txt' });
+    await previewReply('other-mode-marker', { mode: 'unstaged' });
+    await previewReply('current-marker', {});
+    await page.waitForFunction(() => document.getElementById('commitPreviewDiff').textContent.includes('current-marker'));
+    const shownDiff = await page.evaluate(() => window.__previewSeen);
+    assert.doesNotMatch(shownDiff, /stale-marker/, 'a reply to an older preview request overwrote the Commit dialog preview');
+    assert.doesNotMatch(shownDiff, /other-file-marker/, 'a reply for another file overwrote the Commit dialog preview');
+    assert.doesNotMatch(shownDiff, /other-mode-marker/, 'a reply for another mode overwrote the Commit dialog preview');
     assert.equal(await page.isChecked('#commitPushAfter'), false);
     await page.fill('#commitMessage', 'feat: partly');
     await page.click('#commitSelectedFilesButton');
@@ -1105,6 +1133,35 @@ async function main() {
     await page.click('#commitMessageGenerate');
     await page.waitForFunction(() => /Sign in to GitHub Copilot/.test(document.getElementById('commitMessageStatus').textContent));
     assert.equal(await page.textContent('#commitMessageGenerate'), 'Write with Copilot');
+    await page.keyboard.press('Escape');
+    await page.locator('#commitChangesModal.active').waitFor({ state: 'detached' });
+    // The unsent draft belongs to its repository: the dialog opened for another one starts empty,
+    // and a Copilot message carried over is no longer counted as Copilot's.
+    assert.notEqual(await page.inputValue('#commitMessage'), '', 'the test needs a kept draft');
+    await page.evaluate(() => document.querySelector('.sidebar-repository-item[data-path="lib-a"]').click());
+    await page.waitForFunction(() => !document.getElementById('uncommittedRow'));
+    await page.click('[data-action="openCommitChangesModal"]');
+    await page.locator('#commitChangesModal.active').waitFor();
+    assert.equal(await page.inputValue('#commitMessage'), '', 'the draft of another repository was kept');
+    await page.keyboard.press('Escape');
+    await page.locator('#commitChangesModal.active').waitFor({ state: 'detached' });
+    await page.evaluate(() => document.querySelector('.sidebar-repository-item[data-path="."]').click());
+    await page.locator('#uncommittedRow.active').waitFor();
+    await page.click('[data-action="openCommitChangesModal"]');
+    await page.locator('#commitChangesModal.active').waitFor();
+    await page.waitForFunction(() => document.querySelectorAll('#commitChangesList .commit-change-checkbox').length > 0);
+    assert.equal(await page.inputValue('#commitMessage'), '', 'the draft came back with the repository');
+    await page.evaluate(() => {
+      const toHost = window.__postToHost;
+      window.__otherRestore = () => { window.__postToHost = toHost; };
+      window.__otherCommits = [];
+      window.__postToHost = message => message.type === 'commitFiles' ? window.__otherCommits.push(message.payload) : toHost(message);
+    });
+    await page.check('input[name="commitPartial"][value="staged"]').catch(() => undefined);
+    await page.fill('#commitMessage', 'feat: typed by hand');
+    await page.click('#commitSelectedFilesButton');
+    assert.equal(await page.evaluate(() => window.__otherCommits[0].metrics.copilot), false, 'a draft carried to another repository still counted as Copilot');
+    await page.evaluate(() => { window.__otherRestore(); window.postMessage({ type: 'commitFilesResult', payload: { repositoryPath: '.', success: false, message: '' } }, '*'); });
     await page.keyboard.press('Escape');
     await page.locator('#commitChangesModal.active').waitFor({ state: 'detached' });
     git(parent, 'rm', '-q', '-f', '--cached', 'partly.txt');
