@@ -13,3 +13,5 @@ node_modules/**
 ui-snapshots/**
 .github/**
 AGENTS.md
+.claude/**
+.verify/**
