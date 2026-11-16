@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.4.0] - 2026-11-16
+
 ### Added
 
 - **Runs** in the Studio (next to Chat): every workflow run with its status, filters by workflow and status, and what they add up to: runs, the completion rate (done of finished runs; running and waiting runs are counted apart, and done means the run finished, not that the code is right), interrupted runs, retries, and how accepted code steps were verified. A run's detail shows each step: how many times it ran, time executing and time waiting for you, its result or error, and what was undone if VS Code closed while it ran. A waiting run can be resumed from there, and **Open raw log** shows its state and log. A time the log does not have shows "no data".
