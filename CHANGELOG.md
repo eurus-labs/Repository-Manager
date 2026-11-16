@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The UI tests that check the extension's screens now run on a current Playwright (1.65), still on the pinned Ubuntu 24.04 CI runner. This changes only development and CI, not the extension.
 - A Studio code step cut short because VS Code closed while it ran no longer leaves its edits behind: each write is recorded before it reaches the disk, and on the next start the step's files are put back as they were (a file you changed since is left alone and named), the run is shown as interrupted, and a message says what was undone. Changes already waiting for your review are kept. A run left running when VS Code closed is marked interrupted too.
 - A Studio code step's checks no longer leave their own file changes behind unseen: a text file a check script modifies or creates is shown in the step's review and put back by Retry, Stop or a failed run (your own changes and later edits are kept). What a script deleted, or changed in a binary, large or linked file, or outside the step's paths is listed in the review as not undoable. Files Git ignores are not watched.
 

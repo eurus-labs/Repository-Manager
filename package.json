@@ -537,7 +537,7 @@
     "@typescript-eslint/parser": "^6.0.0",
     "@vscode/vsce": "^4.0.0",
     "eslint": "^8.0.0",
-    "playwright-core": "~1.56.1",
+    "playwright-core": "~1.65.1",
     "sharp": "^0.35.5",
     "typescript": "^5.0.0"
   },
