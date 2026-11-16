@@ -732,7 +732,12 @@ side panel (the chat's plan card and the JSON do it; the diagram keeps it).
     and named, as for edits.
   - A deleted, binary, large or linked file the script changed cannot be put
     back: the review lists it ("cannot be undone here; check it with Git").
-    Changes outside the step's `paths` are listed too.
+    A path reached through a link (a folder replaced by a link) is never read
+    or written: it is listed the same way. Changes outside the step's `paths`
+    are listed too. A step that fails or is cancelled after a script changed
+    such files writes them to the run log (`script-changes`) and names them in
+    its error, since its review never opens. The before-content is the file as
+    checked out (`cat-file --filters`), so CRLF files are restored as they were.
   - Not watched: files Git ignores (build output, caches, `node_modules`),
     anything outside the repository, and processes the script leaves running. If
     Git cannot list the tree, the review says the script's changes are unknown.

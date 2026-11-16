@@ -39,7 +39,19 @@ export function classify(buffer: Buffer): PathState {
   return { kind: 'opaque', signature: crypto.createHash('sha1').update(buffer).digest('hex') };
 }
 
+/** Whether `relative` reaches its file through a link in a parent folder (root is a real path). */
+function throughLink(root: string, relative: string): boolean {
+  const parent = path.dirname(path.join(root, relative));
+  let probe = parent;
+  while (!fs.existsSync(probe) && probe !== path.dirname(probe)) { probe = path.dirname(probe); }
+  try { return fs.realpathSync(probe) !== probe; } catch { return true; }
+}
+
+const VIA_LINK = 'via-link';
+
 function readState(root: string, relative: string): PathState {
+  // A folder that is now a link leads outside the repository (or elsewhere in it): never read through it.
+  if (throughLink(root, relative)) { return { kind: 'opaque', signature: VIA_LINK }; }
   const absolute = path.join(root, relative);
   let stat: fs.Stats;
   try { stat = fs.lstatSync(absolute); } catch { return { kind: 'absent' }; }
@@ -68,9 +80,12 @@ async function dirtyPaths(root: string): Promise<string[]> {
   return paths;
 }
 
-/** What a clean path held: its content in HEAD, or nothing when HEAD does not have it. */
+/**
+ * What a clean path held: HEAD's content as checked out (line endings and filters applied, as on
+ * disk), or nothing when HEAD does not have it.
+ */
 async function headState(root: string, relative: string): Promise<PathState> {
-  try { return classify(await git(root, ['show', `HEAD:${relative}`])); } catch { return { kind: 'absent' }; }
+  try { return classify(await git(root, ['cat-file', '--filters', `HEAD:${relative}`])); } catch { return { kind: 'absent' }; }
 }
 
 export interface ScriptSnapshot { readonly root: string; readonly states: Map<string, PathState> }
@@ -95,7 +110,8 @@ export async function diffSince(before: ScriptSnapshot): Promise<ScriptEffects> 
     if (same(was, now)) { continue; }
     if (now.kind === 'absent') { effects.unrecoverable.push({ path: relative, reason: 'deleted' }); continue; }
     if (now.kind === 'opaque' || was.kind === 'opaque') {
-      effects.unrecoverable.push({ path: relative, reason: now.kind === 'opaque' && now.signature.startsWith('link:') ? 'a link' : 'binary, large or not a plain file' });
+      const link = now.kind === 'opaque' && (now.signature === VIA_LINK || now.signature.startsWith('link:'));
+      effects.unrecoverable.push({ path: relative, reason: link ? 'reached through a link' : 'binary, large or not a plain file' });
       continue;
     }
     effects.changes.push({ path: relative, before: was.kind === 'text' ? was.text : null, after: now.text });

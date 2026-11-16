@@ -244,6 +244,70 @@ async function main() {
     run(['reset', '-q', '--hard']); run(['clean', '-fdq']);
   }
 
+  // ---- Script effects, review findings on #167.
+  {
+    const { StepWorkspace, revertChanges } = require(path.join(__dirname, '../../out/agent/agentTools.js'));
+    const sandbox = fs.mkdtempSync(path.join(base, 'effects-'));
+    const work = path.join(sandbox, 'work');
+    const outside = path.join(sandbox, 'outside');
+    fs.mkdirSync(path.join(work, 'lib'), { recursive: true }); fs.mkdirSync(outside);
+    fs.writeFileSync(path.join(outside, 'a.txt'), 'outside original\n');
+    fs.writeFileSync(path.join(work, 'lib', 'a.txt'), 'inside original\n');
+    fs.writeFileSync(path.join(work, '.gitattributes'), 'crlf.txt text eol=crlf\n');
+    fs.writeFileSync(path.join(work, 'crlf.txt'), 'original\r\n');
+    const g = args => run(args, work);
+    g(['init', '-q', '-b', 'main']); g(['add', '.']); g(['commit', '-q', '-m', 'init']);
+    assert.equal(g(['status', '--porcelain']).trim(), '', 'the CRLF fixture is clean');
+    const host = script => ({ root: work, isDirty: () => false, allowedScripts: () => ['x'], runScript: async () => { await script(); return { script: 'x', passed: true, exitCode: 0, output: '', durationMs: 0 }; } });
+
+    // 1. A folder replaced by a link to a folder outside: nothing outside is recorded or written.
+    let workspace = new StepWorkspace(host(async () => {
+      fs.rmSync(path.join(work, 'lib'), { recursive: true });
+      fs.symlinkSync(outside, path.join(work, 'lib'));
+      fs.writeFileSync(path.join(outside, 'a.txt'), 'outside changed by the script\n');
+    }), { tools: ['run_check'], paths: ['src/'] });
+    await workspace.invoke('run_check', { script: 'x' });
+    assert.deepEqual([...workspace.changes.keys()].filter(file => file.startsWith('lib')), [], 'nothing reached through a link is recorded');
+    assert.ok(workspace.scriptNotes.some(note => note.path === 'lib/a.txt' && !note.undoable && /through a link/.test(note.reason)), JSON.stringify(workspace.scriptNotes));
+    revertChanges(work, [...workspace.changes.values()], () => false);
+    assert.equal(fs.readFileSync(path.join(outside, 'a.txt'), 'utf8'), 'outside changed by the script\n', 'an undo never writes through the link');
+    g(['checkout', '-q', '--', '.']); fs.rmSync(path.join(work, 'lib'), { force: true, recursive: true }); g(['checkout', '-q', '--', '.']);
+
+    // 2. A file with CRLF checkout: the "before" is the bytes on disk, so an undo restores them.
+    workspace = new StepWorkspace(host(async () => { fs.writeFileSync(path.join(work, 'crlf.txt'), 'changed\r\n'); }), { tools: ['run_check'], paths: ['src/'] });
+    await workspace.invoke('run_check', { script: 'x' });
+    assert.equal(workspace.changes.get('crlf.txt').before, 'original\r\n');
+    revertChanges(work, [...workspace.changes.values()], () => false);
+    assert.equal(fs.readFileSync(path.join(work, 'crlf.txt'), 'utf8'), 'original\r\n', 'the undo restored the CRLF bytes');
+  }
+
+  // A step that fails or is cancelled after a script changed files keeps the notes in the run log.
+  for (const how of ['cancel', 'fail']) {
+    fs.writeFileSync(path.join(repo, 'gone.txt'), 'gone\n');
+    run(['add', '.']); run(['commit', '-q', '--allow-empty', '-m', `gone ${how}`]);
+    const live = { cancelled: false };
+    const turns = [{ tool: 'run_check', input: { script: 'check' } }];
+    if (how === 'cancel') { turns.push({ final: 'Done.' }); }
+    const svc = services(turns, [], []);
+    const inner = svc.runScript;
+    svc.runScript = async (root, script) => {
+      fs.rmSync(path.join(root, 'gone.txt'), { force: true });
+      if (how === 'cancel') { live.cancelled = true; }
+      return inner(root, script);
+    };
+    const store = new RunStore(path.join(base, 'runs'));
+    const engine = new WorkflowEngine({ root: repo, steps, store, code: svc });
+    const flow = workflow();
+    const waiting = await engine.continue(flow, await engine.start(flow, 'hash', {}), never);
+    const state = await engine.continue(flow, await engine.answer(waiting, true), live);
+    assert.notEqual(state.status, 'waiting');
+    const entry = (await store.readLog(state.id)).find(item => item.type === 'script-changes');
+    assert.ok(entry, `${how}: the log names what a script changed that cannot be undone`);
+    assert.deepEqual(entry.files.map(file => file.path), ['gone.txt']);
+    if (how === 'fail') { assert.match(state.error, /changed by a script and not undone, check with Git: gone\.txt/); }
+    run(['reset', '-q', '--hard']); run(['clean', '-fdq']);
+  }
+
   // ---- Cancel reaches a running check: it is told, stops, and the step's change is undone.
   {
     const signal = { cancelled: false };

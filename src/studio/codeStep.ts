@@ -269,10 +269,13 @@ export const codeStep: StepDefinition = {
     } catch (error) {
       // A run that failed keeps nothing: what it wrote is undone.
       const kept = revertChanges(root, [...workspace.changes.values()], code.isDirty);
+      // What a script changed that cannot be undone outlives the discarded workspace: in the log, and in the error.
+      const manual = workspace.scriptNotes.filter(note => !note.undoable);
+      if (manual.length) { context.log({ type: 'script-changes', node: context.node.id, files: manual.map(note => ({ path: note.path, reason: note.reason })) }); }
       // Undone here: nothing left for a restart to recover.
       journal?.clear();
       const message = error instanceof Error ? error.message : String(error);
-      throw new StepError(`${message}${kept.length ? ` (not undone, changed since: ${kept.join(', ')})` : ''}`);
+      throw new StepError(`${message}${kept.length ? ` (not undone, changed since: ${kept.join(', ')})` : ''}${manual.length ? ` (changed by a script and not undone, check with Git: ${manual.map(note => note.path).join(', ')})` : ''}`);
     } finally {
       token.dispose();
     }
