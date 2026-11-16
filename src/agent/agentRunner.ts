@@ -321,13 +321,16 @@ export class AgentRunner {
       result.summary = text(summary, 2000);
       result.changes = [...workspace.changes.values()];
       result.aiText = workspace.aiText;
+      result.scriptNotes = workspace.scriptNotes;
       for (const script of step.checks) {
         // Approved for its command: if the step changed the command, it does not run.
         const check = this.host.allowedScripts(task.repositoryRoot).includes(script)
-          ? await this.host.runScript(task.repositoryRoot, script, token)
+          ? await workspace.tracked(() => this.host.runScript(task.repositoryRoot, script, token))
           : { script, passed: false, exitCode: null, output: `Not run: the command of "${script}" changed during the step. Approve it again (or Retry, which undoes the change).`, durationMs: 0 };
         if (token.isCancellationRequested) { throw new AgentError('Cancelled'); }
         result.checks.push(check);
+        result.changes = [...workspace.changes.values()];
+        result.scriptNotes = workspace.scriptNotes;
         this.store.log(id, { type: 'check', step: task.current, script, passed: check.passed, exitCode: check.exitCode, durationMs: check.durationMs });
       }
       this.setStatus(task, 'stepReview');
@@ -335,6 +338,7 @@ export class AgentRunner {
       const message = error instanceof Error ? error.message : String(error);
       result.changes = [...workspace.changes.values()];
       result.aiText = workspace.aiText;
+      result.scriptNotes = workspace.scriptNotes;
       result.error = message;
       // A run that failed keeps nothing: its changes are undone and the step waits again.
       const kept = revertChanges(task.repositoryRoot, result.changes, this.host.isDirty);

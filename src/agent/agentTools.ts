@@ -12,7 +12,8 @@ import * as path from 'path';
 import { execFile } from 'child_process';
 import { findAiDirectedText } from '../services/aiDirectedText';
 import { ToolSpec } from './lmRouter';
-import { AgentToolName, AiTextWarning, CheckResult, FileChange, PlanStep, READ_TOOLS } from './types';
+import { diffSince, snapshotTree } from './scriptEffects';
+import { AgentToolName, AiTextWarning, CheckResult, FileChange, PlanStep, READ_TOOLS, ScriptEffectNote } from './types';
 
 export const MAX_FILE_BYTES = 200 * 1024;
 export const READ_LINES_DEFAULT = 200;
@@ -102,6 +103,8 @@ function readText(absolute: string): string {
 export class StepWorkspace {
   readonly changes = new Map<string, FileChange>();
   readonly aiText: AiTextWarning[] = [];
+  /** What scripts changed that Retry and Stop cannot put back, or that lies outside the step's paths. */
+  readonly scriptNotes: ScriptEffectNote[] = [];
   private readonly realRoot: string;
 
   constructor(private readonly host: ToolHost, private readonly step: Pick<PlanStep, 'tools' | 'paths'>) {
@@ -279,8 +282,41 @@ export class StepWorkspace {
     if (typeof input.script !== 'string' || !allowed.includes(input.script)) {
       throw new Error(`Only these scripts may run: ${allowed.join(', ') || 'none'} (a script whose command changed must be approved again)`);
     }
-    const result = await this.host.runScript(input.script);
+    const result = await this.tracked(() => this.host.runScript(input.script as string));
     return { ok: true, content: `exit code ${result.exitCode}\n${result.output}`, note: `${input.script}: ${result.passed ? 'passed' : 'failed'}` };
+  }
+
+  /**
+   * Runs a script (the model's run_check, or a check after the step) and records what it changed in
+   * the working tree as the step's own changes, so review shows it and Retry and Stop undo it (#139).
+   * What cannot be undone, and changes outside the step's paths, go to `scriptNotes`. If Git cannot
+   * compare the tree, that is noted and the script's effects stay unknown.
+   */
+  async tracked<T>(run: () => Promise<T>): Promise<T> {
+    let before: Awaited<ReturnType<typeof snapshotTree>> | undefined;
+    try { before = await snapshotTree(this.realRoot); } catch { this.addNote({ path: '.', reason: 'not compared: Git could not list the working tree before a script ran, so its file changes are unknown', outside: false, undoable: false }); }
+    try {
+      return await run();
+    } finally {
+      if (before) {
+        try {
+          const effects = await diffSince(before);
+          for (const change of effects.changes) {
+            // The journal gets the write after it happened: a window closed later in the step is still recovered.
+            this.host.journal?.record(change);
+            this.record(change.path, change.before, change.after);
+            if (!pathAllowed(change.path, this.step.paths)) { this.addNote({ path: change.path, reason: 'changed by a script outside the paths this step may change (undone with the step)', outside: true, undoable: true }); }
+          }
+          for (const item of effects.unrecoverable) {
+            this.addNote({ path: item.path, reason: `${item.reason} by a script: cannot be undone here; check it with Git`, outside: !pathAllowed(item.path, this.step.paths), undoable: false });
+          }
+        } catch { this.addNote({ path: '.', reason: 'not compared: Git could not list the working tree after a script ran, so its file changes are unknown', outside: false, undoable: false }); }
+      }
+    }
+  }
+
+  private addNote(note: ScriptEffectNote): void {
+    if (!this.scriptNotes.some(item => item.path === note.path && item.reason === note.reason)) { this.scriptNotes.push(note); }
   }
 }
 

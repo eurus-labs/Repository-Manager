@@ -719,6 +719,25 @@ side panel (the chat's plan card and the JSON do it; the diagram keeps it).
   review waiting; Show Workflow Runs asks it again, even after a restart.
   A run that fails or is cancelled undoes what the step wrote; Cancel also
   stops a check that is running (its npm script), not only the model.
+- **Script side effects** *(#139)*. An approved npm script runs as a process,
+  with no sandbox, so `edit_file` records do not cover what it writes. The
+  rollback boundary: around every script the step runs (the model's
+  `run_check` and the checks after the step), the working tree is compared
+  through Git (`git status`, `src/agent/scriptEffects.ts`) before and after.
+  - A text file (at most 200 KB) the script modified or created, anywhere in the
+    repository, is recorded as the step's own change: the review diff shows
+    it, and Retry, Stop and a failed run undo it like an edit. Only what the
+    script changed counts: a file you had already changed keeps your lines, and
+    a file changed again since the step (or unsaved in an editor) is left alone
+    and named, as for edits.
+  - A deleted, binary, large or linked file the script changed cannot be put
+    back: the review lists it ("cannot be undone here; check it with Git").
+    Changes outside the step's `paths` are listed too.
+  - Not watched: files Git ignores (build output, caches, `node_modules`),
+    anything outside the repository, and processes the script leaves running. If
+    Git cannot list the tree, the review says the script's changes are unknown.
+  - The script's changes are journaled once it ends; a window closed while the
+    script runs does not recover them.
 - **Engine.** Any step may declare a review (`StepReview`); the run keeps
   `data` its steps share (the branch), `attempts` and `feedback` per node.
 - **Planner.** It is told the repository's scripts (the only checks a code
@@ -741,8 +760,8 @@ side panel (the chat's plan card and the JSON do it; the diagram keeps it).
   failed with `interrupted` (node, files restored, files kept), and a message
   says so. A run waiting for the review of that node keeps its changes. A run
   still `running` with no journal (cut short between steps, or in a step that
-  writes no file) is marked the same way with nothing to undo. Files a check
-  script changes are not journaled (#139).
+  writes no file) is marked the same way with nothing to undo. A script's own
+  writes are journaled only after the script ends (see the next item).
   - Journaled writes go through a temporary file and a rename, so a file is
     always one whole state of the chain, never half written.
   - Recovery never writes through a link: a path that, resolved, leaves the

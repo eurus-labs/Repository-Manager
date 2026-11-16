@@ -192,6 +192,58 @@ async function main() {
     assert.equal(run(['branch', '--list', 'fix/other']).trim(), '', 'a refused step made no branch');
   }
 
+  // ---- A script's own writes (#139): a check that edits a tracked file, creates a file and deletes
+  // one is in the review, Retry and Stop put back what can be put back and name what cannot, and the
+  // person's own uncommitted work and later edits are left alone.
+  for (const decision of ['retry', 'stop']) {
+    fs.writeFileSync(path.join(repo, 'notes.txt'), 'notes\n');
+    fs.writeFileSync(path.join(repo, 'del.txt'), 'delete me\n');
+    fs.writeFileSync(path.join(repo, 'user.txt'), 'user\n');
+    run(['add', '.']); run(['commit', '-q', '--allow-empty', '-m', `script fixtures ${decision}`]);
+    fs.appendFileSync(path.join(repo, 'user.txt'), 'my own uncommitted line\n');
+    fs.writeFileSync(path.join(repo, 'mine.txt'), 'untracked work of mine\n');
+    const turns = [
+      { tool: 'run_check', input: { script: 'check' } },
+      { final: 'Ran the check.' }
+    ];
+    const svc = services(turns, [], []);
+    const base_ = svc.runScript;
+    svc.runScript = async (root, script) => {
+      fs.writeFileSync(path.join(root, 'notes.txt'), 'notes changed by the script\n');
+      fs.mkdirSync(path.join(root, 'gen'), { recursive: true });
+      fs.writeFileSync(path.join(root, 'gen', 'out.txt'), 'generated\n');
+      fs.writeFileSync(path.join(root, 'blob.bin'), Buffer.from([0, 1, 2, 3]));
+      fs.rmSync(path.join(root, 'del.txt'), { force: true });
+      fs.appendFileSync(path.join(root, 'user.txt'), 'script line\n');
+      return base_(root, script);
+    };
+    const engine = new WorkflowEngine({ root: repo, steps, store: new RunStore(path.join(base, 'runs')), code: svc });
+    const flow = workflow({ nodes: [{ id: 'fx', type: 'code', with: { task: 'Run the check', paths: ['src/'], checks: ['check'] } }] });
+    let state = await engine.continue(flow, await engine.start(flow, 'hash', {}), never);
+    state = await engine.continue(flow, await engine.answer(state, true), never);
+    assert.equal(state.waiting.kind, 'review');
+    const preview = state.waiting.preview;
+    assert.match(preview, /### notes\.txt\n- notes\n\+ notes changed by the script/, 'the script\'s edit to a tracked file is in the review');
+    assert.match(preview, /### gen\/out\.txt \(new\)/, 'the file the script created is in the review');
+    assert.match(preview, /### user\.txt\n.*\+ script line/s, 'the script\'s line in a file the person already changed is in the review');
+    assert.doesNotMatch(preview, /### user\.txt\n(.*\n)*- my own/, 'the person\'s own line is not shown as the step\'s change');
+    assert.match(preview, /notes\.txt: changed by a script outside the paths this step may change/);
+    assert.match(preview, /del\.txt: deleted by a script: cannot be undone here/);
+    assert.match(preview, /blob\.bin: binary, large or not a plain file by a script: cannot be undone here/);
+    assert.doesNotMatch(preview, /mine\.txt/, 'the person\'s untracked file is not touched or listed');
+    // The person edits a file the script created, after the script ran: that edit must survive the undo.
+    fs.appendFileSync(path.join(repo, 'gen', 'out.txt'), 'person edit\n');
+    if (decision === 'retry') { turns.push({ tool: 'run_check', input: { script: 'check' } }, { final: 'Again.' }); }
+    state = await engine.answer(state, decision, flow);
+    assert.equal(fs.readFileSync(path.join(repo, 'notes.txt'), 'utf8'), 'notes\n', `${decision} put the edited tracked file back`);
+    assert.equal(fs.readFileSync(path.join(repo, 'user.txt'), 'utf8'), 'user\nmy own uncommitted line\n', `${decision} kept the person's own work and removed the script's line`);
+    assert.equal(fs.readFileSync(path.join(repo, 'mine.txt'), 'utf8'), 'untracked work of mine\n');
+    assert.equal(fs.readFileSync(path.join(repo, 'gen', 'out.txt'), 'utf8'), 'generated\nperson edit\n', 'a file changed since the script is kept');
+    assert.equal(fs.existsSync(path.join(repo, 'del.txt')), false, 'a deleted file is reported, not restored');
+    // Leave the repository clean for the next block.
+    run(['reset', '-q', '--hard']); run(['clean', '-fdq']);
+  }
+
   // ---- Cancel reaches a running check: it is told, stops, and the step's change is undone.
   {
     const signal = { cancelled: false };
