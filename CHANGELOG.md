@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The UI tests that check the extension's screens now run on a current Playwright (1.65), still on the pinned Ubuntu 24.04 CI runner. This changes only development and CI, not the extension.
 - A Studio code step cut short because VS Code closed while it ran no longer leaves its edits behind: each write is recorded before it reaches the disk, and on the next start the step's files are put back as they were (a file you changed since is left alone and named), the run is shown as interrupted, and a message says what was undone. Changes already waiting for your review are kept. A run left running when VS Code closed is marked interrupted too.
 
 ## [3.3.0] - 2026-11-15

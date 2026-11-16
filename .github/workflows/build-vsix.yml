@@ -21,6 +21,8 @@ permissions:
 jobs:
   verify:
     if: github.event_name != 'release' && (github.event_name != 'workflow_dispatch' || inputs.release_tag == '')
+    # Pinned: ubuntu-latest moved to 26.04, which Playwright 1.56 did not support.
+    # Check for a runner upgrade as described in docs/agent-studio.md (Plan from 2026-11-15, item 3).
     runs-on: ubuntu-24.04
     timeout-minutes: 15
 
