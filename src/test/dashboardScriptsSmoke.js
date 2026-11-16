@@ -23,6 +23,7 @@ assert.ok(tags.every(tag => tag[1] === nonce && tag.index > initialAt));
 assert.equal(html.split('<script').length - 1, DASHBOARD_SCRIPTS.length + 1);
 assert.ok(DASHBOARD_SCRIPTS.indexOf('dashboardFormat.js') < DASHBOARD_SCRIPTS.indexOf('webview.js'));
 assert.ok(DASHBOARD_SCRIPTS.indexOf('dashboardWorkingTree.js') < DASHBOARD_SCRIPTS.indexOf('webview.js'));
+assert.ok(DASHBOARD_SCRIPTS.indexOf('dashboardCommitDialog.js') < DASHBOARD_SCRIPTS.indexOf('webview.js'));
 
 // b) every listed file exists and the VSIX does not exclude it (vsce's own file list).
 for (const name of DASHBOARD_SCRIPTS) assert.ok(fs.existsSync(path.join(root, 'resources', name)), `${name} exists`);

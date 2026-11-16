@@ -39,7 +39,7 @@ its state on each side, and one set of messages between them.
 | History | `webviewMessageHandler.ts` (`handleGetHistory`, history actions and rewrites) | `loadedHistoryCommits`, `historyRequestId`, `dashboardHistoryState`, filters | `getHistory` → `historyLoaded`, `reloadDashboardHistory` |
 | Commit detail and comparison | `webviewMessageHandler.ts` (`handleGetCommitDetail`, `handleGetFileDiff`) | `selectedDashboardCommit`, `selectedDashboardFile`, `comparisonSource`, `commitCompareSelection` | `getCommitDetail`, `getFileDiff` |
 | Uncommitted changes | **`workingTreeHandlers.ts`**: status, previews, Discard and Undo, Stash…, Apply / Pop / Drop | status, selection, discard and status-request state: **`resources/dashboardWorkingTree.js`** (`createWorkingTreeState`); `webview.js` keeps rendering, the detail pane (`workingPreviewRequestId`) and message routing | `getWorkingTreeChanges` → `workingTreeChangesLoaded` (numbered), `getWorkingTreePreview`, `discardChanges`, `stashChanges`, `stashAction`, `discardStarted` / `discardFinished`, `stashActionCompleted` |
-| Commit dialog | `webviewMessageHandler.ts` (`handleCommitFiles`), `commitMessageController.ts` | `workingTreeChanges`, `commitScope`, `commitDraftRepository`, `copilotCommitMessage` | `commitFiles` → `commitFilesResult`, `generateCommitMessage` |
+| Commit dialog | `webviewMessageHandler.ts` (`handleCommitFiles`), `commitMessageController.ts` | listed files, scope, filter, preview, draft repository and Copilot-message state: **`resources/dashboardCommitDialog.js`** (`createCommitDialogState`); `webview.js` keeps reading and writing the dialog's elements, the actions and message routing | `commitFiles` → `commitFilesResult`, `generateCommitMessage` |
 | Review | `reviewController.ts`, routed by `reviewBridge.ts` | `reviewStatus` | review messages (see `docs/security-compliance-review-engine.md`) |
 
 - `handlerSupport.ts` holds what every handler shares and no handler: `MessageHandlerContext`,
@@ -57,7 +57,7 @@ its state on each side, and one set of messages between them.
   suites all read it, so a new script is added there and nowhere else. Order matters: shared
   helpers load before `webview.js`. A script publishes its API as `window.RepositoryDashboard<Name>`
   (and `module.exports` for Node), as `historyGraph.js` does; `dashboardFormat.js` holds
-  `escapeHtml` and `shortRevision`; `dashboardWorkingTree.js` holds the Uncommitted changes state. `src/test/dashboardScripts.js` (`loadDashboard`) runs the list
+  `escapeHtml` and `shortRevision`; `dashboardWorkingTree.js` holds the Uncommitted changes state; `dashboardCommitDialog.js` holds the Commit dialog state. `src/test/dashboardScripts.js` (`loadDashboard`) runs the list
   in one vm context for the Node suites; `dashboardScriptsSmoke.js` checks the template, the
   package contents and that the order is load-bearing. Further extractions of `webview.js` move one
   feature's state each, with the state owner and message routing settled first.
