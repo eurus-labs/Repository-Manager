@@ -1,6 +1,5 @@
-const fs = require('fs');
-const vm = require('vm');
 const assert = require('assert/strict');
+const { loadDashboard } = require('./dashboardScripts');
 const nodes = new Map();
 const listeners = {};
 const posts = [];
@@ -26,8 +25,10 @@ const window = { __initialRepositories: [], innerWidth: 1200, innerHeight: 800,
   }; } } };
 const vscode = { getState() { return { selectedDashboardCommit: 'a'.repeat(40), activeDashboardRepository: '.' }; },
   setState() {}, postMessage(message) { posts.push(message); } };
-vm.runInNewContext(fs.readFileSync('resources/webview.js', 'utf8'), { document, window, acquireVsCodeApi: () => vscode,
-  console, ResizeObserver: class { observe() {} }, setTimeout, clearTimeout, requestAnimationFrame: () => 1 });
+// historyGraph.js is replaced by the stub above; dashboardFormat.js and webview.js load as on the page.
+loadDashboard({ document, window, acquireVsCodeApi: () => vscode,
+  console, ResizeObserver: class { observe() {} }, setTimeout, clearTimeout, requestAnimationFrame: () => 1 },
+  { skip: ['historyGraph.js'] });
 function detail(hash, parent) { listeners.window_message({ data: { type: 'commitDetailLoaded', payload: {
   repositoryPath: '.', targetRevision: hash, detail: { hash, shortHash: hash.slice(0,7), parentHashes:[parent],
     comparisonBaseHash: parent, subject: 'Change', authorName: 'Test', authoredAt: new Date().toISOString(), files: [{ path: 'a.txt', status: 'modified' }], refs: [] } } } }); }

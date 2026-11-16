@@ -10,8 +10,8 @@ import { renderDashboardToolbar } from './toolbar';
  * URIs for external webview resources
  */
 export interface WebviewResourceUris {
-  graphScriptUri: vscode.Uri;
-  scriptUri: vscode.Uri;
+  /** One URI per dashboard script, in load order (see DASHBOARD_SCRIPTS). */
+  scriptUris: vscode.Uri[];
   styleUri: vscode.Uri;
 }
 
@@ -561,8 +561,7 @@ export function getHtmlForWebview(repositories: RepositoryInfo[], resourceUris: 
   </div>
 
   <script nonce="${nonce}">window.__initialRepositories = ${JSON.stringify(repositories)};</script>
-  <script nonce="${nonce}" src="${resourceUris.graphScriptUri}"></script>
-  <script nonce="${nonce}" src="${resourceUris.scriptUri}"></script>
+${resourceUris.scriptUris.map(uri => `  <script nonce="${nonce}" src="${uri}"></script>`).join('\n')}
 </body>
 </html>`;
 }

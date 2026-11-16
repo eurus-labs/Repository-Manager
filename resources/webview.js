@@ -4,6 +4,8 @@
 
 (function () {
   const vscode = acquireVsCodeApi();
+  // Shared helpers from dashboardFormat.js, which the page loads before this script.
+  const { escapeHtml, shortRevision } = window.RepositoryDashboardFormat;
 
   // Restore state from previous session
   const previousState = vscode.getState() || {};
@@ -1530,15 +1532,6 @@
     }
   }
 
-  function escapeHtml(value) {
-    return String(value == null ? '' : value)
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#039;');
-  }
-
   function getRepository(path) {
     return repositoryData.find(repository => repository.path === path);
   }
@@ -1658,11 +1651,6 @@
       const label = `${counts[key]} file${counts[key] === 1 ? '' : 's'} ${words}`;
       return `<span class="repo-badge repo-change ${className}" title="${label}" aria-label="${label}">${letter}${counts[key]}</span>`;
     }).join('');
-  }
-
-  function shortRevision(revision) {
-    if (!revision) return '';
-    return revision.length >= 12 && /^[0-9a-f]+$/i.test(revision) ? revision.slice(0, 8) : revision;
   }
 
   function checkoutBranchFromRef(ref) {

@@ -50,9 +50,16 @@ its state on each side, and one set of messages between them.
 - A reply that can race another of its kind carries an id the page checks (`historyRequestId`,
   `workingPreviewRequestId`, the status `sequence`); the page owns the latest id it accepted.
 - Next extractions, one feature per change: the commit dialog's handlers, then history actions
-  and rewrites. Splitting `webview.js` needs the page to load more than one script
-  (`src/webview/template.ts`) and the Node suites that evaluate it as one file to load them all;
-  that is its own change.
+  and rewrites.
+- The dashboard page loads an ordered list of scripts, `DASHBOARD_SCRIPTS` in
+  `src/webview/dashboardScripts.ts`; the template, the panel, the UI snapshot harness and the Node
+  suites all read it, so a new script is added there and nowhere else. Order matters: shared
+  helpers load before `webview.js`. A script publishes its API as `window.RepositoryDashboard<Name>`
+  (and `module.exports` for Node), as `historyGraph.js` does; `dashboardFormat.js` holds
+  `escapeHtml` and `shortRevision`. `src/test/dashboardScripts.js` (`loadDashboard`) runs the list
+  in one vm context for the Node suites; `dashboardScriptsSmoke.js` checks the template, the
+  package contents and that the order is load-bearing. Further extractions of `webview.js` move one
+  feature's state each, with the state owner and message routing settled first.
 
 Existing write services remain separate:
 
