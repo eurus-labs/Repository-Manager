@@ -61,7 +61,8 @@ Use Problem → Design → Predict → Build → Validate → Learn.
 - Do not treat the product's runtime approval rules as instructions requiring user approval for every edit you make to this repository.
 - Preserve unrelated local changes. Avoid destructive replacements without explicit authorization; prefer isolated, reviewable changes.
 - Reuse verified capabilities before adding new abstractions or dependencies.
-- Keep responsibilities and interfaces clear. If delegating authorized work, provide the goal, inputs, output contract, allowed scope, and acceptance checks; review returned artifacts rather than trusting completion summaries.
+- Keep responsibilities and interfaces clear. If delegating authorized work, provide the goal, inputs, output contract, allowed scope, and acceptance checks; review returned artifacts rather than trusting completion summaries. When one session plans and another codes, follow `.github/skills/coder-handoff/SKILL.md`.
+- Use the skills from [eurus-labs/Skills](https://github.com/eurus-labs/Skills) whenever one fits the task (Claude Code loads them through `.claude/settings.json`; Copilot: `copilot plugin marketplace add eurus-labs/Skills`). This repository's own skills in `.github/skills/` take precedence where both cover a step (e.g. `verify-repository-manager` over `verify-change`).
 - Keep requirements, assumptions, decisions, and observed results distinct in the PR description (and `docs/` for lasting design). Do not rely on conversation memory as the only record.
 
 ## Validate and Report
