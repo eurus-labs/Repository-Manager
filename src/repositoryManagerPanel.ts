@@ -10,6 +10,7 @@ import { OpenTimings } from './openTimings';
 import { SubmoduleInfo } from './types';
 import { PRManager } from './prManager';
 import { getHtmlForWebview, getReviewHtml, WebviewResourceUris, WorkspaceFolderInfo } from './webview/template';
+import { DASHBOARD_SCRIPTS } from './webview/dashboardScripts';
 import { ReviewBridge } from './reviewBridge';
 import { messageHandlers, MessageHandlerContext } from './handlers/webviewMessageHandler';
 import { GitCommandService } from './services/gitCommandService';
@@ -429,16 +430,13 @@ export class RepositoryManagerPanel {
   }
 
   private _getResourceUris(): WebviewResourceUris {
-    const graphScriptUri = this._panel.webview.asWebviewUri(
-      vscode.Uri.joinPath(this._extensionUri, 'resources', 'historyGraph.js')
-    );
-    const scriptUri = this._panel.webview.asWebviewUri(
-      vscode.Uri.joinPath(this._extensionUri, 'resources', 'webview.js')
-    );
+    const scriptUris = DASHBOARD_SCRIPTS.map(name => this._panel.webview.asWebviewUri(
+      vscode.Uri.joinPath(this._extensionUri, 'resources', name)
+    ));
     const styleUri = this._panel.webview.asWebviewUri(
       vscode.Uri.joinPath(this._extensionUri, 'resources', 'webview.css')
     );
-    return { graphScriptUri, scriptUri, styleUri };
+    return { scriptUris, styleUri };
   }
 
   /** Parent repository first, then linked repositories. */

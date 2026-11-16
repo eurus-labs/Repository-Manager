@@ -40,6 +40,7 @@ const { ReviewSkillStore } = require(path.join(root, 'out/reviewSkillStore'));
 const { ReviewBridge } = require(path.join(root, 'out/reviewBridge'));
 const { CommitMessageController } = require(path.join(root, 'out/commitMessageController'));
 const { getHtmlForWebview, getReviewHtml, getSidebarHtml } = require(path.join(root, 'out/webview/template'));
+const { DASHBOARD_SCRIPTS } = require(path.join(root, 'out/webview/dashboardScripts'));
 Module._load = originalLoad;
 const outputDir = path.join(root, 'ui-snapshots');
 
@@ -295,8 +296,7 @@ function startServer(workspace, otherFolder) {
         ops = new GitOperations(workspace); // every page starts in the main workspace folder
         currentRoot = workspace;
         const html = getHtmlForWebview(await listRepositories(), {
-          graphScriptUri: resource('/resources/historyGraph.js'),
-          scriptUri: resource('/resources/webview.js'),
+          scriptUris: DASHBOARD_SCRIPTS.map(name => resource(`/resources/${name}`)),
           styleUri: resource('/resources/webview.css')
         }, [{ name: 'workspace', path: workspace, isCurrent: true }, { name: 'other', path: otherFolder, isCurrent: false }])
           .replace(/<meta http-equiv="Content-Security-Policy"[^>]*>/, '')
