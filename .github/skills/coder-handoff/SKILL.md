@@ -13,6 +13,10 @@ Three roles. Each owns its decisions; none takes another's.
 | Planner | the planning session (e.g. Opus) | the plan, the brief, review of the coder's diff, pushing, the PR, triage of review bots, reports to the user | merges without the user's ask; trusts a summary without reading the diff |
 | Coder | the coding session (e.g. Sonnet) | implementation, tests, local checks, local commits | creates a PR, merges, pushes, replies on GitHub, changes scope or makes a product decision |
 
+The planner writes the plan with `design-solution` and the coder works with `implement`, both from the
+`development` plugin of [eurus-labs/Skills](https://github.com/eurus-labs/Skills); this file adds the
+handoff rules they do not cover. Where they differ, this file and AGENTS.md win.
+
 ## Planner: write the plan
 
 Write one plan per branch, in the brief itself (the PR description later carries it as the record).

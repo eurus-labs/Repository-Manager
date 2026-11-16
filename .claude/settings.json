@@ -1,0 +1,16 @@
+{
+  "extraKnownMarketplaces": {
+    "eurus-labs": {
+      "source": { "source": "github", "repo": "eurus-labs/Skills" }
+    }
+  },
+  "enabledPlugins": {
+    "testing@eurus-labs": true,
+    "code-review@eurus-labs": true,
+    "docs@eurus-labs": true,
+    "development@eurus-labs": true,
+    "verification@eurus-labs": true,
+    "skill-authoring@eurus-labs": true,
+    "presentation@eurus-labs": true
+  }
+}
