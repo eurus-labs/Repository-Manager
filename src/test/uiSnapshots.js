@@ -995,6 +995,9 @@ async function main() {
     await page.click('#commitPreviewModes [data-mode="staged"]');
     await page.waitForFunction(() => window.__previewAsked && window.__previewAsked.mode === 'staged');
     const asked = await page.evaluate(() => { window.__previewRestore(); return window.__previewAsked; });
+    // The host's own reply to that request is current too: let it land first, or it replaces the
+    // injected current reply before the check below sees it (a slow runner showed exactly that).
+    await page.waitForFunction(() => !/Loading diff/.test(document.getElementById('commitPreviewDiff').textContent));
     const previewReply = (marker, overrides) => page.evaluate(([reply, text]) => window.postMessage({ type: 'workingTreePreviewLoaded',
       payload: { ...reply, patch: `+${text}`, truncated: false } }, '*'), [{ ...asked, ...overrides }, marker]);
     // Every text the diff shows from now on is recorded, so a wrong reply cannot hide behind the right one.
@@ -1007,7 +1010,7 @@ async function main() {
     await previewReply('other-file-marker', { path: 'filter-new.txt' });
     await previewReply('other-mode-marker', { mode: 'unstaged' });
     await previewReply('current-marker', {});
-    await page.waitForFunction(() => document.getElementById('commitPreviewDiff').textContent.includes('current-marker'));
+    await page.waitForFunction(() => window.__previewSeen.includes('current-marker'));
     const shownDiff = await page.evaluate(() => window.__previewSeen);
     assert.doesNotMatch(shownDiff, /stale-marker/, 'a reply to an older preview request overwrote the Commit dialog preview');
     assert.doesNotMatch(shownDiff, /other-file-marker/, 'a reply for another file overwrote the Commit dialog preview');
