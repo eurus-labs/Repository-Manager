@@ -9,6 +9,7 @@
     "code-review@eurus-labs": true,
     "docs@eurus-labs": true,
     "development@eurus-labs": true,
+    "reasoning@eurus-labs": true,
     "verification@eurus-labs": true,
     "skill-authoring@eurus-labs": true,
     "presentation@eurus-labs": true
