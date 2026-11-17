@@ -15,9 +15,7 @@
   let repositoryData = previousState.repositoryData || previousState.submoduleData || (window.__initialRepositories || []);
   let activeDashboardRepository = previousState.activeDashboardRepository || (repositoryData[0] && repositoryData[0].path) || '.';
   let selectedDashboardCommit = previousState.selectedDashboardCommit || null;
-  let historyNextOffset = null;
   let historySearchTimer = null;
-  let historyRequestId = 0;
   let selectedDashboardFile = null;
   let comparisonBaseHash = null;
   let activeComparisonTarget = null;
@@ -26,16 +24,10 @@
     ? previousState.commitCompareSelection.slice(0, 2)
     : [];
   let comparisonRepository = previousState.comparisonRepository || activeDashboardRepository;
-  let dashboardHistoryState = previousState.dashboardHistoryState || {};
   let dashboardActivated = false;
-  let loadedHistoryCommits = [];
   let repositoryRefs = { branches: [], tags: [], remotes: [], stashes: [] };
-  // The checked-out branch's configured upstream, from the latest first history page.
-  let loadedHistoryUpstream = null;
   let pendingBranchCheckout = null;
-  let pendingHistoryViewport = null;
   let historyPanelHeight = Number(previousState.historyPanelHeight) || 0;
-  let historyAppendPending = false; // a Load more page is on its way (also started by scrolling)
   let summaryModelsState = 'idle'; // the Model menu's list: idle (not loaded), loading, loaded
   let filesPanelWidth = Number(previousState.filesPanelWidth) || 0;
   const defaultHistoryColumnWidths = [76, 420, 150, 110, 80];
@@ -51,6 +43,8 @@
   let historyColumnMinimums = [52, 80, 58, 54, 52];
   const runningToolbarOperations = new Set();
   // The Commit dialog's state (files, scope, filter, preview, Copilot's message): dashboardCommitDialog.js.
+  // The History's loading state (commits, upstream, request id, next offset, filters): dashboardHistory.js.
+  const historyState = window.RepositoryDashboardHistory.createHistoryState({ savedFilters: previousState.dashboardHistoryState });
   const commitDialog = window.RepositoryDashboardCommitDialog.createCommitDialogState({ fileFilter: previousState.commitFileFilter });
   // Uncommitted changes: a row above the history and the working tree in the detail pane. They are
   // shown by default when there are changes and no commit was picked (commitChosen).
@@ -350,7 +344,7 @@
   }
 
   function showHistoryContextMenu(element, x, y) {
-    const commit = loadedHistoryCommits.find(item => item.hash === element.dataset.commit);
+    const commit = historyState.findCommit(element.dataset.commit);
     if (!commit) return false;
     historyContextTarget = { repositoryPath: activeDashboardRepository, hash: commit.hash };
     fillHistoryBranchItems(commit);
@@ -506,7 +500,7 @@
       selectedDashboardCommit,
       commitCompareSelection,
       comparisonRepository,
-      dashboardHistoryState,
+      dashboardHistoryState: historyState.snapshot(),
       historyPanelHeight,
       filesPanelWidth,
       historyColumnWidths,
@@ -797,7 +791,7 @@
     fetchActiveRepository: () => runToolbarOperation('fetch', 'fetchUpdates'),
 
     loadMoreHistory: () => {
-      if (historyNextOffset !== null && !historyAppendPending) requestDashboardHistory(historyNextOffset, true);
+      if (historyState.canLoadMore()) requestDashboardHistory(historyState.currentNextOffset(), true);
     },
 
     selectWorkingTree: () => {
@@ -1795,27 +1789,22 @@
   }
 
   function getDashboardFilters(repositoryPath) {
-    return window.RepositoryHistoryGraph.normalizeHistoryFilters(dashboardHistoryState[repositoryPath]);
+    return historyState.getFilters(repositoryPath);
   }
 
   function setHistoryRevision(revision) {
     if (!activeDashboardRepository) return;
-    const current = getDashboardFilters(activeDashboardRepository);
-    dashboardHistoryState[activeDashboardRepository] = Object.assign({}, current, {
-      branch: revision || ''
-    });
+    historyState.setRevision(activeDashboardRepository, revision);
   }
 
   function captureDashboardFilters() {
     if (!activeDashboardRepository) return;
-    const current = getDashboardFilters(activeDashboardRepository);
     const includeRemotes = document.getElementById('dashboardIncludeRemotes');
     const search = document.getElementById('dashboardSearch');
-    dashboardHistoryState[activeDashboardRepository] = {
-      branch: current.branch,
+    historyState.setFilters(activeDashboardRepository, {
       includeRemotes: Boolean(includeRemotes && includeRemotes.checked),
       search: search ? search.value : ''
-    };
+    });
   }
 
   function applyDashboardFilters(repositoryPath) {
@@ -1849,8 +1838,7 @@
       comparisonRepository = repositoryPath;
     }
     selectedDashboardFile = null;
-    historyNextOffset = null;
-    loadedHistoryCommits = [];
+    historyState.reset();
     comparisonBaseHash = null;
     activeComparisonTarget = null;
     comparisonSource = null;
@@ -1911,17 +1899,12 @@
     const history = document.getElementById('dashboardHistory');
     const preserveViewport = Boolean(options && options.preserveViewport && !append);
     const viewport = preserveViewport ? captureHistoryViewport(history) : null;
-    if (!append && !preserveViewport) loadedHistoryCommits = [];
     captureDashboardFilters();
     const filters = getDashboardFilters(activeDashboardRepository);
     saveState();
     if (!append && !preserveViewport) showHistoryLoading(history);
     // A fresh load supersedes a page still on its way, whose reply will be dropped.
-    historyAppendPending = Boolean(append);
-    if (!append) historyRequestId += 1;
-    pendingHistoryViewport = viewport
-      ? Object.assign({}, viewport, { requestId: historyRequestId, repositoryPath: activeDashboardRepository })
-      : null;
+    const requestId = historyState.startLoad({ append, preserveViewport, viewport, repositoryPath: activeDashboardRepository });
     postMessage('getHistory', {
       repositoryPath: activeDashboardRepository,
       limit: 100,
@@ -1930,7 +1913,7 @@
       branch: filters.branch || undefined,
       includeRemotes: Boolean(includeRemotes && includeRemotes.checked),
       append: Boolean(append),
-      requestId: historyRequestId
+      requestId
     });
   }
 
@@ -2058,13 +2041,13 @@
       const history = document.getElementById('dashboardHistory');
       if (!history || !loadedHistoryGraphModel) return;
       const rows = Array.from(history.querySelectorAll('.history-row'));
-      if (!rows.length || rows.length !== loadedHistoryCommits.length) return;
+      if (!rows.length || rows.length !== historyState.loadedCommits().length) return;
       const heights = rows.map(row => row.offsetHeight);
       const signature = heights.join(',');
       if (signature === historyGraphGeometrySignature) return;
       const overlay = history.querySelector('.history-graph-overlay');
       if (!overlay) return;
-      overlay.outerHTML = renderHistoryGraph(loadedHistoryCommits, loadedHistoryGraphModel, heights);
+      overlay.outerHTML = renderHistoryGraph(historyState.loadedCommits(), loadedHistoryGraphModel, heights);
       historyGraphGeometrySignature = signature;
       updateCommitCompareUI();
     });
@@ -2073,31 +2056,24 @@
   // Older commits load when the end of the list is within 400px of the view; there is no button.
   function loadHistoryNearEnd() {
     const list = document.getElementById('dashboardHistory');
-    if (!list || historyNextOffset === null || historyAppendPending) return;
+    if (!list || !historyState.canLoadMore()) return;
     if (list.scrollTop + list.clientHeight >= list.scrollHeight - 400) actions.loadMoreHistory();
   }
 
   function renderHistoryPage(payload) {
-    if (!payload || payload.repositoryPath !== activeDashboardRepository || payload.requestId !== historyRequestId) return;
     const history = document.getElementById('dashboardHistory');
-    if (!history) return;
+    if (!payload || !history) return;
+    // A page for another repository or an older request is ignored (the state decides).
+    const accepted = historyState.acceptPage(payload, activeDashboardRepository);
+    if (!accepted) return;
 
     history.classList.remove('history-stale');
     history.inert = false;
-    if (payload.offset > 0) historyAppendPending = false;
     const appendError = history.querySelector('.history-append-error');
     if (appendError) appendError.remove(); // the page that failed has loaded since
-    const renderedCount = loadedHistoryCommits.length;
-    let addedCommits = [];
-    if (payload.offset > 0) {
-      const knownHashes = new Set(loadedHistoryCommits.map(commit => commit.hash));
-      addedCommits = (payload.commits || []).filter(commit => !knownHashes.has(commit.hash));
-      loadedHistoryCommits = loadedHistoryCommits.concat(addedCommits);
-    } else {
-      loadedHistoryCommits = payload.commits || [];
-      loadedHistoryUpstream = typeof payload.upstream === 'string' ? payload.upstream : null;
-    }
-    const graphModel = window.RepositoryHistoryGraph.buildGraphModel(loadedHistoryCommits, { upstream: loadedHistoryUpstream });
+    const { renderedCount, addedCommits } = accepted;
+    const shownCommits = historyState.loadedCommits();
+    const graphModel = window.RepositoryHistoryGraph.buildGraphModel(shownCommits, { upstream: historyState.loadedUpstream() });
     loadedHistoryGraphModel = graphModel;
     historyGraphGeometrySignature = '';
     const historyRegion = history.closest('.history-region');
@@ -2125,25 +2101,23 @@
       if (addedCommits.length) content.insertAdjacentHTML('beforeend', renderRows(addedCommits));
       scheduleHistoryGraphGeometry();
     } else {
-      const rows = renderRows(loadedHistoryCommits);
+      const rows = renderRows(shownCommits);
       const uncommitted = uncommittedRowHtml();
       uncommittedRowRendered = Boolean(uncommitted);
       history.innerHTML = uncommitted + (rows
-        ? `<div class="history-table-content">${renderHistoryGraph(loadedHistoryCommits, graphModel)}${rows}</div>`
+        ? `<div class="history-table-content">${renderHistoryGraph(shownCommits, graphModel)}${rows}</div>`
         : '<div class="dashboard-empty">No commits match this view.</div>');
     }
-    const viewport = pendingHistoryViewport;
-    if (viewport && viewport.requestId === payload.requestId && viewport.repositoryPath === payload.repositoryPath) {
+    const viewport = historyState.takeViewport(payload);
+    if (viewport) {
       const anchor = viewport.commit
         ? Array.from(history.querySelectorAll('.history-row')).find(row => row.dataset.commit === viewport.commit)
         : null;
       history.scrollTop = anchor ? Math.max(0, anchor.offsetTop - viewport.offset) : 0;
-      pendingHistoryViewport = null;
     }
-    historyNextOffset = payload.nextOffset;
     updateCommitCompareUI();
     // Once, for repositoryManager.debug.timings: when the first history page is on screen.
-    if (!historyDrawnReported && loadedHistoryCommits.length) {
+    if (!historyDrawnReported && shownCommits.length) {
       historyDrawnReported = true;
       requestAnimationFrame(() => requestAnimationFrame(() => postMessage('dashboardTiming', { name: 'history drawn' })));
     }
@@ -2151,7 +2125,7 @@
     requestAnimationFrame(loadHistoryNearEnd);
 
     if (!append && payload.commits && payload.commits.length > 0) {
-      const visibleHashes = new Set(loadedHistoryCommits.map(commit => commit.hash));
+      const visibleHashes = new Set(shownCommits.map(commit => commit.hash));
       commitCompareSelection = comparisonRepository === activeDashboardRepository
         ? commitCompareSelection.filter(hash => visibleHashes.has(hash)).slice(0, 2)
         : [];
@@ -2335,7 +2309,7 @@
     }
     if (selectedDashboardCommit === WORKING_TREE) {
       if (hasChanges) renderWorkingTreeDetail();
-      else if (loadedHistoryCommits.length) loadParentCommitDetail(loadedHistoryCommits[0].hash);
+      else if (historyState.firstCommit()) loadParentCommitDetail(historyState.firstCommit().hash);
       else clearCommitDetail();
     } else if (hasChanges && !commitChosen && !comparisonSource && commitCompareSelection.length === 0) {
       selectWorkingTree();
@@ -2379,7 +2353,7 @@
     renderSidebarChanges();
     if (selectedDashboardCommit !== WORKING_TREE) return;
     if (dashboardWorkingChanges().length) renderWorkingTreeDetail(keepDiff);
-    else if (loadedHistoryCommits.length) loadParentCommitDetail(loadedHistoryCommits[0].hash);
+    else if (historyState.firstCommit()) loadParentCommitDetail(historyState.firstCommit().hash);
     else clearCommitDetail();
   }
 
@@ -2655,8 +2629,7 @@
     if (!payload || payload.repositoryPath !== activeDashboardRepository) return;
     const history = document.getElementById('dashboardHistory');
     if (payload.request === 'getHistory' && history) {
-      const appending = historyAppendPending;
-      historyAppendPending = false;
+      const appending = historyState.failPage();
       history.classList.remove('history-stale');
       history.inert = false;
       // A next page that failed keeps the rows already shown, with a way to ask for it again
@@ -3026,7 +2999,7 @@
           repositoryData = (message.payload && message.payload.repositories) || [];
           repositoryDataAt = Date.now();
           showWorkspaceFolder(message.payload && message.payload.folder);
-          dashboardHistoryState = {};
+          historyState.clearFilters();
           Object.keys(pendingOperations).forEach(key => delete pendingOperations[key]);
           cancelPendingChangeSummary();
           changeSummaries.clear();
@@ -3034,7 +3007,7 @@
           if (repositoryData.length > 0) {
             activateDashboardRepository(repositoryData[0].path);
           } else {
-            loadedHistoryCommits = [];
+            historyState.clearCommits();
             clearCommitDetail();
             const history = document.getElementById('dashboardHistory');
             if (history) { uncommittedRowRendered = false; history.innerHTML = '<div class="dashboard-empty">No Git repository in this folder.</div>'; }

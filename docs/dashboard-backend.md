@@ -36,7 +36,7 @@ its state on each side, and one set of messages between them.
 | Feature | Host handlers | Page state (in `resources/webview.js`) | Messages |
 |---|---|---|---|
 | Repository selection | `repositoryManagerPanel.ts`, `repositoryManagerLauncher.ts` (Side Bar mirror) | `repositoryData`, `activeDashboardRepository` | `updateSubmodules` (the list), `sidebarSnapshot` |
-| History | `webviewMessageHandler.ts` (`handleGetHistory`, history actions and rewrites) | `loadedHistoryCommits`, `historyRequestId`, `dashboardHistoryState`, filters | `getHistory` → `historyLoaded`, `reloadDashboardHistory` |
+| History | `webviewMessageHandler.ts` (`handleGetHistory`, history actions and rewrites) | loaded commits, upstream, request id, next offset, Load more pending, viewport to restore, filters per repository (`dashboardHistoryState`): **`resources/dashboardHistory.js`** (`createHistoryState`); `webview.js` keeps `renderHistoryPage`, the graph, the column layout and `repositoryRefs` | `getHistory` → `historyLoaded`, `reloadDashboardHistory` |
 | Commit detail and comparison | `webviewMessageHandler.ts` (`handleGetCommitDetail`, `handleGetFileDiff`) | `selectedDashboardCommit`, `selectedDashboardFile`, `comparisonSource`, `commitCompareSelection` | `getCommitDetail`, `getFileDiff` |
 | Uncommitted changes | **`workingTreeHandlers.ts`**: status, previews, Discard and Undo, Stash…, Apply / Pop / Drop | status, selection, discard and status-request state: **`resources/dashboardWorkingTree.js`** (`createWorkingTreeState`); `webview.js` keeps rendering, the detail pane (`workingPreviewRequestId`) and message routing | `getWorkingTreeChanges` → `workingTreeChangesLoaded` (numbered), `getWorkingTreePreview`, `discardChanges`, `stashChanges`, `stashAction`, `discardStarted` / `discardFinished`, `stashActionCompleted` |
 | Commit dialog | `webviewMessageHandler.ts` (`handleCommitFiles`), `commitMessageController.ts` | listed files, scope, filter, preview, draft repository and Copilot-message state: **`resources/dashboardCommitDialog.js`** (`createCommitDialogState`); `webview.js` keeps reading and writing the dialog's elements, the actions and message routing | `commitFiles` → `commitFilesResult`, `generateCommitMessage` |
@@ -48,16 +48,17 @@ its state on each side, and one set of messages between them.
 - `webviewMessageHandler.ts` stays the single routing table (`messageHandlers`) and re-exports the
   moved handlers, so the panel and tests keep one entry point.
 - A reply that can race another of its kind carries an id the page checks (`historyRequestId`,
-  `workingPreviewRequestId`, the status `sequence`); the page owns the latest id it accepted.
+  `workingPreviewRequestId`, the status `sequence`); the page owns the latest id it accepted (the History's is in `dashboardHistory.js`).
 - Next extractions, one feature per change: the commit dialog's handlers, then history actions
-  and rewrites. On the page, the Uncommitted changes state is out of `webview.js`; its rendering,
+  and rewrites. On the page, the state of Uncommitted changes, the Commit dialog and the History's
+  loading is out of `webview.js`; the rendering (`renderHistoryPage`, the graph, the column layout),
   the detail pane and the message routing follow later.
 - The dashboard page loads an ordered list of scripts, `DASHBOARD_SCRIPTS` in
   `src/webview/dashboardScripts.ts`; the template, the panel, the UI snapshot harness and the Node
   suites all read it, so a new script is added there and nowhere else. Order matters: shared
   helpers load before `webview.js`. A script publishes its API as `window.RepositoryDashboard<Name>`
   (and `module.exports` for Node), as `historyGraph.js` does; `dashboardFormat.js` holds
-  `escapeHtml` and `shortRevision`; `dashboardWorkingTree.js` holds the Uncommitted changes state; `dashboardCommitDialog.js` holds the Commit dialog state. `src/test/dashboardScripts.js` (`loadDashboard`) runs the list
+  `escapeHtml` and `shortRevision`; `dashboardWorkingTree.js` holds the Uncommitted changes state; `dashboardCommitDialog.js` holds the Commit dialog state; `dashboardHistory.js` holds the History's loading state (commits, upstream, request id, next offset, Load more pending, viewport, filters per repository). `src/test/dashboardScripts.js` (`loadDashboard`) runs the list
   in one vm context for the Node suites; `dashboardScriptsSmoke.js` checks the template, the
   package contents and that the order is load-bearing. Further extractions of `webview.js` move one
   feature's state each, with the state owner and message routing settled first.
