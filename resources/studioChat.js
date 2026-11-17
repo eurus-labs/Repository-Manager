@@ -9,7 +9,11 @@
   const input = document.getElementById('message');
   const modelSelect = document.getElementById('model');
   const send = document.getElementById('send');
+  const runStatus = document.getElementById('run-status');
   let state = null;
+  // Which "Activity (N)" lists the reader opened, by run id: a re-render keeps them open.
+  const openActivity = new Set();
+  let ticker = null;
 
   const el = (tag, attributes = {}, ...children) => {
     const node = document.createElement(tag);
@@ -32,6 +36,20 @@
   };
   const STATUS = { current: 'Plan', proposed: 'Proposed change', superseded: 'Earlier plan', discarded: 'Discarded', accepted: 'Accepted' };
   const RUN = { running: 'Running…', waiting: 'Waiting for your answer', done: 'Done', failed: 'Failed', stopped: 'Stopped' };
+
+  // A step's state in a word and a sign: never colour alone.
+  const STEP = {
+    pending: ['○', 'Not started'], running: ['▶', 'Running'], waiting: ['⏸', 'Waiting for you'], done: ['✓', 'Done'],
+    skipped: ['–', 'Skipped'], failed: ['✗', 'Failed'], stopped: ['■', 'Stopped']
+  };
+
+  /** m:ss from a start time (ISO), as the reader's clock shows it. */
+  function elapsed(since) {
+    const started = Date.parse(since);
+    if (!Number.isFinite(started)) return '';
+    const seconds = Math.max(0, Math.floor((Date.now() - started) / 1000));
+    return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
+  }
 
   const modelName = selector => (state.models.find(model => model.selector === selector) || {}).name;
 
@@ -151,10 +169,37 @@
         draft.status === 'current' && state.file ? el('p', { class: 'muted' }, `Saved as ${state.file}: changes there show here.`) : null]);
   }
 
+  /** The steps of a run with a word each, and under the running one its last lines; then every line, collapsed. */
+  function runProgress(run) {
+    const steps = run.steps || [];
+    const activity = run.activity || [];
+    const list = el('ol', { class: 'run-steps', 'aria-label': 'Steps of the run', 'aria-live': 'off' }, steps.map((step, index) => {
+      const [sign, word] = STEP[step.outcome] || STEP.pending;
+      const lines = step.outcome === 'running' ? activity.filter(line => line.node === step.id).slice(-5) : [];
+      return el('li', { class: `run-step ${step.outcome}`, 'data-step': step.id, 'data-outcome': step.outcome },
+        el('span', { class: 'sign', 'aria-hidden': 'true' }, sign),
+        el('span', { class: 'step-title' }, step.title || step.id),
+        el('span', { class: 'step-word' }, word,
+          step.outcome === 'running' && step.since ? [' · ', el('span', { class: 'tick', 'data-since': step.since }, elapsed(step.since))] : null,
+          step.outcome === 'done' && typeof step.executionMs === 'number' && step.executionMs >= 1000 ? ` · ${Math.round(step.executionMs / 1000)} s` : null),
+        step.error && step.outcome === 'failed' ? el('span', { class: 'error-text step-error' }, step.error) : null,
+        lines.length ? el('ul', { class: 'activity recent', 'aria-label': `What ${step.title || step.id} is doing`, 'aria-live': 'off' },
+          lines.map(line => el('li', { class: line.ok === false ? 'bad' : '' }, line.text))) : null);
+    }));
+    const more = activity.length
+      ? el('details', { class: 'all-activity', 'data-key': `activity-${run.id}`, open: openActivity.has(run.id),
+          ontoggle: event => { if (event.target.open) openActivity.add(run.id); else openActivity.delete(run.id); } },
+          el('summary', {}, `Activity (${activity.length})`),
+          el('ul', { class: 'activity', 'aria-live': 'off' }, activity.map(line => el('li', { class: line.ok === false ? 'bad' : '' }, line.text))))
+      : null;
+    return [list, more];
+  }
+
   function runCard(message) {
     const run = message.run;
-    return el('article', { class: `card run ${run.status}`, 'data-run': run.status },
+    return el('article', { class: `card run ${run.status}`, 'data-run': run.status, 'aria-live': run.steps && run.steps.length ? 'off' : null },
       el('div', { class: 'card-head' }, el('span', { class: `status ${run.status}` }, RUN[run.status] || run.status), el('strong', {}, message.text)),
+      run.steps && run.steps.length ? runProgress(run) : null,
       run.error ? el('p', { class: 'error-text' }, run.error) : null,
       run.written && run.written.length ? el('p', {}, 'Wrote ', run.written.map((file, index) => [index ? ', ' : '', el('code', {}, file)])) : null,
       run.status === 'done' && run.criteria && run.criteria.length
@@ -166,6 +211,12 @@
 
   function render() {
     if (!state) return;
+    // Keep the reader's place: the thread follows new content only when it was already at the end,
+    // and the focused control (such as an "Activity" summary) is focused again after the redraw.
+    const atBottom = thread.scrollHeight - thread.scrollTop - thread.clientHeight < 24;
+    const top = thread.scrollTop;
+    const focused = document.activeElement && thread.contains(document.activeElement) ? document.activeElement.closest('[data-key]') : null;
+    const focusKey = focused ? focused.dataset.key : null;
     thread.replaceChildren();
     if (!state.messages.length) {
       thread.append(el('div', { class: 'empty' },
@@ -184,20 +235,52 @@
         message.model ? el('p', { class: 'who' }, message.model) : null));
     }
     if (state.busy === 'drafting') thread.append(el('div', { class: 'message assistant thinking', 'data-testid': 'thinking' }, el('p', {}, 'Drafting…')));
-    thread.scrollTop = thread.scrollHeight;
+    thread.scrollTop = atBottom ? thread.scrollHeight : top;
+    if (focusKey) { const again = thread.querySelector(`[data-key="${focusKey}"] summary`); if (again) again.focus(); }
 
     modelSelect.replaceChildren(...modelOptions(state.model, { value: '', label: state.models.length ? 'Dashboard model' : state.modelsLoaded ? 'No model yet: sign in to Copilot' : 'Loading models…' }));
     modelSelect.title = state.models.length ? 'The model that drafts the plan' : 'No chat model is available yet. Sign in to GitHub Copilot; the list fills in when the models load.';
-    send.textContent = state.busy === 'drafting' ? 'Stop' : 'Send';
-    send.disabled = state.busy === 'running';
+    const stoppable = state.busy === 'drafting' || state.busy === 'running';
+    send.textContent = state.busy && state.stopping ? 'Stopping…' : stoppable ? 'Stop' : 'Send';
+    // aria-disabled, not disabled: the button keeps the keyboard focus while the run stops.
+    send.setAttribute('aria-disabled', state.stopping ? 'true' : 'false');
+    send.title = state.busy === 'running' ? 'Stop the run: the running step\'s changes are undone.' : state.busy === 'drafting' ? 'Stop drafting' : '';
+    send.disabled = false;
+    announceSteps();
+    startTicker();
     input.disabled = Boolean(state.busy);
     notice.hidden = !state.notice;
     notice.textContent = state.notice || '';
   }
 
+  /** The one status line: it changes only when a step starts or ends, so a reader hears that, not every line. */
+  function announceSteps() {
+    let text = '';
+    const run = state.busy === 'running' ? [...state.messages].reverse().find(message => message.run && message.run.steps)?.run : null;
+    if (run) {
+      const steps = run.steps;
+      const active = steps.findIndex(step => step.outcome === 'running' || step.outcome === 'waiting');
+      if (active >= 0) text = `Step ${active + 1} of ${steps.length}, ${steps[active].title || steps[active].id}: ${steps[active].outcome}`;
+      else text = `${steps.filter(step => step.outcome === 'done' || step.outcome === 'skipped').length} of ${steps.length} steps finished`;
+    }
+    if (runStatus.textContent !== text) runStatus.textContent = text;
+  }
+
+  /** The running step's time ticks here, once a second; the host sends nothing per tick. */
+  function startTicker() {
+    const running = thread.querySelector('.tick');
+    if (!running) { if (ticker) { clearInterval(ticker); ticker = null; } return; }
+    if (ticker) return;
+    ticker = setInterval(() => {
+      const ticks = thread.querySelectorAll('.tick');
+      if (!ticks.length) { clearInterval(ticker); ticker = null; return; }
+      ticks.forEach(tick => { tick.textContent = elapsed(tick.dataset.since); });
+    }, 1000);
+  }
+
   form.addEventListener('submit', event => {
     event.preventDefault();
-    if (state && state.busy === 'drafting') { vscode.postMessage({ type: 'cancel' }); return; }
+    if (state && (state.busy === 'drafting' || state.busy === 'running')) { if (!state.stopping) vscode.postMessage({ type: 'cancel' }); return; }
     const text = input.value.trim();
     if (!text) return;
     vscode.postMessage({ type: 'send', text });

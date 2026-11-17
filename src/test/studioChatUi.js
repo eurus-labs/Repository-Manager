@@ -116,12 +116,12 @@ async function main() {
     }
   };
 
-  const open = async ({ theme = 'dark', width = 420, height = 900, folder = true } = {}) => {
+  const open = async ({ theme = 'dark', width = 420, height = 900, folder = true, runs: scripted } = {}) => {
     const context = {
       subscriptions: [], extensionUri: fileUri(root), storageUri: fileUri(path.join(base, `storage-${pages.size}`)),
       globalStorageUri: fileUri(path.join(base, 'global')), globalState: memento(), workspaceState: memento()
     };
-    StudioChatProvider.register(context, folder ? runs : undefined, folder ? workspace : undefined);
+    StudioChatProvider.register(context, folder ? scripted ?? runs : undefined, folder ? workspace : undefined);
     const page = await browser.newPage({ viewport: { width, height } });
     let listener;
     const view = {
@@ -241,6 +241,139 @@ async function main() {
     await coding.locator('[data-skills="summarize"] .chip button').click();
     await coding.locator('[data-skills="summarize"] .chip').waitFor({ state: 'detached' });
 
+    // A run in progress (plan 3): the steps with a word each, the running step's clock and last lines,
+    // "Activity (N)", Stop instead of Send. The run is scripted: it emits log entries and waits.
+    const progress = () => {
+      const control = { released: false };
+      const scripted = { ...runs, run: async (workflow, _hash, onUpdate, options) => {
+        const state = { id: 'run-progress', status: 'running', nodes: {}, criteria: workflow.criteria };
+        onUpdate({ ...state });
+        control.emit = (entry, secondsAgo = 0) => options.onLog({ at: new Date(Date.now() - secondsAgo * 1000).toISOString(), ...entry });
+        control.signal = options.signal;
+        while (!control.released && !options.signal.cancelled) await new Promise(resolve => setTimeout(resolve, 20));
+        const stopped = options.signal.cancelled;
+        control.emit(stopped ? { type: 'finish', status: 'stopped', reason: 'Cancelled' } : { type: 'finish', status: 'done' });
+        const final = { ...state, status: stopped ? 'stopped' : 'done', error: stopped ? 'Cancelled' : undefined,
+          nodes: stopped ? { summarize: { status: 'done' } } : { summarize: { status: 'done' }, write: { status: 'done' }, fix: { status: 'done' } } };
+        onUpdate(final);
+        return final;
+      } };
+      return { scripted, control };
+    };
+    const startRun = async (page) => {
+      const withCode = plan();
+      withCode.nodes.push({ id: 'fix', type: 'code', title: 'Fix the parser', with: { task: 'Fix the parser', paths: ['src/'], checks: ['test'] } });
+      withCode.edges.push({ from: 'write', to: 'fix' });
+      replies.push({ reply: 'Summarize, write, then fix the code.', workflow: withCode });
+      await page.fill('#message', 'Summarize and fix the parser');
+      await page.press('#message', 'Enter');
+      await page.locator('.card[data-card="current"]').waitFor();
+      await page.click('.card[data-card="current"] button:has-text("Run")');
+      await page.locator('.card.run').waitFor();
+    };
+    const words = page => page.locator('.run-step').evaluateAll(items => items.map(item => [item.dataset.step, item.dataset.outcome, item.querySelector('.step-word').textContent]));
+    const waitFor = (page, expression, arg) => page.waitForFunction(expression, arg, { timeout: 5000 });
+
+    {
+      const { scripted, control } = progress();
+      const running = await open({ runs: scripted, height: 560 });
+      await startRun(running);
+      while (!control.emit) await new Promise(resolve => setTimeout(resolve, 20));
+      // No log entry yet: the card is as before steps existed (just the head).
+      assert.equal(await running.locator('.run-steps').count(), 0);
+      control.emit({ type: 'node', node: 'summarize', step: 'prompt' }, 40);
+      control.emit({ type: 'model', node: 'summarize', model: 'gpt-4o', inputTokens: 900, outputTokens: 40 }, 39);
+      control.emit({ type: 'done', node: 'summarize' }, 30);
+      control.emit({ type: 'node', node: 'write', step: 'file.write' }, 29);
+      control.emit({ type: 'done', node: 'write' }, 28);
+      control.emit({ type: 'node', node: 'fix', step: 'code' }, 65);
+      control.emit({ type: 'branch', node: 'fix', branch: 'fix/parser', created: true }, 64);
+      for (const note of ['src/parser.ts:1-80', 'src/lexer.ts:1-60', '"tokenize" (4)', 'src/parser.ts', 'src/parser.ts:40-90', 'src/parser.test.ts']) {
+        control.emit({ type: 'tool', node: 'fix', ok: true, name: note.includes('"') ? 'search' : 'read_file', note }, 20);
+      }
+      await running.locator('.run-step[data-step="fix"] .activity.recent li').nth(4).waitFor();
+      assert.deepEqual((await words(running)).map(item => item.slice(0, 2)), [['summarize', 'done'], ['write', 'done'], ['fix', 'running']]);
+      const stepWords = (await words(running)).map(item => item[2]);
+      assert.deepEqual(stepWords.slice(0, 2), ['Done · 10 s', 'Done · 1 s']);
+      assert.match(stepWords[2], /^Running · 1:\d\d$/);
+      // The running step's last 5 lines, in order; "Activity (N)" holds all of them, collapsed.
+      const recent = await running.locator('.run-step[data-step="fix"] .activity.recent li').allTextContents();
+      assert.deepEqual(recent, ['read_file src/lexer.ts:1-60', 'search "tokenize" (4)', 'read_file src/parser.ts', 'read_file src/parser.ts:40-90', 'read_file src/parser.test.ts']);
+      assert.equal((await running.locator('details.all-activity summary').textContent()), 'Activity (8)');
+      assert.equal(await running.locator('details.all-activity').evaluate(node => node.open), false);
+      // Stop instead of Send, saying what is lost; the status line names the step.
+      assert.equal(await running.textContent('#send'), 'Stop');
+      assert.match(await running.getAttribute('#send', 'title'), /Stop the run: the running step's changes are undone\./);
+      assert.equal(await running.isDisabled('#send'), false);
+      assert.equal(await running.textContent('#run-status'), 'Step 3 of 3, Fix the parser: running');
+      // The clock ticks on the page once a second.
+      const first = await running.locator('.tick').textContent();
+      await running.waitForFunction(old => document.querySelector('.tick').textContent !== old, first, { timeout: 4000 });
+
+      // New lines change neither the status line nor the keyboard focus (Stop keeps it), and the reader's place stays.
+      await running.focus('#send');
+      const overflow = await running.evaluate(() => { const thread = document.getElementById('thread'); return thread.scrollHeight - thread.clientHeight; });
+      assert.ok(overflow > 40, `the thread must overflow for the scroll check (${overflow})`);
+      await running.evaluate(() => { document.getElementById('thread').scrollTop = 0; });
+      control.emit({ type: 'tool', node: 'fix', ok: false, name: 'edit_file', note: 'no match for the old text' });
+      control.emit({ type: 'check', node: 'fix', script: 'test', passed: false, exitCode: 1 });
+      await running.locator('details.all-activity summary:has-text("Activity (10)")').waitFor();
+      assert.equal(await running.evaluate(() => document.getElementById('thread').scrollTop), 0, 'the thread jumped while the reader was reading above');
+      assert.equal(await running.evaluate(() => document.activeElement.id), 'send', 'Stop lost the keyboard focus');
+      assert.equal(await running.textContent('#run-status'), 'Step 3 of 3, Fix the parser: running', 'the status line changed with an activity line');
+      assert.deepEqual(await running.locator('.run-step[data-step="fix"] .activity.recent li.bad').allTextContents(), ['✗ edit_file failed: no match for the old text', 'Check test failed (exit 1)']);
+      // At the bottom, new lines keep the thread at the bottom.
+      await running.evaluate(() => { const thread = document.getElementById('thread'); thread.scrollTop = thread.scrollHeight; });
+      control.emit({ type: 'tool', node: 'fix', ok: true, name: 'read_file', note: 'src/last.ts:1-9' });
+      await running.locator('details.all-activity summary:has-text("Activity (11)")').waitFor();
+      assert.ok(await running.evaluate(() => { const thread = document.getElementById('thread'); return thread.scrollHeight - thread.scrollTop - thread.clientHeight < 4; }), 'the thread did not follow new lines at the bottom');
+      // An opened "Activity" stays open, with its focus, through the next update.
+      await running.locator('details.all-activity summary').click();
+      assert.equal(await running.locator('details.all-activity li').count(), 11);
+      control.emit({ type: 'tool', node: 'fix', ok: true, name: 'read_file', note: 'src/more.ts:1-9' });
+      await running.locator('details.all-activity li').nth(11).waitFor();
+      assert.equal(await running.locator('details.all-activity').evaluate(node => node.open), true, 'Activity closed itself');
+      assert.equal(await running.evaluate(() => document.activeElement.tagName), 'SUMMARY', 'Activity lost its focus');
+      await running.locator('details.all-activity summary').click();
+      await running.evaluate(() => { const thread = document.getElementById('thread'); thread.scrollTop = thread.scrollHeight; });
+      await snap(running, '46-studio-chat-run-progress');
+      // The step ends: the status line changes now.
+      control.emit({ type: 'done', node: 'fix' });
+      await waitFor(running, () => document.getElementById('run-status').textContent !== 'Step 3 of 3, Fix the parser: running');
+      assert.equal(await running.textContent('#run-status'), '3 of 3 steps finished');
+      control.released = true;
+      await running.locator('.card.run[data-run="done"]').waitFor();
+      assert.equal(await running.textContent('#send'), 'Send');
+      assert.equal(await running.textContent('#run-status'), '');
+      assert.deepEqual((await words(running)).map(item => item[1]), ['done', 'done', 'done']);
+    }
+
+    // Light theme: a skipped step, a running one, then Stop in the chat: the running step reads Stopped.
+    {
+      const { scripted, control } = progress();
+      const light = await open({ runs: scripted, theme: 'light', height: 640 });
+      await startRun(light);
+      while (!control.emit) await new Promise(resolve => setTimeout(resolve, 20));
+      control.emit({ type: 'node', node: 'summarize', step: 'prompt' }, 14);
+      control.emit({ type: 'done', node: 'summarize' }, 9);
+      control.emit({ type: 'skip', node: 'write' }, 9);
+      control.emit({ type: 'node', node: 'fix', step: 'code' }, 8);
+      control.emit({ type: 'read', node: 'fix', files: 12 }, 8);
+      control.emit({ type: 'tool', node: 'fix', ok: false, name: 'edit_file', note: 'no match for the old text' }, 3);
+      control.emit({ type: 'tool', node: 'fix', ok: true, name: 'edit_file', note: 'src/parser.ts' }, 2);
+      await light.locator('.run-step[data-step="fix"] .activity.recent li').nth(2).waitFor();
+      assert.deepEqual((await words(light)).map(item => item.slice(0, 2)), [['summarize', 'done'], ['write', 'skipped'], ['fix', 'running']]);
+      assert.equal((await words(light))[1][2], 'Skipped');
+      await light.evaluate(() => { const thread = document.getElementById('thread'); thread.scrollTop = thread.scrollHeight; });
+      await snap(light, '47-studio-chat-run-progress-light');
+      await light.click('#send');
+      await light.locator('.card.run[data-run="stopped"]').waitFor();
+      assert.deepEqual((await words(light)).map(item => item.slice(0, 2)), [['summarize', 'done'], ['write', 'skipped'], ['fix', 'stopped']]);
+      assert.equal((await words(light))[2][2], 'Stopped');
+      assert.equal(await light.textContent('#send'), 'Send');
+      assert.equal(await light.isDisabled('#message'), false);
+    }
+
     // Light theme, no folder: nothing to run or save, and the page says so.
     const lone = await open({ theme: 'light', folder: false });
     assert.match(await lone.textContent('.empty'), /Open a folder to run or save a plan/);
@@ -254,7 +387,7 @@ async function main() {
     await snap(lone, '44-studio-chat-light');
 
     assert.deepEqual(errors, []);
-    console.log('Studio chat UI test passed; screenshots in ui-snapshots/40-45');
+    console.log('Studio chat UI test passed; screenshots in ui-snapshots/40-47');
   } finally {
     await browser.close();
     server.close();
@@ -262,4 +395,4 @@ async function main() {
   }
 }
 
-main().catch(error => { console.error(error); process.exitCode = 1; });
+main().catch(error => { console.error(error); process.exit(1); });

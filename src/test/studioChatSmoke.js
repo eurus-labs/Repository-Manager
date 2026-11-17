@@ -410,6 +410,167 @@ async function main() {
     assert.match(lonePosted[lonePosted.length - 1].notice, /Open a folder/);
   }
 
+  // ---- A run's progress in the chat (plan 3): steps and activity from the log entries the run emits, in
+  // ---- the order appended; late entries; throttled posts; sparse saves; Stop.
+  {
+    const memento = () => { const values = new Map(); return { get: key => values.get(key), update: async (key, value) => { values.set(key, value); } }; };
+    const context = {
+      subscriptions: [], extensionUri: fileUri(path.resolve(__dirname, '../..')),
+      storageUri: fileUri(path.join(base, 'storage-progress')), globalStorageUri: fileUri(path.join(base, 'global-progress')),
+      globalState: memento(), workspaceState: memento()
+    };
+    let scenario;
+    const options = [];
+    const runs = { steps, run: async (workflow, hash, onUpdate, runOptions) => { options.push(runOptions); return await scenario(workflow, onUpdate, runOptions); } };
+    const provider = new StudioChatProvider(context, runs, workspace);
+    const posted = [];
+    // A post is copied when it is made, as VS Code does: later changes to the run do not rewrite it.
+    provider.resolveWebviewView({ webview: { options: {}, html: '', cspSource: 'csp', asWebviewUri: uri => uri, postMessage: async message => { posted.push(JSON.parse(JSON.stringify(message))); },
+      onDidReceiveMessage: () => undefined } });
+    const settle = (ms = 20) => new Promise(resolve => setTimeout(resolve, ms));
+    const last = () => posted[posted.length - 1];
+    const runCard = message => (message || last()).messages.filter(item => item.role === 'run').pop()?.run;
+    const chats = () => new ChatStore(path.join(base, 'storage-progress', 'studio', 'chats'));
+    await provider.receive({ type: 'ready' }); await settle();
+    lmReplies.push({ reply: 'A plan.', workflow: plan() });
+    await provider.receive({ type: 'send', text: 'Summarize my notes into a file' }); await settle();
+    assert.equal(last().messages.find(message => message.draft).draft.status, 'current');
+
+    // Saves are counted at ChatStore.save.
+    const realSave = ChatStore.prototype.save;
+    let saves = 0;
+    ChatStore.prototype.save = function (...args) { saves++; return realSave.apply(this, args); };
+    const at = seconds => new Date(Date.now() - seconds * 1000).toISOString();
+    const runWith = tools => async (workflow, onUpdate, { onLog }) => {
+      const state = { id: 'run-p', status: 'running', nodes: { summarize: { status: 'pending' }, write: { status: 'pending' } }, criteria: workflow.criteria };
+      onUpdate({ ...state });
+      onLog({ at: at(30), type: 'node', node: 'summarize', step: 'prompt', runs: 1 });
+      onLog({ at: at(29), type: 'model', node: 'summarize', model: 'gpt-4o', inputTokens: 900, outputTokens: 40 });
+      for (let index = 0; index < tools; index++) { onLog({ at: at(28), type: 'tool', node: 'summarize', ok: true, name: 'read_file', note: `file${index}.ts:1-40` }); }
+      onLog({ at: at(20), type: 'check', node: 'summarize', script: 'test', passed: true, exitCode: 0 });
+      onLog({ at: at(19), type: 'done', node: 'summarize' });
+      // Late: a step's own log call is not awaited, so its entry may come after the engine's done.
+      onLog({ at: at(19), type: 'tool', node: 'summarize', ok: true, name: 'read_file', note: 'late.ts:1-9' });
+      state.nodes.summarize = { status: 'done' };
+      onLog({ at: at(18), type: 'node', node: 'write', step: 'file.write', runs: 1 });
+      onLog({ at: at(17), type: 'done', node: 'write' });
+      onLog({ at: at(17), type: 'finish', status: 'done' });
+      // Late after the run's finish: the finished step stays done.
+      onLog({ at: at(17), type: 'model', node: 'write', model: 'gpt-4o' });
+      const done = { ...state, status: 'done', nodes: { summarize: { status: 'done' }, write: { status: 'done', output: { path: 'notes/summary.md' } } } };
+      onUpdate(done);
+      return done;
+    };
+    // The second run's card only: the posts before it was added still hold the first run's.
+    const outcomes = message => message.messages.filter(item => item.role === 'run').length === 2 ? (runCard(message)?.steps ?? []).map(step => step.outcome).join(',') : '';
+
+    // Without tool calls, then with 20 in one step: the same number of saves (step changes and the run end).
+    scenario = runWith(0);
+    posted.length = 0; saves = 0;
+    await provider.receive({ type: 'run' }); await settle(300);
+    const savesWithout = saves;
+    assert.equal(last().busy, null, 'the chat stayed locked');
+    scenario = runWith(20);
+    posted.length = 0; saves = 0;
+    await provider.receive({ type: 'run' }); await settle(300);
+    assert.equal(saves, savesWithout, `20 tool entries changed the number of saves (${savesWithout} -> ${saves})`);
+    assert.ok(saves <= 8, `a run saved ${saves} times`);
+
+    // Steps went pending -> running -> done, in run order; each change was posted at once.
+    const seen = [...new Set(posted.map(outcomes).filter(Boolean))];
+    assert.deepEqual(seen, ['running,pending', 'done,pending', 'done,running', 'done,done'], 'the steps did not go pending, running, done in order');
+    const finalRun = runCard();
+    assert.deepEqual(finalRun.steps.map(step => [step.id, step.outcome]), [['summarize', 'done'], ['write', 'done']]);
+    assert.equal(finalRun.status, 'done');
+    // A late entry never flipped a finished step: after summarize was done, no post shows it running again.
+    const sequence = posted.map(outcomes).filter(Boolean);
+    assert.ok(!sequence.slice(sequence.indexOf('done,pending')).some(value => value.startsWith('running')), 'a finished step went back to running');
+    // Activity lines, in order, with the late ones kept.
+    const texts = finalRun.activity.map(line => line.text);
+    assert.equal(texts[0], 'Model gpt-4o answered (900 in, 40 out)');
+    assert.equal(texts[1], 'read_file file0.ts:1-40');
+    assert.equal(texts[20], 'read_file file19.ts:1-40');
+    assert.deepEqual(texts.slice(21), ['Check test passed (exit 0)', 'read_file late.ts:1-9', 'Model gpt-4o answered']);
+    assert.ok(finalRun.activity.every(line => typeof line.at === 'string' && typeof line.node === 'string'));
+    // The running step carried its start time for the page's clock.
+    const midRun = posted.map(message => runCard(message)).find(run => run?.steps?.[0]?.outcome === 'running');
+    assert.match(midRun.steps[0].since, /^\d{4}-\d\d-\d\dT/);
+    // The saved chat keeps the steps and the lines.
+    const stored = await chats().load(provider.conversation.id);
+    const savedRun = stored.messages.filter(message => message.role === 'run').pop().run;
+    assert.deepEqual(savedRun.steps.map(step => step.outcome), ['done', 'done']);
+    assert.equal(savedRun.activity.length, 24);
+    assert.equal(options[options.length - 1].signal.cancelled, false, 'a run starts not cancelled');
+
+    // Posts are throttled: a burst of 230 activity lines inside one step posts a few times, not 230.
+    scenario = async (workflow, onUpdate, { onLog }) => {
+      const state = { id: 'run-burst', status: 'running', nodes: {}, criteria: workflow.criteria };
+      onUpdate({ ...state });
+      onLog({ at: at(5), type: 'node', node: 'summarize' });
+      await settle(300);
+      posted.length = 0;
+      for (let index = 0; index < 230; index++) { onLog({ at: at(4), type: 'tool', node: 'summarize', ok: true, name: 'search', note: `q${index}` }); }
+      await settle(400);
+      assert.ok(posted.length >= 1 && posted.length <= 3, `230 lines posted ${posted.length} times`);
+      assert.equal(runCard().activity.length, 200, 'the card keeps up to 200 lines while running');
+      assert.equal(runCard().activity[199].text, 'search q229', 'the trailing post did not carry the last line');
+      const done = { ...state, status: 'done' };
+      onUpdate(done);
+      return done;
+    };
+    posted.length = 0;
+    await provider.receive({ type: 'run' }); await settle(50);
+    // An assertion inside the scripted run ends the run with a notice: none is allowed.
+    assert.deepEqual(posted.map(message => message.notice).filter(Boolean), []);
+    const burstSaved = (await chats().load(provider.conversation.id)).messages.filter(message => message.role === 'run').pop().run;
+    assert.equal(burstSaved.activity.length, 50, 'the saved chat keeps the last 50 lines');
+    assert.equal(burstSaved.activity[49].text, 'search q229');
+
+    // An entry that arrives after the run returned changes nothing.
+    let leaked;
+    scenario = async (workflow, onUpdate, { onLog }) => {
+      leaked = onLog;
+      const done = { id: 'run-leak', status: 'done', nodes: {}, criteria: workflow.criteria };
+      onLog({ at: at(3), type: 'node', node: 'summarize' });
+      onUpdate(done);
+      return done;
+    };
+    await provider.receive({ type: 'run' }); await settle(30);
+    posted.length = 0;
+    leaked({ at: at(1), type: 'tool', node: 'summarize', ok: true, name: 'late', note: 'after the run' });
+    await settle(300);
+    assert.equal(posted.length, 0, 'an entry after the run changed the card');
+
+    // Stop: `cancel` while running cancels the signal given to runs.run; the run ends stopped; the chat unlocks.
+    let seenCancelled = false;
+    scenario = async (workflow, onUpdate, { onLog, signal }) => {
+      const state = { id: 'run-stop', status: 'running', nodes: {}, criteria: workflow.criteria };
+      onUpdate({ ...state });
+      onLog({ at: at(2), type: 'node', node: 'summarize' });
+      while (!signal.cancelled) { await settle(5); }
+      seenCancelled = true;
+      onLog({ at: at(0), type: 'finish', status: 'stopped', reason: 'Cancelled' });
+      const stoppedState = { ...state, status: 'stopped', error: 'Cancelled' };
+      onUpdate(stoppedState);
+      return stoppedState;
+    };
+    await provider.receive({ type: 'cancel' }); // nothing is running: it must not carry over to the next run
+    posted.length = 0;
+    const running = provider.receive({ type: 'run' });
+    await settle(60);
+    assert.equal(last().busy, 'running');
+    assert.equal(last().stopping, false, 'a cancel with nothing running carried over to the next run');
+    posted.length = 0;
+    await provider.receive({ type: 'cancel' });
+    assert.equal(last().stopping, true, 'the page was not told the run is stopping');
+    await running; await settle(30);
+    assert.equal(seenCancelled, true, 'cancel did not reach the signal given to runs.run');
+    assert.equal(last().busy, null, 'the chat stayed locked after Stop');
+    assert.equal(last().stopping, false);
+    assert.deepEqual([runCard().status, runCard().steps.map(step => step.outcome)], ['stopped', ['stopped', 'pending']]);
+    ChatStore.prototype.save = realSave;
+  }
+
   // ---- The model menu as a person saw it (2026-11-13): asked with no vendor, VS Code listed only other
   // ---- vendors' models, and one without a name or family showed as an empty entry.
   {
