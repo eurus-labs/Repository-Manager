@@ -1,6 +1,6 @@
 # Plan 1 — Move the dashboard History state out of webview.js
 
-Status: approved
+Status: implemented
 Date: 2026-11-17
 Branch: `refactor/dashboard-history-state`
 Baseline: `main` at `f5c24bbe131c87b476844983e99cde42edd27762`
