@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.4.1] - 2026-11-17
+
+### Fixed
+
+- A finished Studio run no longer keeps the Studio Chat locked: the chat unlocks as soon as the run is done, without touching the "done." notification, and **Open Result** still opens that run's file when clicked later.
+
 ## [3.4.0] - 2026-11-16
 
 ### Added
