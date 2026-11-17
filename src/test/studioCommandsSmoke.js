@@ -398,6 +398,18 @@ async function main() {
       const resultC = await studio.run(flowA, 'h', undefined, { signal: closing });
       assert.equal(resultC.status, 'stopped', 'a closed dialog after Stop left a resumable run');
       assert.equal(fs.existsSync(path.join(workspace, 'notes', 'early.txt')), false);
+
+      // A retried step is announced again: the second attempt starts with the step and carries no
+      // line of the first attempt.
+      asked.length = 0; undone.length = 0; attempt = 0; reported.length = 0;
+      answers.info.push('Run', undefined);
+      answers.warning.push('Retry (2/2)', 'Accept');
+      const retried = await studio.run(reviewed, 'h');
+      assert.equal(retried.status, 'done');
+      const second = reported.slice(reported.indexOf('Step 1/1: Change it — edit attempt 1') + 1);
+      assert.equal(second[0], 'Step 1/1: Change it', `the retry was not announced: ${reported.join(' | ')}`);
+      assert.ok(second.includes('Step 1/1: Change it — edit attempt 2'));
+      assert.ok(!second.slice(0, 1).some(message => /attempt 1/.test(message)), 'the first attempt\'s activity was carried over');
     }
 
     console.log('Studio commands smoke passed');

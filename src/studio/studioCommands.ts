@@ -162,14 +162,20 @@ export function registerStudio(context: vscode.ExtensionContext, workspaceRoot: 
     let report: ((message: string) => void) | undefined;
     let step: string | undefined;
     let activity: string | undefined;
+    // Whether the current execution's `node` entry was seen: a second one is a retry.
+    let started = false;
     const announce = () => {
       if (!step || !report) { return; }
       report(`Step ${order.indexOf(step) + 1}/${order.length}: ${titles.get(step) ?? step}${activity ? ` — ${activity}` : ''}`);
     };
     const subscription = store.onLog((runId, entry) => {
       if (runId !== state.id) { return; }
-      // `skills` is logged before its step's `node`: both name the step that is starting.
-      if ((entry.type === 'node' || entry.type === 'skills') && typeof entry.node === 'string' && entry.node !== step) { step = entry.node; activity = undefined; announce(); }
+      // `skills` is logged before its step's `node`: both name the step that is starting. Every execution
+      // starts afresh, a retry of the same step included: the first of the two entries announces it.
+      if ((entry.type === 'node' || entry.type === 'skills') && typeof entry.node === 'string') {
+        if (entry.node !== step || started) { step = entry.node; activity = undefined; started = false; announce(); }
+        if (entry.type === 'node') { started = true; }
+      }
       const line = activityLine(entry);
       // A late line of a step that has finished is not the notification's latest activity.
       if (line && (typeof entry.node !== 'string' || entry.node === step)) { activity = line.text; announce(); }
