@@ -334,6 +334,15 @@ async function main() {
       await running.locator('details.all-activity li').nth(11).waitFor();
       assert.equal(await running.locator('details.all-activity').evaluate(node => node.open), true, 'Activity closed itself');
       assert.equal(await running.evaluate(() => document.activeElement.tagName), 'SUMMARY', 'Activity lost its focus');
+      // The reader scrolled away from the focused summary: the next update keeps the place and the focus.
+      await running.evaluate(() => { document.getElementById('thread').scrollTop = 0; });
+      assert.ok(await running.locator('details.all-activity summary').evaluate(node => node.getBoundingClientRect().top > document.getElementById('thread').getBoundingClientRect().bottom), 'the summary must be out of view for the scroll check');
+      const placeBefore = await running.evaluate(() => document.getElementById('thread').scrollTop);
+      control.emit({ type: 'tool', node: 'fix', ok: true, name: 'read_file', note: 'src/again.ts:1-9' });
+      await running.locator('details.all-activity li').nth(12).waitFor();
+      const placeAfter = await running.evaluate(() => document.getElementById('thread').scrollTop);
+      assert.ok(Math.abs(placeAfter - placeBefore) <= 2, `restoring the focus scrolled the thread (${placeBefore} -> ${placeAfter})`);
+      assert.equal(await running.evaluate(() => document.activeElement.tagName), 'SUMMARY', 'Activity lost its focus after the scroll');
       await running.locator('details.all-activity summary').click();
       await running.evaluate(() => { const thread = document.getElementById('thread'); thread.scrollTop = thread.scrollHeight; });
       await snap(running, '46-studio-chat-run-progress');

@@ -235,8 +235,9 @@
         message.model ? el('p', { class: 'who' }, message.model) : null));
     }
     if (state.busy === 'drafting') thread.append(el('div', { class: 'message assistant thinking', 'data-testid': 'thinking' }, el('p', {}, 'Drafting…')));
+    // Focus is restored without scrolling to it (Decision 9: the reader keeps their place), then the place is set.
+    if (focusKey) { const again = thread.querySelector(`[data-key="${focusKey}"] summary`); if (again) again.focus({ preventScroll: true }); }
     thread.scrollTop = atBottom ? thread.scrollHeight : top;
-    if (focusKey) { const again = thread.querySelector(`[data-key="${focusKey}"] summary`); if (again) again.focus(); }
 
     modelSelect.replaceChildren(...modelOptions(state.model, { value: '', label: state.models.length ? 'Dashboard model' : state.modelsLoaded ? 'No model yet: sign in to Copilot' : 'Loading models…' }));
     modelSelect.title = state.models.length ? 'The model that drafts the plan' : 'No chat model is available yet. Sign in to GitHub Copilot; the list fills in when the models load.';
