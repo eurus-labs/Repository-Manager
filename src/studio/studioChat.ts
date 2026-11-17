@@ -343,7 +343,8 @@ export class StudioChatProvider implements vscode.WebviewViewProvider {
         if (live.activity.length > LIVE_ACTIVITY) { live.activity.splice(0, live.activity.length - LIVE_ACTIVITY); }
       }
       if (!live.run) { return; }
-      if (this.refreshSteps(live)) { persist(); this.post(); } else { this.postSoon(); }
+      if (this.refreshSteps(live)) { persist(); }
+      this.postSoon();
     };
     const stopped = () => this.cancelled;
     try {

@@ -108,4 +108,4 @@ select, input[type=text] {
 .all-activity { margin-top: 6px; font-size: 12px; }
 .all-activity summary { cursor: pointer; color: var(--vscode-textLink-foreground); }
 .all-activity summary:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 1px; }
-.all-activity .activity { padding-left: 0; max-height: 220px; overflow-y: auto; margin-top: 4px; }
+.all-activity .activity { padding-left: 0; margin-top: 4px; }

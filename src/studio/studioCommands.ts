@@ -168,9 +168,11 @@ export function registerStudio(context: vscode.ExtensionContext, workspaceRoot: 
     };
     const subscription = store.onLog((runId, entry) => {
       if (runId !== state.id) { return; }
-      if (entry.type === 'node' && typeof entry.node === 'string') { step = entry.node; activity = undefined; announce(); }
+      // `skills` is logged before its step's `node`: both name the step that is starting.
+      if ((entry.type === 'node' || entry.type === 'skills') && typeof entry.node === 'string' && entry.node !== step) { step = entry.node; activity = undefined; announce(); }
       const line = activityLine(entry);
-      if (line) { activity = line.text; announce(); }
+      // A late line of a step that has finished is not the notification's latest activity.
+      if (line && (typeof entry.node !== 'string' || entry.node === step)) { activity = line.text; announce(); }
       try { options?.onLog?.(entry); } catch (error) { console.error('[RepositoryManager] Studio run listener:', error); }
     });
     try {

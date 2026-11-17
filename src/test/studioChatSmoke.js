@@ -19,7 +19,7 @@ const availableModels = [];
 const modelListeners = [];
 const lmCalls = [];
 const asked = [];
-const answers = { warning: [], quickPick: [] };
+const answers = { warning: [], quickPick: [], info: [], input: [] };
 const commands = new Map();
 let viewProvider;
 const fileUri = fsPath => ({ scheme: 'file', fsPath, path: fsPath, toString: () => `file://${fsPath}` });
@@ -39,6 +39,7 @@ const fakeVscode = {
   Uri: { file: fileUri, joinPath: (uri, ...parts) => fileUri(path.join(uri.fsPath, ...parts)) },
   Range: class {},
   WorkspaceEdit: class { replace() {} },
+  ProgressLocation: { Notification: 15 },
   CancellationTokenSource: class { constructor() { this.token = { isCancellationRequested: false }; } cancel() { this.token.isCancellationRequested = true; } dispose() {} },
   LanguageModelChatMessage: { User: text => ({ text }) },
   lm: {
@@ -48,7 +49,11 @@ const fakeVscode = {
   workspace: { textDocuments: [], applyEdit: async () => true },
   window: {
     registerWebviewViewProvider: (_id, provider) => { viewProvider = provider; return { dispose() {} }; },
-    showWarningMessage: async (message) => { asked.push(['warning', message]); return answers.warning.shift(); },
+    showWarningMessage: async (message) => { asked.push(['warning', message]); const answer = answers.warning.shift(); return typeof answer === 'function' ? await answer() : answer; },
+    showInformationMessage: async (message) => { asked.push(['info', message]); return answers.info.shift(); },
+    showErrorMessage: async (message) => { asked.push(['error', message]); },
+    showInputBox: async () => answers.input.shift(),
+    withProgress: async (_options, task) => task({ report() {} }, { isCancellationRequested: false }),
     showQuickPick: async items => { const pick = answers.quickPick.shift(); return pick ? items.find(pick) : undefined; },
     showSaveDialog: async () => answers.save?.shift()
   },
@@ -70,6 +75,8 @@ const { RunStore, WorkflowEngine, workflowModels } = out('engine.js');
 const { stepRegistry } = out('steps.js');
 const { validateWorkflow } = out('workflow.js');
 const { StudioChatProvider } = out('studioChat.js');
+const { registerStudio } = out('studioCommands.js');
+const { activityLine } = out('runsReport.js');
 const { listModels, resolveSelector } = out('studioModels.js');
 Module._load = originalLoad;
 
@@ -441,19 +448,25 @@ async function main() {
     let saves = 0;
     ChatStore.prototype.save = function (...args) { saves++; return realSave.apply(this, args); };
     const at = seconds => new Date(Date.now() - seconds * 1000).toISOString();
+    // Posts are at most 250 ms apart, so a step change is observed alone only when it waits for the next.
+    const pause = () => settle(270);
     const runWith = tools => async (workflow, onUpdate, { onLog }) => {
       const state = { id: 'run-p', status: 'running', nodes: { summarize: { status: 'pending' }, write: { status: 'pending' } }, criteria: workflow.criteria };
       onUpdate({ ...state });
       onLog({ at: at(30), type: 'node', node: 'summarize', step: 'prompt', runs: 1 });
+      await pause();
       onLog({ at: at(29), type: 'model', node: 'summarize', model: 'gpt-4o', inputTokens: 900, outputTokens: 40 });
       for (let index = 0; index < tools; index++) { onLog({ at: at(28), type: 'tool', node: 'summarize', ok: true, name: 'read_file', note: `file${index}.ts:1-40` }); }
       onLog({ at: at(20), type: 'check', node: 'summarize', script: 'test', passed: true, exitCode: 0 });
       onLog({ at: at(19), type: 'done', node: 'summarize' });
       // Late: a step's own log call is not awaited, so its entry may come after the engine's done.
       onLog({ at: at(19), type: 'tool', node: 'summarize', ok: true, name: 'read_file', note: 'late.ts:1-9' });
+      await pause();
       state.nodes.summarize = { status: 'done' };
       onLog({ at: at(18), type: 'node', node: 'write', step: 'file.write', runs: 1 });
+      await pause();
       onLog({ at: at(17), type: 'done', node: 'write' });
+      await pause();
       onLog({ at: at(17), type: 'finish', status: 'done' });
       // Late after the run's finish: the finished step stays done.
       onLog({ at: at(17), type: 'model', node: 'write', model: 'gpt-4o' });
@@ -569,6 +582,65 @@ async function main() {
     assert.equal(last().stopping, false);
     assert.deepEqual([runCard().status, runCard().steps.map(step => step.outcome)], ['stopped', ['stopped', 'pending']]);
     ChatStore.prototype.save = realSave;
+  }
+
+  // ---- The chat over the real StudioRuns (drive, the engine, the log): the halves meet here. Another run's
+  // ---- entries logged while this run waits at its gate change nothing on the card, and the card's lines are
+  // ---- the log's, in the order written.
+  {
+    const memento = () => { const values = new Map(); return { get: key => values.get(key), update: async (key, value) => { values.set(key, value); } }; };
+    const context = {
+      subscriptions: [], extensionUri: fileUri(path.resolve(__dirname, '../..')),
+      storageUri: fileUri(path.join(base, 'storage-real')), globalStorageUri: fileUri(path.join(base, 'global-real')),
+      globalState: memento(), workspaceState: memento(), extension: { packageJSON: { version: '3.5.0' } }
+    };
+    const studio = registerStudio(context, workspace);
+    const store = await studio.runs();
+    const provider = new StudioChatProvider(context, studio, workspace);
+    const posted = [];
+    provider.resolveWebviewView({ webview: { options: {}, html: '', cspSource: 'csp', asWebviewUri: uri => uri,
+      postMessage: async message => { posted.push(JSON.parse(JSON.stringify(message))); }, onDidReceiveMessage: () => undefined } });
+    const settle = (ms = 20) => new Promise(resolve => setTimeout(resolve, ms));
+    const card = () => posted[posted.length - 1].messages.filter(item => item.role === 'run').pop()?.run;
+    await provider.receive({ type: 'ready' });
+    lmReplies.push({ reply: 'A plan.', workflow: plan() });
+    await provider.receive({ type: 'send', text: 'Summarize my notes into a file' });
+    assert.equal(posted[posted.length - 1].messages.find(message => message.draft).draft.status, 'current');
+    lmReplies.push({ summary: 'A short summary.' });
+    answers.input.push('some text to summarize');
+    answers.info.push('Run');
+    let before;
+    let hookError;
+    answers.warning.push(async () => {
+      // The prompt step is done and the write step waits for its approval. Another run logs now.
+      try {
+        await settle(300);
+        assert.deepEqual(card()?.steps?.map(step => [step.id, step.outcome]), [['summarize', 'done'], ['write', 'waiting']], 'the card did not show the steps while the run waited');
+        before = JSON.stringify(card());
+        await store.log('some-other-run', { type: 'node', node: 'write' });
+        await store.log('some-other-run', { type: 'tool', node: 'summarize', ok: true, name: 'intruder', note: 'of another run' });
+        await store.log('some-other-run', { type: 'finish', status: 'failed', node: 'write', error: 'no' });
+        await settle(300);
+        assert.equal(JSON.stringify(card()), before, 'another run\'s entries changed this run\'s card');
+      } catch (error) { hookError = error; }
+      return 'Approve';
+    });
+    posted.length = 0;
+    await provider.receive({ type: 'run' });
+    await settle(300);
+    if (hookError) { throw hookError; }
+    assert.deepEqual(posted.map(message => message.notice).filter(Boolean), [], 'the run ended with a notice');
+    assert.ok(!asked.some(entry => entry[0] === 'error'), JSON.stringify(asked.filter(entry => entry[0] === 'error')));
+    const final = card();
+    assert.equal(final.status, 'done');
+    assert.deepEqual(final.steps.map(step => [step.id, step.outcome]), [['summarize', 'done'], ['write', 'done']]);
+    assert.deepEqual(final.written, ['notes/summary.md']);
+    assert.ok(final.activity.length >= 1 && final.activity.every(line => !/intruder/.test(line.text)));
+    // The card's lines are the log's lines, in the order written.
+    const logged = (await store.readLog(final.id)).map(entry => activityLine(entry)).filter(Boolean).map(line => line.text);
+    assert.deepEqual(final.activity.map(line => line.text), logged, 'the card is not the log in the order written');
+    assert.match(logged[0], /^Model .* answered$/);
+    assert.equal(fs.readFileSync(path.join(workspace, 'notes', 'summary.md'), 'utf8'), 'A short summary.');
   }
 
   // ---- The model menu as a person saw it (2026-11-13): asked with no vendor, VS Code listed only other

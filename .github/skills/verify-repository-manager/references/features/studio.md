@@ -23,7 +23,7 @@ with an effect, edited as a diagram in the Workflow Editor, and drafted from a g
   models, and the chat host with a scripted `vscode.lm`), `studioSkillsSmoke.js` (a scripted GitHub), `studioCodeStepSmoke.js`
   (a real Git repository and check, scripted tool calls), `agentMigrationSmoke.js` (agent tasks to Studio chats), `studioSharingSmoke.js` (Export and Import's requirements and checks), `studioFetchSmoke.js` (Import from a URL against a local server), `studioRecoverySmoke.js` (a code step cut short by a closed window), `studioRunsSmoke.js` (what the Runs view measures and shows) — `$V capture <label> -- node src/test/<name>`.
 - Chromium: `src/test/studioEditorUi.js` (real page and provider, fake text document); screenshots `ui-snapshots/30*`–`32*`.
-  `src/test/studioChatUi.js` (real chat page and provider, scripted `vscode.lm`); screenshots `ui-snapshots/40*`–`45*`.
+  `src/test/studioChatUi.js` (real chat page and provider, scripted `vscode.lm`); screenshots `ui-snapshots/40*`–`47*` (46 and 47: a run in progress).
   `src/test/studioRunsUi.js` (the Runs view, real provider and RunStore); screenshots `ui-snapshots/50*`–`52*`.
 
 ## Expected behavior
@@ -58,6 +58,7 @@ with an effect, edited as a diagram in the Workflow Editor, and drafted from a g
 - A failed or unverified code step is never accepted by a plain Accept: the button says Accept Anyway or Accept as Unverified. [observed: src/studio/studioCommands.ts, drive]
 - New work starts in the Studio chat, in the Secondary Side Bar on the right, as Copilot's; the Agent's Tasks view is gone. [confirmed: user, 2026-11-12]
 - The chat's model menu lists every chat model VS Code offers and fills in when they load (it was empty when read only at start). [confirmed: user, 2026-11-12; test src/test/studioChatSmoke.js]
+- A run started from the chat shows each step with a word and sign, the running step's clock and last 5 activity lines, and an Activity list; Send reads Stop and ends the run at once, without asking, undoing the running step's changes; a late log line never turns a finished step back to running. [confirmed: user, 2026-11-17; test src/test/studioChatSmoke.js, src/test/studioChatUi.js]
 - Earlier agent tasks become Studio chats when 3.0.0 starts: remaining steps become code steps on the task's branch; a step under review keeps its changes and is named; nothing is deleted. [confirmed: user, 2026-11-12; test src/test/agentMigrationSmoke.js]
 - Once saved as a workflow file, the file is the plan: edits there show in the chat, and an accepted change is written to it. [confirmed: test src/test/studioChatSmoke.js]
 
