@@ -2067,6 +2067,47 @@ async function main() {
     assert.deepEqual(appended, { rows: 200, sameFirst: true, lastSubject: true, graphCovers: true, nodes: 200 });
     await paging.close();
 
+    // A reply for an older request or another repository does not replace the rows shown. The page's
+    // own getHistory requests are held back, so no real reply can land at any timing: only the replies
+    // injected here reach the page.
+    const stalePage = await openPage(1440, 900);
+    const staleReplies = await stalePage.evaluate(async () => {
+      const sent = [];
+      const toHost = window.__postToHost;
+      window.__postToHost = message => { if (message.type === 'getHistory') { sent.push(message); return Promise.resolve(); } return toHost(message); };
+      const ask = () => {
+        const before = sent.length;
+        const box = document.getElementById('dashboardIncludeRemotes');
+        box.click();
+        return before;
+      };
+      const waitFor = async condition => { for (let i = 0; i < 100 && !condition(); i++) await new Promise(r => setTimeout(r, 20)); };
+      const hex = n => n.toString(16).padStart(40, '0');
+      const commits = label => Array.from({ length: 3 }, (_, i) => ({ hash: hex(i + 1), shortHash: hex(i + 1).slice(-7), parentHashes: i < 2 ? [hex(i + 2)] : [],
+        authorName: 'A', authorEmail: 'a@x', authoredAt: '2025-01-15T10:00:00Z', subject: `${label} ${i}`, refs: [] }));
+      const reply = (request, label, extra) => window.dispatchEvent(new MessageEvent('message', { data: { type: 'historyLoaded',
+        payload: Object.assign({ repositoryPath: request.repositoryPath, requestId: request.requestId, offset: 0, commits: commits(label), nextOffset: null, upstream: null }, extra) } }));
+      const subjects = () => Array.from(document.querySelectorAll('.history-table-content .history-subject')).map(node => node.textContent);
+      const first = ask();
+      await waitFor(() => sent.length > first);
+      const older = sent.at(-1).payload;
+      const second = ask();
+      await waitFor(() => sent.length > second);
+      const current = sent.at(-1).payload;
+      reply(current, 'current');
+      const shown = subjects();
+      reply(older, 'older');
+      const afterOlder = subjects();
+      reply(Object.assign({}, current, { repositoryPath: current.repositoryPath + '/other' }), 'other');
+      const afterOther = subjects();
+      return { newer: current.requestId > older.requestId, shown, afterOlder, afterOther };
+    });
+    assert.equal(staleReplies.newer, true, 'a second load did not get a newer request id');
+    assert.deepEqual(staleReplies.shown, ['current 0', 'current 1', 'current 2'], 'the reply for the current request was not shown');
+    assert.deepEqual(staleReplies.afterOlder, staleReplies.shown, 'a reply for an older request replaced the rows');
+    assert.deepEqual(staleReplies.afterOther, staleReplies.shown, 'a reply for another repository replaced the rows');
+    await stalePage.close();
+
     // There is no Load more button: older commits load as the end of the list comes near, so a page
     // that fits in the view (nothing to scroll) asks for the next one by itself, once.
     const shortPaging = await openPage(1440, 900);
