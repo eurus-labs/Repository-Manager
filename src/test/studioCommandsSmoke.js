@@ -18,6 +18,8 @@ fs.writeFileSync(path.join(workspace, '.repository-manager', 'workflows', 'note.
 const commands = new Map();
 const asked = [];
 const shown = [];
+const reported = [];
+let progressHook;
 const answers = { quickPick: [], warning: [], info: [], input: [], save: [], open: [] };
 const fakeVscode = {
   commands: { registerCommand: (id, run) => { commands.set(id, run); return { dispose() {} }; } },
@@ -37,7 +39,7 @@ const fakeVscode = {
       return Promise.resolve(typeof answer === 'function' ? answer(rest) : answer);
     },
     showErrorMessage: async (message, options) => { asked.push(['error', message, options && options.detail]); },
-    withProgress: async (_options, task) => task({ report() {} }, { isCancellationRequested: false }),
+    withProgress: async (_options, task) => task({ report: value => { reported.push(value.message); progressHook?.(value.message); } }, { isCancellationRequested: false }),
     showTextDocument: async document => { shown.push(document); },
     registerCustomEditorProvider: (viewType) => { commands.set(`editor:${viewType}`, true); return { dispose() {} }; }
   },
@@ -263,6 +265,66 @@ async function main() {
     answers.quickPick.push(item => { offered.push(`${item.label} ${item.description}`); return false; });
     await commands.get('repositoryManager.studio.runWorkflow')();
     assert.ok(['note', 'note-2', 'note-3', 'note-4', 'from-url'].every(id => offered.includes(`${id} Library`)), offered.join(', '));
+    // ---- Run progress (plan 3): the notification names the step and what it does; the caller gets this
+    // ---- run's log entries only, in order, and stops getting them when the run returns or throws.
+    {
+      commands.clear();
+      const studio = registerStudio(context(), workspace);
+      const store = await studio.runs();
+      const flow = { schema: 'repository-manager/workflow@1', id: 'two', version: '1.0.0', title: 'Two notes',
+        nodes: [{ id: 'a', type: 'file.write', title: 'Write A', with: { path: 'notes/a.txt', content: 'a' } },
+          { id: 'b', type: 'file.write', title: 'Write B', with: { path: 'notes/b.txt', content: 'b' } }],
+        edges: [{ from: 'a', to: 'b' }] };
+      const seen = [];
+      let runId;
+      // While step a runs, its tool call is logged, and so is another run's entry.
+      progressHook = message => {
+        if (message !== 'Step 1/2: Write A') { return; }
+        void store.log(runId, { type: 'tool', node: 'a', ok: true, name: 'read_file', note: 'a.ts:1-40' });
+        void store.log('some-other-run', { type: 'tool', node: 'a', ok: true, name: 'intruder', note: 'other run' });
+      };
+      reported.length = 0;
+      answers.info.push('Run');
+      answers.warning.push('Approve', 'Approve');
+      const final = await studio.run(flow, 'h', state => { runId = state.id; }, { onLog: entry => seen.push(entry) });
+      assert.equal(final.status, 'done');
+      assert.deepEqual(reported, ['Step 1/2: Write A', 'Step 1/2: Write A — read_file a.ts:1-40', 'Step 2/2: Write B'],
+        'the progress notification did not name the step and its activity');
+      assert.ok(!seen.some(entry => entry.name === 'intruder'), 'another run\'s entry reached this run\'s listener');
+      assert.deepEqual(seen.map(entry => entry.type), ['waiting', 'approval', 'node', 'tool', 'done', 'waiting', 'approval', 'node', 'done', 'finish'],
+        'the listener did not get this run\'s entries in the order written');
+      assert.deepEqual(seen.filter(entry => entry.type !== 'tool').map(entry => entry.node).filter(Boolean), ['a', 'a', 'a', 'a', 'b', 'b', 'b', 'b']);
+      assert.deepEqual(seen, (await store.readLog(runId)).filter(entry => entry.type !== 'start'), 'the entries are not the ones written');
+      // Returned: the subscription is gone.
+      await store.log(runId, { type: 'tool', node: 'b', ok: true, name: 'late', note: 'after the run' });
+      assert.equal(seen.length, 10, 'an entry reached the listener after the run returned');
+
+      // Thrown: an update that throws ends the run with the error, and the subscription is gone too.
+      progressHook = undefined;
+      asked.length = 0;
+      const more = [];
+      let thrownId;
+      answers.info.push('Run');
+      const result = await studio.run(flow, 'h', state => { thrownId = state.id; throw new Error('the page is gone'); }, { onLog: entry => more.push(entry) });
+      assert.equal(result, undefined);
+      assert.ok(asked.some(entry => entry[0] === 'error' && /the page is gone/.test(entry[1])));
+      await store.log(thrownId, { type: 'tool', node: 'a', name: 'late' });
+      assert.deepEqual(more, [], 'an entry reached the listener after the run threw');
+
+      // The caller's signal stops the run where the notification's Cancel would.
+      asked.length = 0;
+      answers.info.push('Run', undefined);
+      const stopped = await studio.run(flow, 'h', undefined, { signal: { cancelled: true } });
+      assert.equal(stopped.status, 'stopped');
+      assert.equal(stopped.error, 'Cancelled');
+      // A resumed or editor run passes no options and still works (the notification has the step too).
+      reported.length = 0;
+      answers.info.push('Run', undefined);
+      answers.warning.push('Approve', 'Approve');
+      assert.equal((await studio.run(flow, 'h')).status, 'done');
+      assert.ok(reported.includes('Step 1/2: Write A') && reported.includes('Step 2/2: Write B'));
+    }
+
     console.log('Studio commands smoke passed');
   } finally {
     fs.rmSync(base, { recursive: true, force: true });

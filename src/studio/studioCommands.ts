@@ -8,13 +8,14 @@ import * as vscode from 'vscode';
 import { promises as fs } from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { recoverInterruptedSteps, RunState, RunStore, WorkflowEngine, workflowEffects, workflowModels, workflowSkills } from './engine';
+import { recoverInterruptedSteps, RunLogEntry, RunState, RunStore, WorkflowEngine, workflowEffects, workflowModels, workflowSkills } from './engine';
+import { activityLine } from './runsReport';
 import { skillSources, StudioSkills, studioSkills } from './githubSkills';
 import { approveChecks, codeServices } from './codeHost';
-import { StepDefinition } from './steps';
+import { CancelSignal, StepDefinition } from './steps';
 import { studioSteps } from './registry';
 import { listModels, resolveSelector, studioModel } from './studioModels';
-import { parseWorkflow, Workflow, workflowHash } from './workflow';
+import { parseWorkflow, runOrder, Workflow, workflowHash } from './workflow';
 import { checkImport, exportWorkflow, freeId, MAX_SHARED_BYTES, withId } from './sharing';
 import { fetchSharedWorkflow } from './fetchShared';
 import { readScripts } from '../agent/repositoryScripts';
@@ -29,12 +30,20 @@ async function workflowFiles(folder: string, where: string): Promise<Found[]> {
   return names.filter(name => name.endsWith(SUFFIX)).sort().map(name => ({ label: name.slice(0, -SUFFIX.length), where, file: path.join(folder, name) }));
 }
 
+/** What a caller of `run` may add: to see the run's log entries as they are written, and to stop it. */
+export interface RunOptions {
+  /** Each entry of this run's log, in the order it was appended (never another run's). */
+  onLog?(entry: RunLogEntry): void;
+  /** Cancels the run where a step checks it, like the notification's Cancel. */
+  signal?: CancelSignal;
+}
+
 /** What the Studio Chat uses to run a plan the way Run Workflow… runs a file. */
 export interface StudioRuns {
   steps: Map<string, StepDefinition>;
   skills: StudioSkills;
   /** Asks the inputs, the models to use instead of missing ones, and the consent; then runs. Undefined when the person cancelled first. */
-  run(workflow: Workflow, hash: string, onUpdate?: (state: RunState) => void): Promise<RunState | undefined>;
+  run(workflow: Workflow, hash: string, onUpdate?: (state: RunState) => void, options?: RunOptions): Promise<RunState | undefined>;
   /** The stored runs, once recovery after a restart is done. */
   runs(): Promise<RunStore>;
   /** Takes a waiting run up again (asks at its gate or review), with the workflow as it was when it started. */
@@ -144,63 +153,89 @@ export function registerStudio(context: vscode.ExtensionContext, workspaceRoot: 
   };
 
   /** Runs on, asking at each gate, until the run is done, stopped, failed, or left waiting. */
-  const drive = async (workflow: Workflow, state: RunState, onUpdate?: (state: RunState) => void): Promise<RunState> => {
+  const drive = async (workflow: Workflow, state: RunState, onUpdate?: (state: RunState) => void, options?: RunOptions): Promise<RunState> => {
     await recovered();
     let current = state;
-    onUpdate?.(current);
-    // A run reopened from Show Workflow Runs may already be waiting: ask first, then go on.
-    while (current.status === 'running' || current.status === 'waiting') {
-      if (current.status === 'running') {
-        current = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: `${workflow.title}`, cancellable: true },
-          async (_progress, token) => engine.continue(workflow, current, { get cancelled() { return token.isCancellationRequested; } }));
-        onUpdate?.(current);
-        continue;
-      }
-      if (!current.waiting) { break; }
-      const waiting = current.waiting;
-      const review = waiting.kind === 'review';
-      // A review's Accept says what it accepts: a failed or unverified change is never plain "Accept".
-      const approve = !review ? (waiting.kind === 'gate' ? 'Continue' : 'Approve')
-        : waiting.verdict === 'failed' ? 'Accept Anyway' : waiting.verdict === 'unverified' ? 'Accept as Unverified' : 'Accept';
-      const retry = review && (waiting.attempts ?? 0) < (waiting.maxAttempts ?? 0) ? `Retry (${(waiting.attempts ?? 0) + 1}/${waiting.maxAttempts})` : undefined;
-      const show = 'Show in Editor';
-      const stop = 'Stop Run';
-      let answer: string | undefined;
-      do {
-        answer = await vscode.window.showWarningMessage(waiting.title, { modal: true,
-          detail: waiting.preview.length > 1500 ? `${waiting.preview.slice(0, 1500)}\n… (Show in Editor for all of it)` : waiting.preview },
-          ...[approve, retry, show, stop].filter((item): item is string => Boolean(item)));
-        if (answer === show) {
-          const document = await vscode.workspace.openTextDocument({ content: waiting.preview, language: 'markdown' });
-          await vscode.window.showTextDocument(document, { preview: true });
-        }
-      } while (answer === show);
-      // Closing the dialog leaves the run waiting (Show Workflow Runs takes it up again).
-      if (answer === undefined) { return current; }
-      current = review
-        ? await engine.answer(current, answer === approve ? 'accept' : answer === retry ? 'retry' : 'stop', workflow)
-        : await engine.answer(current, answer === approve);
+    // The notification names the step running and what it is doing; the caller gets the entries.
+    const order = runOrder(workflow);
+    const titles = new Map(workflow.nodes.map(node => [node.id, node.title ?? node.id]));
+    let report: ((message: string) => void) | undefined;
+    let step: string | undefined;
+    let activity: string | undefined;
+    const announce = () => {
+      if (!step || !report) { return; }
+      report(`Step ${order.indexOf(step) + 1}/${order.length}: ${titles.get(step) ?? step}${activity ? ` — ${activity}` : ''}`);
+    };
+    const subscription = store.onLog((runId, entry) => {
+      if (runId !== state.id) { return; }
+      if (entry.type === 'node' && typeof entry.node === 'string') { step = entry.node; activity = undefined; announce(); }
+      const line = activityLine(entry);
+      if (line) { activity = line.text; announce(); }
+      try { options?.onLog?.(entry); } catch (error) { console.error('[RepositoryManager] Studio run listener:', error); }
+    });
+    try {
       onUpdate?.(current);
+      // A run reopened from Show Workflow Runs may already be waiting: ask first, then go on.
+      while (current.status === 'running' || current.status === 'waiting') {
+        if (current.status === 'running') {
+          current = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: `${workflow.title}`, cancellable: true },
+            async (progress, token) => {
+              report = message => progress.report({ message });
+              try {
+                return await engine.continue(workflow, current, { get cancelled() { return token.isCancellationRequested || Boolean(options?.signal?.cancelled); } });
+              } finally { report = undefined; }
+            });
+          onUpdate?.(current);
+          continue;
+        }
+        if (!current.waiting) { break; }
+        const waiting = current.waiting;
+        const review = waiting.kind === 'review';
+        // A review's Accept says what it accepts: a failed or unverified change is never plain "Accept".
+        const approve = !review ? (waiting.kind === 'gate' ? 'Continue' : 'Approve')
+          : waiting.verdict === 'failed' ? 'Accept Anyway' : waiting.verdict === 'unverified' ? 'Accept as Unverified' : 'Accept';
+        const retry = review && (waiting.attempts ?? 0) < (waiting.maxAttempts ?? 0) ? `Retry (${(waiting.attempts ?? 0) + 1}/${waiting.maxAttempts})` : undefined;
+        const show = 'Show in Editor';
+        const stop = 'Stop Run';
+        let answer: string | undefined;
+        do {
+          answer = await vscode.window.showWarningMessage(waiting.title, { modal: true,
+            detail: waiting.preview.length > 1500 ? `${waiting.preview.slice(0, 1500)}\n… (Show in Editor for all of it)` : waiting.preview },
+            ...[approve, retry, show, stop].filter((item): item is string => Boolean(item)));
+          if (answer === show) {
+            const document = await vscode.workspace.openTextDocument({ content: waiting.preview, language: 'markdown' });
+            await vscode.window.showTextDocument(document, { preview: true });
+          }
+        } while (answer === show);
+        // Closing the dialog leaves the run waiting (Show Workflow Runs takes it up again).
+        if (answer === undefined) { return current; }
+        current = review
+          ? await engine.answer(current, answer === approve ? 'accept' : answer === retry ? 'retry' : 'stop', workflow)
+          : await engine.answer(current, answer === approve);
+        onUpdate?.(current);
+      }
+      if (current.status === 'done') {
+        const written = Object.values(current.nodes).map(node => node.output).filter((output): output is { path: string } =>
+          Boolean(output) && typeof (output as { path?: unknown }).path === 'string');
+        const open = 'Open Result';
+        // The path is taken now, so a later click opens this run's file even if another run finished since.
+        const result = written.length ? path.join(workspaceRoot, written[written.length - 1].path) : undefined;
+        // Not awaited: the person may leave the notification open, and the run (and the chat) must not wait for it.
+        void Promise.resolve(vscode.window.showInformationMessage(`${workflow.title}: done.`, ...(result ? [open] : [])))
+          .then(async answer => { if (answer === open && result) { await vscode.window.showTextDocument(vscode.Uri.file(result)); } })
+          .catch(() => undefined);
+      } else if (current.status === 'failed') {
+        void vscode.window.showErrorMessage(`${workflow.title} failed: ${current.error ?? 'unknown error'}`);
+      } else if (current.status === 'stopped') {
+        void vscode.window.showInformationMessage(`${workflow.title} stopped: ${current.error ?? ''}`);
+      }
+      return current;
+    } finally {
+      subscription.dispose();
     }
-    if (current.status === 'done') {
-      const written = Object.values(current.nodes).map(node => node.output).filter((output): output is { path: string } =>
-        Boolean(output) && typeof (output as { path?: unknown }).path === 'string');
-      const open = 'Open Result';
-      // The path is taken now, so a later click opens this run's file even if another run finished since.
-      const result = written.length ? path.join(workspaceRoot, written[written.length - 1].path) : undefined;
-      // Not awaited: the person may leave the notification open, and the run (and the chat) must not wait for it.
-      void Promise.resolve(vscode.window.showInformationMessage(`${workflow.title}: done.`, ...(result ? [open] : [])))
-        .then(async answer => { if (answer === open && result) { await vscode.window.showTextDocument(vscode.Uri.file(result)); } })
-        .catch(() => undefined);
-    } else if (current.status === 'failed') {
-      void vscode.window.showErrorMessage(`${workflow.title} failed: ${current.error ?? 'unknown error'}`);
-    } else if (current.status === 'stopped') {
-      void vscode.window.showInformationMessage(`${workflow.title} stopped: ${current.error ?? ''}`);
-    }
-    return current;
   };
 
-  const run = async (workflow: Workflow, hash: string, onUpdate?: (state: RunState) => void): Promise<RunState | undefined> => {
+  const run = async (workflow: Workflow, hash: string, onUpdate?: (state: RunState) => void, options?: RunOptions): Promise<RunState | undefined> => {
     await recovered();
     const inputs = await askInputs(workflow);
     if (!inputs) { return undefined; }
@@ -213,7 +248,7 @@ export function registerStudio(context: vscode.ExtensionContext, workspaceRoot: 
     if (!await skills.ensureTrusted(skillSources(workflowSkills(workflow)))) { return undefined; }
     if (!await consent(workflow, models)) { return undefined; }
     try {
-      return await drive(workflow, await engine.start(workflow, hash, inputs, models), onUpdate);
+      return await drive(workflow, await engine.start(workflow, hash, inputs, models), onUpdate, options);
     } catch (error) {
       void vscode.window.showErrorMessage(`Could not run the workflow: ${error instanceof Error ? error.message : String(error)}`);
       return undefined;
