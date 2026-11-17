@@ -46,8 +46,10 @@ chosen by the user on 2026-11-17 (step list + inner activity). Shipped as 3.5.0.
 7. **Stop in the chat**: while a run is running, Send reads Stop (as it does while drafting) and sends
    `cancel`; the chat passes a signal that is cancelled by it or by the notification's Cancel. A step stops
    where it already checks the signal (code steps poll every 200 ms; prompt steps between calls) —
-   rejected: Stop on the notification only, because the person is looking at the chat. Whether Stop asks
-   first is an open question below.
+   rejected: Stop on the notification only, because the person is looking at the chat. Stop acts at once,
+   without asking, like the notification's Cancel and the drafting Stop; its title says "Stop the run: the
+   running step's changes are undone." (the user's decision, 2026-11-17) — rejected: asking first, because
+   one Stop should behave the same everywhere.
 8. **Throttle and persist sparingly**: the host posts to the page at most every 250 ms (with a trailing
    post); it saves the conversation when a step starts or ends and when the run ends, not per activity line.
    `ChatRun` gains `steps?: Array<{ id, title?, outcome, executionMs?, error? }>` and
@@ -123,13 +125,10 @@ Default (`AGENTS.md`): webview script stays plain browser JavaScript; no `alert`
 | Many tool calls flood the page and the disk | Decision 8 throttle and caps; save-count test |
 | A listener leaks after a run (or after an error) and later runs post to an old card | Dispose in `finally`; filter by run id; test with another run's entry |
 | Screen readers announce every re-render of the thread | Decision 9: activity `aria-live="off"`, one status line |
-| Stop during a code step undoes that step's changes (the existing Cancel behaviour) | Open question 1; the button's title says what is lost |
+| Stop during a code step undoes that step's changes (the existing Cancel behaviour) | Decision 7: the button's title says what is lost |
 | `runTimeline` treats a run still in progress differently from a finished one | Test the running state explicitly; change `runTimeline` only if a test shows it wrong, and say so |
 | Plan 2 lands first and conflicts in `drive()` and `CHANGELOG.md` | Rebase onto `main` after plan 2 merges; version 3.5.0 under its own heading |
 
 ## Open questions
 
-1. Does Stop in the chat ask first ("Stop the run? The running step's changes are undone.", asked from the
-   host), or stop at once like the notification's Cancel and the drafting Stop? The planner recommends
-   stopping at once with the consequence in the button's title, for one consistent Stop; the user decides
-   before approval.
+None.
