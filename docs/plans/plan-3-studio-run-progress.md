@@ -1,6 +1,6 @@
 # Plan 3 — Show a Studio run's progress and activity in the chat, and stop it there
 
-Status: approved
+Status: implemented
 Date: 2026-11-17
 Branch: `feat/studio-run-progress`
 Baseline: `main` at `3b5490e3016544e6f3c857cda4da9d556d860449` — rebase onto `main` after plan 2 (3.4.1) merges; both change `drive()` and `CHANGELOG.md`
