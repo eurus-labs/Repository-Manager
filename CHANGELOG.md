@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.5.0] - 2026-11-17
+
+### Added
+
+- A Studio run started from the Studio Chat now shows its progress in the chat: each step of the plan with its state in words (Done, Running with the time it has run, Waiting for you, Skipped, Failed, Stopped, Not started), under the running step what it is doing (model answers, tool calls such as files read and edited, checks, the branch), and a collapsed **Activity** list with every line. Tool inputs and file contents are not shown.
+- **Stop** in the Studio Chat: while a plan runs, Send reads Stop and ends the run at once, without asking; the running step's changes are undone, as with the notification's Cancel.
+- The progress notification of a Studio run names the step (`Step 2/6: <title>`) and what it is doing.
+
 ## [3.4.1] - 2026-11-17
 
 ### Fixed

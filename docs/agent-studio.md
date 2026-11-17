@@ -617,9 +617,36 @@ scripted in the tests; a chat with Copilot in VS Code has not been run yet.
   replacements, consent, gates); the chat shows the run's status as it
   changes. While a reply is drafted or a plan runs, New Chat and Chat
   History do not switch chats (the reply or run writes to its own).
+- **The run card shows progress, and Stop** (3.5.0, plan 3). The run log is
+  the one source: `RunStore.onLog` gives each entry as it is appended, in the
+  order of the calls (appends are queued, because a step's own `context.log`
+  is not awaited and could otherwise land after the engine's `done`).
+  `StudioRuns.run(..., { onLog, signal })` forwards this run's entries only
+  and unsubscribes when it returns or throws. The card lists the plan's
+  steps in run order with a sign and a word (Done, Running with its clock,
+  Waiting for you, Skipped, Failed, Stopped, Not started), computed by
+  `runTimeline` over the entries seen so far; a late entry (a `tool` line
+  after its step's `done`, or after the run's `finish`) adds an activity
+  line but never changes a step. Under the running step it shows its last 5
+  activity lines, and a collapsed "Activity (N)" lists every kept line (200
+  while running, the last 50 in the saved chat). A line is made by
+  `activityLine` (`src/studio/runsReport.ts`): a tool's name and note, the
+  model that answered with its tokens, a check's result, the branch, files
+  read, skills; tool inputs and file contents are never shown. The progress
+  notification says `Step k/n: <title>` and the latest line. While a run
+  runs, **Send reads Stop**: it cancels the run where a step next checks
+  (code steps every 200 ms, prompt steps between calls) and undoes the
+  running step's changes, like the notification's Cancel; it does not ask
+  first. The host posts at most every 250 ms and saves when a step starts or
+  ends, not per line. The page keeps the reader's place (it follows new
+  content only when already at the bottom), keeps the focus on Stop and on
+  an opened "Activity", and has one status line (`role="status"`) that
+  changes only when a step starts or ends. A chat saved before this renders
+  as before.
 - **Tests.** `src/test/studioChatSmoke.js` (planner, rules, engine models and
-  criteria, the host with a scripted `vscode.lm`), `src/test/studioChatUi.js`
-  (the page in Chromium; screenshots 40–44).
+  criteria, the host with a scripted `vscode.lm`, run progress and Stop with
+  a scripted `runs.run`), `src/test/studioChatUi.js` (the page in Chromium;
+  screenshots 40–47).
 
 **Not in 2b-1** (skills and code steps came in 2b-2 and 2b-3, below):
 drafting a single node, trying a prompt step on a sample input, showing a
