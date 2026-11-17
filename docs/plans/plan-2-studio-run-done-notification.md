@@ -1,6 +1,6 @@
 # Plan 2 — A finished Studio run no longer locks the Studio Chat
 
-Status: draft
+Status: approved
 Date: 2026-11-17
 Branch: `fix/studio-run-done-notification`
 Baseline: `main` at `3b5490e3016544e6f3c857cda4da9d556d860449`
