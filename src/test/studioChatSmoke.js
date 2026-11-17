@@ -323,6 +323,12 @@ async function main() {
     assert.equal(run.run.status, 'done');
     assert.deepEqual(run.run.written, ['notes/summary.md']);
     assert.deepEqual(run.run.criteria, ['notes/summary.md holds a summary of the input text']);
+    // The run returned (a notification the person leaves open no longer holds it): the chat is unlocked.
+    assert.equal(last().busy, null, 'the chat stayed locked after the run');
+    posted.length = 0;
+    answers.quickPick.push(() => false);
+    await commands.get('repositoryManager.studio.chatHistory')(); await settle();
+    assert.ok(!posted.some(message => /Wait for the current reply/.test(message.notice || '')), 'Chat History was refused after the run');
 
     // A proposed change, accepted, is written to the file.
     const changed = { ...edited, criteria: ['Two criteria now', 'and this'] };

@@ -186,9 +186,12 @@ export function registerStudio(context: vscode.ExtensionContext, workspaceRoot: 
       const written = Object.values(current.nodes).map(node => node.output).filter((output): output is { path: string } =>
         Boolean(output) && typeof (output as { path?: unknown }).path === 'string');
       const open = 'Open Result';
-      if (await vscode.window.showInformationMessage(`${workflow.title}: done.`, ...(written.length ? [open] : [])) === open) {
-        await vscode.window.showTextDocument(vscode.Uri.file(path.join(workspaceRoot, written[written.length - 1].path)));
-      }
+      // The path is taken now, so a later click opens this run's file even if another run finished since.
+      const result = written.length ? path.join(workspaceRoot, written[written.length - 1].path) : undefined;
+      // Not awaited: the person may leave the notification open, and the run (and the chat) must not wait for it.
+      void Promise.resolve(vscode.window.showInformationMessage(`${workflow.title}: done.`, ...(result ? [open] : [])))
+        .then(async answer => { if (answer === open && result) { await vscode.window.showTextDocument(vscode.Uri.file(result)); } })
+        .catch(() => undefined);
     } else if (current.status === 'failed') {
       void vscode.window.showErrorMessage(`${workflow.title} failed: ${current.error ?? 'unknown error'}`);
     } else if (current.status === 'stopped') {

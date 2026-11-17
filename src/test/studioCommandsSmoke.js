@@ -17,6 +17,7 @@ fs.writeFileSync(path.join(workspace, '.repository-manager', 'workflows', 'note.
 
 const commands = new Map();
 const asked = [];
+const shown = [];
 const answers = { quickPick: [], warning: [], info: [], input: [], save: [], open: [] };
 const fakeVscode = {
   commands: { registerCommand: (id, run) => { commands.set(id, run); return { dispose() {} }; } },
@@ -30,10 +31,14 @@ const fakeVscode = {
       const answer = answers.warning.shift();
       return typeof answer === 'function' ? answer() : answer;
     },
-    showInformationMessage: async (message, ...rest) => { asked.push(['info', message]); return answers.info.shift(); },
+    showInformationMessage: (message, ...rest) => {
+      asked.push(['info', message]);
+      const answer = answers.info.shift();
+      return Promise.resolve(typeof answer === 'function' ? answer(rest) : answer);
+    },
     showErrorMessage: async (message, options) => { asked.push(['error', message, options && options.detail]); },
     withProgress: async (_options, task) => task({ report() {} }, { isCancellationRequested: false }),
-    showTextDocument: async () => undefined,
+    showTextDocument: async document => { shown.push(document); },
     registerCustomEditorProvider: (viewType) => { commands.set(`editor:${viewType}`, true); return { dispose() {} }; }
   },
   workspace: { openTextDocument: async () => ({}) },
@@ -104,6 +109,27 @@ async function main() {
     await commands.get('repositoryManager.studio.runWorkflow')();
     assert.equal(fs.existsSync(note), false);
     assert.ok(asked.some(entry => entry[0] === 'info' && /^Write a note stopped: Not approved at "write"\./.test(entry[1])));
+    // A finished run returns while its "done." notification is still open (the chat is unlocked by run()
+    // returning), and Open Result, clicked later, opens that run's file.
+    fs.rmSync(path.join(workspace, 'notes'), { recursive: true, force: true });
+    asked.length = 0;
+    shown.length = 0;
+    let clickOpen;
+    answers.quickPick.push(item => item.label === 'note');
+    answers.input.push('left open');
+    answers.info.push('Run');
+    answers.info.push(() => new Promise(resolve => { clickOpen = resolve; }));
+    answers.warning.push('Approve');
+    const timeout = new Promise(resolve => setTimeout(() => resolve('timeout'), 2000));
+    const finished = commands.get('repositoryManager.studio.runWorkflow')().then(() => 'returned');
+    assert.equal(await Promise.race([finished, timeout]), 'returned', 'the run waited for its "done." notification to be answered');
+    assert.ok(asked.some(entry => entry[0] === 'info' && entry[1] === 'Write a note: done.'));
+    assert.equal(shown.length, 0, 'Open Result opened before it was clicked');
+    clickOpen('Open Result');
+    await new Promise(resolve => setTimeout(resolve, 20));
+    assert.equal(shown.length, 1);
+    assert.equal(shown[0].fsPath, note);
+    assert.equal(fs.readFileSync(note, 'utf8'), 'left open');
     // The editor's Run gives the file: no pick, the same inputs, consent and gate.
     fs.rmSync(path.join(workspace, 'notes'), { recursive: true, force: true });
     asked.length = 0;
