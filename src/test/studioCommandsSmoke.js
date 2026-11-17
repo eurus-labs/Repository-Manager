@@ -325,6 +325,81 @@ async function main() {
       assert.ok(reported.includes('Step 1/2: Write A') && reported.includes('Step 2/2: Write B'));
     }
 
+    // ---- Stop at an approval boundary (plan 3, Decision 7): a Stop pressed as the run enters waiting, or while
+    // ---- the dialog is open, ends the run `stopped`; a reviewed step's changes are undone, never accepted.
+    {
+      commands.clear();
+      const studio = registerStudio(context(), workspace);
+      const undone = [];
+      const written = path.join(workspace, 'notes', 'reviewed.txt');
+      let attempt = 0;
+      // A reviewed step the scripted harness can drive (a real code step needs Copilot): it writes a file,
+      // and Stop or Retry puts it back.
+      studio.steps.set('test.reviewed', { type: 'test.reviewed', title: 'Reviewed', effect: 'read', required: [], single: true,
+        run: async (_input, context) => {
+          attempt++;
+          fs.mkdirSync(path.dirname(written), { recursive: true });
+          fs.writeFileSync(written, `attempt ${attempt}`);
+          context.log({ type: 'tool', node: context.node.id, ok: true, name: 'edit', note: `attempt ${attempt}` });
+          await new Promise(resolve => setTimeout(resolve, 20));
+          return { attempt };
+        },
+        review: { maxAttempts: 2, preview: () => 'the change', verdict: () => 'passed', feedback: () => 'again',
+          undo: async () => { undone.push(attempt); fs.rmSync(written, { force: true }); return []; } } });
+      const reviewed = { schema: 'repository-manager/workflow@1', id: 'reviewed', version: '1.0.0', title: 'Reviewed change',
+        nodes: [{ id: 'r', type: 'test.reviewed', title: 'Change it' }] };
+      const store = await studio.runs();
+      const warnings = () => asked.filter(entry => entry[0] === 'warning');
+
+      // (a) Stop already pressed when the run enters waiting: no dialog, stopped, nothing written.
+      fs.rmSync(path.join(workspace, 'notes'), { recursive: true, force: true });
+      asked.length = 0;
+      const early = { cancelled: false };
+      answers.info.push('Run', undefined);
+      answers.warning.push('Approve');
+      const flowA = { schema: 'repository-manager/workflow@1', id: 'stopearly', version: '1.0.0', title: 'Stop early',
+        nodes: [{ id: 'a', type: 'file.write', title: 'Write A', with: { path: 'notes/early.txt', content: 'a' } }] };
+      const resultA = await studio.run(flowA, 'h', state => { if (state.status === 'waiting') { early.cancelled = true; } }, { signal: early });
+      assert.equal(warnings().length, 0, 'the approval dialog was shown after Stop');
+      assert.equal(resultA.status, 'stopped');
+      assert.equal(fs.existsSync(path.join(workspace, 'notes', 'early.txt')), false, 'written after Stop');
+      assert.equal((await store.load(resultA.id)).status, 'stopped');
+      answers.warning.length = 0;
+
+      // (a) The same for a review: no dialog, and the step's changes are undone.
+      asked.length = 0; undone.length = 0; attempt = 0;
+      const earlyReview = { cancelled: false };
+      answers.info.push('Run', undefined);
+      answers.warning.push('Accept');
+      const resultAr = await studio.run(reviewed, 'h', state => { if (state.status === 'waiting') { earlyReview.cancelled = true; } }, { signal: earlyReview });
+      assert.equal(warnings().length, 0, 'the review dialog was shown after Stop');
+      assert.equal(resultAr.status, 'stopped');
+      assert.equal(fs.existsSync(written), false, 'the reviewed step\'s changes were kept after Stop');
+      assert.deepEqual(undone, [1]);
+      answers.warning.length = 0;
+
+      // (b) Stop pressed while the review dialog is open, then Accept: stopped, changes undone.
+      asked.length = 0; undone.length = 0; attempt = 0;
+      const during = { cancelled: false };
+      answers.info.push('Run', undefined);
+      answers.warning.push(() => { during.cancelled = true; return 'Accept'; });
+      const resultB = await studio.run(reviewed, 'h', undefined, { signal: during });
+      assert.equal(warnings().length, 1);
+      assert.equal(resultB.status, 'stopped', 'a review accepted after Stop finished the run');
+      assert.equal(fs.existsSync(written), false, 'the reviewed step\'s changes were kept after Stop');
+      assert.deepEqual(undone, [1]);
+      assert.match(resultB.error, /changes were undone/);
+
+      // (b) Stop pressed while an approval dialog is open, then it is closed: stopped, not left waiting.
+      asked.length = 0;
+      const closing = { cancelled: false };
+      answers.info.push('Run', undefined);
+      answers.warning.push(() => { closing.cancelled = true; return undefined; });
+      const resultC = await studio.run(flowA, 'h', undefined, { signal: closing });
+      assert.equal(resultC.status, 'stopped', 'a closed dialog after Stop left a resumable run');
+      assert.equal(fs.existsSync(path.join(workspace, 'notes', 'early.txt')), false);
+    }
+
     console.log('Studio commands smoke passed');
   } finally {
     fs.rmSync(base, { recursive: true, force: true });

@@ -193,6 +193,10 @@ export function registerStudio(context: vscode.ExtensionContext, workspaceRoot: 
         if (!current.waiting) { break; }
         const waiting = current.waiting;
         const review = waiting.kind === 'review';
+        // Stop acts at once (plan 3, Decision 7), also at an approval: the engine's own stop path, so a
+        // reviewed step's changes are undone and nothing is approved.
+        const stopWaiting = async () => { current = await engine.answer(current, review ? 'stop' : false, workflow); onUpdate?.(current); };
+        if (options?.signal?.cancelled) { await stopWaiting(); continue; }
         // A review's Accept says what it accepts: a failed or unverified change is never plain "Accept".
         const approve = !review ? (waiting.kind === 'gate' ? 'Continue' : 'Approve')
           : waiting.verdict === 'failed' ? 'Accept Anyway' : waiting.verdict === 'unverified' ? 'Accept as Unverified' : 'Accept';
@@ -209,6 +213,8 @@ export function registerStudio(context: vscode.ExtensionContext, workspaceRoot: 
             await vscode.window.showTextDocument(document, { preview: true });
           }
         } while (answer === show);
+        // Stop pressed while the dialog was open wins over any answer, closing it included.
+        if (options?.signal?.cancelled) { await stopWaiting(); continue; }
         // Closing the dialog leaves the run waiting (Show Workflow Runs takes it up again).
         if (answer === undefined) { return current; }
         current = review
