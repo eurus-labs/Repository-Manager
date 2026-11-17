@@ -232,6 +232,48 @@ export function runTimeline(record: RunRecord, workflow?: { nodes: Array<{ id: s
   return { nodes: list, hasLog: log.length > 0, executionMs, waitingMs };
 }
 
+/** The longest an activity line is: a tool's note can be long (a query, a file list). */
+const ACTIVITY_CHARS = 200;
+
+/**
+ * One short line of text for a log entry that tells what a step is doing, or undefined for an entry
+ * that is not activity (node, done, waiting...). The same line is shown on the Studio Chat's run card
+ * and in the progress notification. Tool inputs and file contents are never shown: a tool's note is
+ * the short text the tool itself reports (a file and line range, a query, a script outcome).
+ */
+export function activityLine(entry: RunLogEntry): { text: string; ok?: boolean } | undefined {
+  const str = (value: unknown): string => typeof value === 'string' ? value.trim() : typeof value === 'number' ? String(value) : '';
+  const cut = (text: string) => text.length > ACTIVITY_CHARS ? `${text.slice(0, ACTIVITY_CHARS - 1)}…` : text;
+  switch (entry.type) {
+    case 'tool': {
+      const name = str(entry.name) || 'tool';
+      const note = str(entry.note);
+      if (entry.ok === false) { return { text: cut(`✗ ${name} failed${note ? `: ${note}` : ''}`), ok: false }; }
+      return { text: cut(note ? `${name} ${note}` : name) };
+    }
+    case 'model': {
+      const model = str(entry.model) || str(entry.modelId) || 'model';
+      const tokens = typeof entry.inputTokens === 'number' && typeof entry.outputTokens === 'number' ? ` (${entry.inputTokens} in, ${entry.outputTokens} out)` : '';
+      return { text: cut(`Model ${model} answered${tokens}`) };
+    }
+    case 'check': {
+      const passed = entry.passed === true;
+      const code = typeof entry.exitCode === 'number' ? ` (exit ${entry.exitCode})` : '';
+      return { text: cut(`Check ${str(entry.script) || 'script'} ${passed ? 'passed' : 'failed'}${code}`), ok: passed };
+    }
+    case 'branch': return { text: cut(`On branch ${str(entry.branch) || '?'}${entry.created === true ? ', created' : ''}`) };
+    case 'read': return typeof entry.files === 'number' ? { text: `Read ${entry.files} file${entry.files === 1 ? '' : 's'}` } : undefined;
+    case 'skills': {
+      const names = (Array.isArray(entry.skills) ? entry.skills : []).map(ref => {
+        const text = str(ref);
+        return /\/([^/@]+)@/.exec(text)?.[1] ?? text;
+      }).filter(Boolean);
+      return names.length ? { text: cut(`Skills: ${names.join(', ')}`) } : undefined;
+    }
+    default: return undefined;
+  }
+}
+
 /** A duration as people read it, or "no data". */
 export function formatDuration(ms: number | undefined): string {
   if (ms === undefined) { return 'no data'; }

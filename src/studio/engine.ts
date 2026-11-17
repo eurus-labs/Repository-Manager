@@ -172,10 +172,34 @@ export class RunStore {
     return JSON.parse(await fs.readFile(path.join(this.dir(id), 'workflow.json'), 'utf8')) as Workflow;
   }
 
-  async log(id: string, entry: Record<string, unknown>): Promise<void> {
-    const dir = this.dir(id);
-    await fs.mkdir(dir, { recursive: true });
-    await fs.appendFile(path.join(dir, 'log.jsonl'), JSON.stringify({ at: new Date().toISOString(), ...entry }) + '\n');
+  /** Where a log entry is appended and announced, one after another: the order of the calls. */
+  private logged: Promise<unknown> = Promise.resolve();
+  private readonly logListeners = new Set<(runId: string, entry: RunLogEntry) => void>();
+
+  /**
+   * Appends an entry to the run's log, then tells the listeners of `onLog` the entry exactly as
+   * written. Entries are appended in the order `log` was called, even when a step does not wait for
+   * its own (`context.log`), so the file and every listener see one order.
+   */
+  log(id: string, entry: Record<string, unknown>): Promise<void> {
+    const written = this.logged.then(async () => {
+      const dir = this.dir(id);
+      await fs.mkdir(dir, { recursive: true });
+      const line = { at: new Date().toISOString(), ...entry } as RunLogEntry;
+      await fs.appendFile(path.join(dir, 'log.jsonl'), JSON.stringify(line) + '\n');
+      for (const listener of [...this.logListeners]) {
+        try { listener(id, line); } catch (error) { console.error('[RepositoryManager] Studio log listener:', error); }
+      }
+    });
+    // A failed append rejects its own call only; the next entries still go.
+    this.logged = written.catch(() => undefined);
+    return written;
+  }
+
+  /** Listens to every entry appended to any run's log from now on, until disposed. */
+  onLog(listener: (runId: string, entry: RunLogEntry) => void): { dispose(): void } {
+    this.logListeners.add(listener);
+    return { dispose: () => { this.logListeners.delete(listener); } };
   }
 
   async readLog(id: string): Promise<RunLogEntry[]> {

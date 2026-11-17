@@ -7,7 +7,7 @@ const path = require('node:path');
 const out = name => require(path.join(__dirname, '../../out/studio', name));
 const { RunStore, WorkflowEngine } = out('engine.js');
 const { studioSteps } = out('registry.js');
-const { summarizeRuns, runTimeline, matchesFilter, formatDuration, RESULT_CHARS } = out('runsReport.js');
+const { summarizeRuns, runTimeline, matchesFilter, formatDuration, activityLine, RESULT_CHARS } = out('runsReport.js');
 const { renderRunsPage } = out('runsPage.js');
 
 const base = fs.mkdtempSync(path.join(os.tmpdir(), 'repository-manager-runs-'));
@@ -130,6 +130,42 @@ async function main() {
     const odd = { state: state('odd', 'failed', { title: '<img src=x>', error: '<b>boom</b>' }), log: [] };
     const oddPage = renderRunsPage({ records: [odd], filter: {}, nonce: 'n', cspSource: 'x', selected: { record: odd, timeline: runTimeline(odd) } });
     assert.doesNotMatch(oddPage, /<img src=x>|<b>boom<\/b>/);
+    // ---- activityLine: the short text of a log entry that tells what a step is doing; nothing for others.
+    const line = entry => activityLine({ at: at(1), ...entry });
+    assert.deepEqual(line({ type: 'tool', node: 'fix', name: 'read_file', ok: true, note: 'src/a.ts:1-40' }), { text: 'read_file src/a.ts:1-40' });
+    assert.deepEqual(line({ type: 'tool', node: 'fix', name: 'edit_file', ok: false, note: 'no match' }), { text: '✗ edit_file failed: no match', ok: false });
+    assert.deepEqual(line({ type: 'tool', node: 'fix', name: 'list_files', ok: true }), { text: 'list_files' });
+    assert.deepEqual(line({ type: 'model', node: 'fix', model: 'gpt-4o', inputTokens: 1200, outputTokens: 80 }), { text: 'Model gpt-4o answered (1200 in, 80 out)' });
+    assert.deepEqual(line({ type: 'model', node: 'ask', model: 'copilot:gpt-4o', attempt: 1 }), { text: 'Model copilot:gpt-4o answered' });
+    assert.deepEqual(line({ type: 'check', node: 'fix', script: 'test', passed: true, exitCode: 0 }), { text: 'Check test passed (exit 0)', ok: true });
+    assert.deepEqual(line({ type: 'check', node: 'fix', script: 'test', passed: false, exitCode: 1 }), { text: 'Check test failed (exit 1)', ok: false });
+    assert.deepEqual(line({ type: 'branch', node: 'fix', branch: 'fix/parser', created: true }), { text: 'On branch fix/parser, created' });
+    assert.deepEqual(line({ type: 'branch', node: 'fix', branch: 'main', created: false }), { text: 'On branch main' });
+    assert.deepEqual(line({ type: 'read', node: 'docs', files: 12, requirements: 30 }), { text: 'Read 12 files' });
+    assert.deepEqual(line({ type: 'read', node: 'docs', files: 1 }), { text: 'Read 1 file' });
+    assert.deepEqual(line({ type: 'skills', node: 'ask', skills: ['github:acme/skills/plugins/testing/skills/write-tests@' + 'c'.repeat(40), 'plain'] }), { text: 'Skills: write-tests, plain' });
+    for (const type of ['start', 'node', 'done', 'skip', 'waiting', 'approval', 'review', 'finish', 'recovered', 'script-changes']) { assert.equal(line({ type, node: 'x' }), undefined, `${type} made a line`); }
+    // A tool's input and a file's content are never in the line; a long note is cut.
+    const secret = line({ type: 'tool', name: 'edit_file', ok: true, note: 'a.ts', input: { content: 'SECRET FILE TEXT' }, output: 'SECRET' });
+    assert.equal(secret.text.includes('SECRET'), false);
+    assert.ok(line({ type: 'tool', name: 'search', ok: true, note: 'q'.repeat(500) }).text.length <= 200);
+
+    // ---- runTimeline over a run still in progress (what the chat's run card reads): the running step,
+    // ---- the steps not started, and entries that arrive late never turn a finished step back to running.
+    const flowNodes = { nodes: [{ id: 'a', type: 'prompt', title: 'First' }, { id: 'b', type: 'code', title: 'Second' }, { id: 'c', type: 'gate', title: 'Third' }] };
+    const live = (status, log, nodes = {}) => runTimeline({ state: state('live', status, { nodes }), log }, flowNodes).nodes.map(n => [n.node, n.outcome]);
+    assert.deepEqual(live('running', [{ at: at(1), type: 'node', node: 'a' }, { at: at(2), type: 'tool', node: 'a', name: 'x' }]), [['a', 'running'], ['b', 'pending'], ['c', 'pending']]);
+    const afterDone = [{ at: at(1), type: 'node', node: 'a' }, { at: at(2), type: 'done', node: 'a' }, { at: at(3), type: 'node', node: 'b' }];
+    assert.deepEqual(live('running', afterDone, { a: { status: 'done' } }), [['a', 'done'], ['b', 'running'], ['c', 'pending']]);
+    // Late: a tool and a model entry of the finished step a, appended after its done, even after b started.
+    const late = [...afterDone, { at: at(3), type: 'tool', node: 'a', name: 'read_file' }, { at: at(4), type: 'model', node: 'a', model: 'm' }];
+    assert.deepEqual(live('running', late, { a: { status: 'done' } }), [['a', 'done'], ['b', 'running'], ['c', 'pending']], 'a late entry changed a finished step');
+    // Late after the run's finish (stopped): the stopped step stays stopped, a done step stays done.
+    const finished = [...afterDone, { at: at(5), type: 'finish', status: 'stopped', reason: 'Cancelled' }, { at: at(5), type: 'tool', node: 'b', name: 'edit_file' }, { at: at(5), type: 'model', node: 'a', model: 'm' }];
+    assert.deepEqual(live('stopped', finished, { a: { status: 'done' } }), [['a', 'done'], ['b', 'stopped'], ['c', 'pending']], 'a late entry after finish changed a step');
+    // Waiting for a person is waiting, not running; a skipped step is skipped.
+    assert.deepEqual(live('waiting', [{ at: at(1), type: 'node', node: 'a' }, { at: at(2), type: 'done', node: 'a' }, { at: at(3), type: 'skip', node: 'b' }, { at: at(4), type: 'waiting', node: 'c', kind: 'gate' }], { a: { status: 'done' }, b: { status: 'skipped' } }),
+      [['a', 'done'], ['b', 'skipped'], ['c', 'waiting']]);
     console.log('Studio runs smoke passed');
   } finally {
     fs.rmSync(base, { recursive: true, force: true });

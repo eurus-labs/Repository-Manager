@@ -230,6 +230,39 @@ async function main() {
     await assert.rejects(engine.start(sample.workflow, 'hash', {}), /The input "New requirements folder" has no value/);
     assert.ok((await store.list()).length >= 6);
 
+    // ---- RunStore.onLog: each appended entry, exactly as written (with its `at`), for any run, in the
+    // ---- order of the calls even when a step does not wait for its own (`context.log`), until disposed.
+    {
+      const logged = new RunStore(path.join(base, 'onlog-runs'));
+      const seen = [];
+      const subscription = logged.onLog((runId, entry) => seen.push([runId, entry]));
+      const throwing = logged.onLog(() => { throw new Error('a broken listener'); });
+      const quiet = console.error; console.error = () => undefined;
+      void logged.log('run-a', { type: 'tool', node: 'x', name: 'read_file', note: 'a.ts:1-40' });
+      void logged.log('run-b', { type: 'node', node: 'y' });
+      for (let index = 0; index < 30; index++) { void logged.log('run-a', { type: 'tool', node: 'x', note: `n${index}` }); }
+      await logged.log('run-a', { type: 'done', node: 'x' });
+      console.error = quiet;
+      assert.equal(seen.length, 33, 'the listener missed entries');
+      assert.deepEqual(seen.slice(0, 2).map(([runId, entry]) => [runId, entry.type]), [['run-a', 'tool'], ['run-b', 'node']]);
+      const written = await logged.readLog('run-a');
+      assert.deepEqual(seen.filter(([runId]) => runId === 'run-a').map(([, entry]) => entry), written, 'the listener did not get the entries as written, in the order written');
+      assert.deepEqual(written.slice(1, 4).map(entry => entry.note), ['n0', 'n1', 'n2'], 'the file is not in the order of the calls');
+      assert.ok(written.every(entry => typeof entry.at === 'string'));
+      throwing.dispose();
+      subscription.dispose();
+      await logged.log('run-a', { type: 'finish', status: 'done' });
+      assert.equal(seen.length, 33, 'an entry reached a disposed listener');
+      assert.equal((await logged.readLog('run-a')).length, 33);
+      // A failed append rejects its own call; the entries after it still go.
+      const later = [];
+      const watch = logged.onLog((_runId, entry) => later.push(entry.type));
+      await assert.rejects(logged.log('not a run id!', { type: 'start' }), /is not a run id/);
+      await logged.log('run-a', { type: 'tool' });
+      assert.deepEqual(later, ['tool'], 'a failed entry stopped the ones after it');
+      watch.dispose();
+    }
+
     console.log('Studio engine smoke passed');
   } finally {
     fs.rmSync(base, { recursive: true, force: true });
