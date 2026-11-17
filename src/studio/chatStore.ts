@@ -27,7 +27,16 @@ export interface ChatRun {
   criteria?: string[];
   /** Files the run wrote, relative to the workspace. */
   written?: string[];
+  /** The plan's steps in run order with how each went, as far as the run got. Absent in older chats. */
+  steps?: ChatRunStep[];
+  /** What the steps did, one short line each (the last 50 are kept in the saved chat). Absent in older chats. */
+  activity?: ChatRunActivity[];
 }
+
+/** pending, running, waiting, done, skipped, failed or stopped. */
+export interface ChatRunStep { id: string; title?: string; outcome: string; executionMs?: number; error?: string }
+
+export interface ChatRunActivity { at: string; node: string; text: string; ok?: boolean }
 
 export interface ChatMessage {
   id: string;

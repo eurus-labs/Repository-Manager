@@ -10,8 +10,9 @@ import * as path from 'path';
 import { randomBytes } from 'crypto';
 import { draftPlan, planProblems } from './chatPlanner';
 import { acceptDraft, addDraft, addRun, addUserMessage, ChatError, currentCard, discardDraft, editPlan, history, planView, setPlan } from './chatSession';
-import { ChatRun, ChatStore, Conversation, newMessage } from './chatStore';
-import { RunState } from './engine';
+import { ChatRun, ChatRunActivity, ChatRunStep, ChatStore, Conversation, newMessage } from './chatStore';
+import { RunLogEntry, RunState } from './engine';
+import { activityLine, runTimeline } from './runsReport';
 import { CancelSignal, StepDefinition } from './steps';
 import { studioSteps } from './registry';
 import { dashboardSelector, listModels, ModelChoice, onModelsChanged, studioModel } from './studioModels';
@@ -21,13 +22,48 @@ import { readScripts } from '../agent/repositoryScripts';
 import { StudioRuns } from './studioCommands';
 import { EditOperation, serializeWorkflow } from './workflowEdit';
 import { WORKFLOW_EDITOR } from './workflowEditorProvider';
-import { Workflow, workflowHash } from './workflow';
+import { runOrder, Workflow, workflowHash } from './workflow';
 import { exportWorkflow } from './sharing';
 import * as os from 'os';
 
 export const CHAT_VIEW = 'repositoryManager.studio.chat';
 const CURRENT_KEY = 'repositoryManager.studio.currentChat';
 const WORKFLOW_FOLDER = path.join('.repository-manager', 'workflows');
+/** The page is sent at most this often while a run writes its log (a trailing post follows). */
+const POST_INTERVAL_MS = 250;
+/** Activity lines kept on the card while the run goes, and in the saved chat. */
+const LIVE_ACTIVITY = 200;
+const SAVED_ACTIVITY = 50;
+
+/** What the chat keeps of the run in progress: the log entries seen, and what the card shows from them. */
+interface LiveRun {
+  run?: ChatRun;
+  plan: Workflow;
+  state?: RunState;
+  /** In the order they were appended: the order `runTimeline` reads. */
+  entries: RunLogEntry[];
+  activity: ChatRunActivity[];
+  steps?: ChatRunStep[];
+  /** When each step last started, for the page's clock. */
+  since: Map<string, string>;
+  signature: string;
+}
+
+/** The words of the card: what `runTimeline` says about a step, given how the run itself stands. */
+function stepOutcome(outcome: string, runStatus: string): string {
+  const finished = runStatus === 'done' || runStatus === 'failed' || runStatus === 'stopped';
+  const closing = runStatus === 'done' ? 'done' : runStatus === 'failed' ? 'failed' : 'stopped';
+  switch (outcome) {
+    case 'running': return finished ? closing : 'running';
+    case 'approved': return finished ? 'done' : 'running';
+    case 'waiting': return finished ? closing : 'waiting';
+    case 'done': case 'accepted': return 'done';
+    case 'skipped': return 'skipped';
+    case 'failed': case 'interrupted': return 'failed';
+    case 'stopped': case 'rejected': return 'stopped';
+    default: return 'pending';
+  }
+}
 
 type Incoming =
   | { type: 'ready' } | { type: 'send'; text: string } | { type: 'cancel' }
@@ -43,6 +79,9 @@ export class StudioChatProvider implements vscode.WebviewViewProvider {
   private busy: 'drafting' | 'running' | undefined;
   private cancelled = false;
   private notice = '';
+  private live?: LiveRun;
+  private lastPost = 0;
+  private postTimer?: ReturnType<typeof setTimeout>;
   private readonly store: ChatStore;
   private readonly steps: Map<string, StepDefinition>;
   private readonly skills: StudioSkills;
@@ -174,7 +213,12 @@ export class StudioChatProvider implements vscode.WebviewViewProvider {
           this.post();
           return;
         case 'send': return await this.send(message.text);
-        case 'cancel': this.cancelled = true; return;
+        case 'cancel':
+          if (!this.busy) { return; }
+          this.cancelled = true;
+          // A run stops where its step next looks: the page says it is stopping.
+          if (this.busy === 'running') { this.post(); }
+          return;
         case 'setModel': {
           const conversation = await this.ensureConversation();
           conversation.model = message.selector || undefined;
@@ -263,27 +307,82 @@ export class StudioChatProvider implements vscode.WebviewViewProvider {
       return;
     }
     this.busy = 'running';
+    this.cancelled = false;
     this.post();
-    let run: ChatRun | undefined;
+    const live: LiveRun = { plan, entries: [], activity: [], since: new Map(), signature: '' };
+    this.live = live;
+    // ChatStore writes one conversation's saves in the order asked, so the last one written is the last asked for.
+    const queueSave = () => { void this.saveConversation().catch(() => undefined); };
+    const persist = () => {
+      if (!live.run) { return; }
+      live.run.steps = live.steps?.map(step => ({ ...step }));
+      live.run.activity = live.activity.slice(-SAVED_ACTIVITY);
+      queueSave();
+    };
     const update = (state: RunState) => {
       const written = Object.values(state.nodes).map(node => node.output)
         .filter((output): output is { path: string } => Boolean(output) && typeof (output as { path?: unknown }).path === 'string').map(output => output.path);
-      if (!run) {
-        run = { id: state.id, status: state.status, criteria: state.criteria };
-        addRun(conversation, run, `Run of "${plan.title}"`);
+      live.state = state;
+      if (!live.run) {
+        live.run = { id: state.id, status: state.status, criteria: state.criteria };
+        addRun(conversation, live.run, `Run of "${plan.title}"`);
       }
-      Object.assign(run, { status: state.status, error: state.error, written });
-      void this.saveConversation().catch(() => undefined);
+      Object.assign(live.run, { status: state.status, error: state.error, written });
+      this.refreshSteps(live);
+      persist();
       this.post();
     };
+    // Each log entry the run appends, in order: the card's steps come from `runTimeline` over them.
+    const onLog = (entry: RunLogEntry) => {
+      if (this.live !== live) { return; }
+      live.entries.push(entry);
+      if (entry.type === 'node' && typeof entry.node === 'string') { live.since.set(entry.node, entry.at); }
+      const line = activityLine(entry);
+      if (line) {
+        live.activity.push({ at: entry.at, node: typeof entry.node === 'string' ? entry.node : '', text: line.text, ...(line.ok === undefined ? {} : { ok: line.ok }) });
+        if (live.activity.length > LIVE_ACTIVITY) { live.activity.splice(0, live.activity.length - LIVE_ACTIVITY); }
+      }
+      if (!live.run) { return; }
+      if (this.refreshSteps(live)) { persist(); }
+      this.postSoon();
+    };
+    const stopped = () => this.cancelled;
     try {
-      const final = await this.runs.run(plan, workflowHash(serializeWorkflow(plan)), update);
+      const final = await this.runs.run(plan, workflowHash(serializeWorkflow(plan)), update, { onLog, signal: { get cancelled() { return stopped(); } } });
       if (!final) { this.say('The run did not start.'); }
     } finally {
+      this.live = undefined;
       this.busy = undefined;
+      this.cancelled = false;
+      if (live.run) { live.run.steps = live.steps?.map(step => ({ ...step })); live.run.activity = live.activity.slice(-SAVED_ACTIVITY); }
       await this.saveConversation();
       this.post();
     }
+  }
+
+  /**
+   * Recomputes the steps of the run in progress from the entries seen and the latest state. True when a
+   * step started, ended or changed what it is (a post and a save follow at once); an activity line alone
+   * does not count.
+   */
+  private refreshSteps(live: LiveRun): boolean {
+    // No log entry yet: nothing to say about steps, and the card is as it was before steps existed.
+    if (!live.state || !live.entries.length) { return false; }
+    const timeline = runTimeline({ state: live.state, log: live.entries }, live.plan);
+    const byId = new Map(timeline.nodes.map(node => [node.node, node]));
+    const status = live.state.status;
+    live.steps = runOrder(live.plan).map(id => {
+      const node = byId.get(id);
+      const title = live.plan.nodes.find(candidate => candidate.id === id)?.title;
+      return {
+        id, ...(title ? { title } : {}), outcome: stepOutcome(node?.outcome ?? 'pending', status),
+        ...(node?.executionMs === undefined ? {} : { executionMs: node.executionMs }), ...(node?.error ? { error: node.error } : {})
+      };
+    });
+    const signature = live.steps.map(step => `${step.id}:${step.outcome}`).join('|');
+    const changed = signature !== live.signature;
+    live.signature = signature;
+    return changed;
   }
 
   /** Skills listed before (no network): offered to the planner and named on the card. */
@@ -424,18 +523,35 @@ export class StudioChatProvider implements vscode.WebviewViewProvider {
     this.post();
   }
 
+  /** Posts now, or at most every POST_INTERVAL_MS with a trailing post, for a run writing many lines. */
+  private postSoon(): void {
+    if (this.postTimer) { return; }
+    const wait = POST_INTERVAL_MS - (Date.now() - this.lastPost);
+    if (wait <= 0) { this.post(); return; }
+    this.postTimer = setTimeout(() => { this.postTimer = undefined; this.post(); }, wait);
+  }
+
+  /** The run as the page gets it: the one in progress with its live steps, lines and start times. */
+  private runView(run: ChatRun): unknown {
+    const live = this.live;
+    if (!live || live.run !== run || !live.steps) { return run; }
+    return { ...run, steps: live.steps.map(step => ({ ...step, ...(step.outcome === 'running' && live.since.has(step.id) ? { since: live.since.get(step.id) } : {}) })), activity: live.activity };
+  }
+
   private post(): void {
+    if (this.postTimer) { clearTimeout(this.postTimer); this.postTimer = undefined; }
+    this.lastPost = Date.now();
     if (!this.view || !this.conversation) { return; }
     const conversation = this.conversation;
     const notice = this.notice;
     this.notice = '';
     void this.view.webview.postMessage({
-      type: 'state', notice, busy: this.busy ?? null, folder: Boolean(this.root),
+      type: 'state', notice, busy: this.busy ?? null, stopping: Boolean(this.busy && this.cancelled), folder: Boolean(this.root),
       models: this.models.map(model => ({ selector: model.selector, name: model.name, vendor: model.vendor })), modelsLoaded: this.modelsLoaded,
       skills: Object.fromEntries([...this.skillNames.values()].map(skill => [skill.ref, { name: skill.name, usesScripts: skill.usesScripts }])),
       model: conversation.model ?? null, file: conversation.file ?? null, title: conversation.title,
       messages: conversation.messages.map(message => ({
-        id: message.id, role: message.role, text: message.text, model: message.model ?? null, run: message.run ?? null,
+        id: message.id, role: message.role, text: message.text, model: message.model ?? null, run: message.run ? this.runView(message.run) : null,
         draft: message.draft ? {
           status: message.draft.status, problems: message.draft.problems, diff: message.draft.diff ?? null,
           view: planView(message.draft.workflow, this.steps)
@@ -458,6 +574,7 @@ function chatHtml(script: string, style: string, cspSource: string): string {
 </head>
 <body>
   <main id="thread" aria-live="polite"></main>
+  <div id="run-status" class="visually-hidden" role="status"></div>
   <div id="notice" role="alert" hidden></div>
   <form id="composer" autocomplete="off">
     <textarea id="message" rows="3" placeholder="Describe what you want done…" aria-label="Message"></textarea>
