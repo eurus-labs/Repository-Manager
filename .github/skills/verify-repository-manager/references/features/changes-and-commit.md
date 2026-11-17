@@ -36,6 +36,8 @@ committed from the commit dialog, discarded or stashed.
 - Pop of a `-u` stash restores tracked edits and the new file; a conflicting Pop keeps the stash. [confirmed: test src/test/stashActionSmoke.js]
 - Drop asks first; cancelling changes nothing. [confirmed: test src/test/stashActionSmoke.js]
 - The usage log times a commit from the dialog's last opening; a Copilot draft kept from an earlier opening still counts as Copilot's. [confirmed: user, 2026-11-09]
+- The commit dialog ignores a diff reply for an older request, another file or another mode. [confirmed: test src/test/uiSnapshots.js]
+- An unsent commit message belongs to its repository: the dialog opened for another one starts empty, and a Copilot message carried over is no longer counted as Copilot's. [confirmed: test src/test/uiSnapshots.js]
 - Git arguments are passed with execFile, never through a shell; paths stay repository-relative. [confirmed: spec docs/dashboard-backend.md]
 
 ## Suspected bugs
