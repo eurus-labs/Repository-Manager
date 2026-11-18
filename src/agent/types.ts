@@ -26,7 +26,8 @@ export interface FileChange {
   path: string;
   /** The content before the step (null: the step created the file). */
   before: string | null;
-  after: string;
+  /** The content after the step (null: a script deleted the file). */
+  after: string | null;
 }
 
 export interface CheckResult {

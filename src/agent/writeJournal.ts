@@ -12,7 +12,8 @@ export interface JournalEntry {
   path: string;
   /** The content before this write; null when the write created the file. */
   before: string | null;
-  after: string;
+  /** The content after this write; null when a script deleted the file. */
+  after: string | null;
 }
 
 export class WriteJournal {
@@ -107,7 +108,7 @@ export function recoverJournal(file: string, isDirty: (absolutePath: string) => 
     if (!line.trim()) { continue; }
     let entry: { root?: unknown; path?: unknown; before?: unknown; after?: unknown };
     try { entry = JSON.parse(line); } catch { continue; }
-    if (typeof entry.root !== 'string' || typeof entry.path !== 'string' || typeof entry.after !== 'string'
+    if (typeof entry.root !== 'string' || typeof entry.path !== 'string' || !(entry.after === null || typeof entry.after === 'string')
       || !(entry.before === null || typeof entry.before === 'string')) { continue; }
     const key = `${entry.root}\u0000${entry.path}`;
     const chain = chains.get(key) ?? { root: entry.root, path: entry.path, states: [entry.before] };
@@ -123,7 +124,14 @@ export function recoverJournal(file: string, isDirty: (absolutePath: string) => 
     const original = chain.states[0];
     if (current === original) { continue; }
     if (!chain.states.includes(current) || isDirty(absolute)) { recovery.kept.push(chain.path); continue; }
-    if (original === null) { fs.rmSync(absolute, { force: true }); } else { writeAtomically(absolute, original); }
+    if (original === null) { fs.rmSync(absolute, { force: true }); } else {
+      // Absent now (a script deleted it): only an empty path is written, never a folder or link that is there instead.
+      if (current === null) {
+        try { fs.lstatSync(absolute); recovery.kept.push(chain.path); continue; } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') { recovery.kept.push(chain.path); continue; } }
+        try { fs.mkdirSync(path.dirname(absolute), { recursive: true }); } catch { recovery.kept.push(chain.path); continue; }
+      }
+      writeAtomically(absolute, original);
+    }
     recovery.restored.push(chain.path);
   }
   fs.rmSync(file, { force: true });

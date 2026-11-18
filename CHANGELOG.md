@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.6.1] - 2026-11-18
+
+### Fixed
+
+- Studio and Agent code steps: when an approved check script deletes a text file, the review now lists the deletion as one of the step's changes (`### <path> (deleted by a script)`), and Retry, Stop and recovery after a closed window put the file back as it was before the step (line endings included), instead of reporting it as "cannot be undone". This covers clean files, files you had changed and not committed, and files the step had edited. A path where something new exists is left alone. Deleted binary or large files are still reported only (#169).
+
 ## [3.6.0] - 2026-11-18
 
 ### Changed

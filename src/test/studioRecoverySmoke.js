@@ -44,6 +44,23 @@ async function main() {
     // Again: nothing more happens.
     assert.deepEqual(recoverJournal(journalPath), { restored: [], kept: [] });
 
+    // A script deleted clean files (journal entries with after: null), then the window closed (#169):
+    // the next start puts them back, parent folders included; a path recreated since is kept.
+    const deletions = new WriteJournal(journalPath, root);
+    deletions.record({ path: 'gone/dir/d.txt', before: 'clean\r\n', after: null });
+    deletions.record({ path: 'gone/e.txt', before: 'clean e\n', after: null });
+    deletions.record({ path: 'gone/f.txt', before: 'clean f\n', after: null });
+    write('gone/f.txt', 'recreated since\n');
+    recovery = recoverJournal(journalPath);
+    assert.deepEqual(recovery, { restored: ['gone/dir/d.txt', 'gone/e.txt'], kept: ['gone/f.txt'] }, 'deleted files come back, a recreated path is kept');
+    assert.equal(fs.readFileSync(file('gone/dir/d.txt')).toString('latin1'), 'clean\r\n');
+    assert.equal(read('gone/e.txt'), 'clean e\n');
+    assert.equal(read('gone/f.txt'), 'recreated since\n');
+    fs.mkdirSync(file('gone/g.txt'));
+    new WriteJournal(journalPath, root).record({ path: 'gone/g.txt', before: 'g\n', after: null });
+    assert.deepEqual(recoverJournal(journalPath), { restored: [], kept: ['gone/g.txt'] }, 'a folder at the path is kept');
+    fs.rmSync(file('gone'), { recursive: true });
+
     // Crash between the journal entry and the write: the second edit never reached the disk
     // (b holds b1, the first edit's result) and a torn last line was being written.
     const journal = new WriteJournal(journalPath, root);

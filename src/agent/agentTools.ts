@@ -34,7 +34,7 @@ export interface ToolHost {
   allowedScripts(): string[];
   runScript(script: string): Promise<CheckResult>;
   /** Records each write before it happens, so a step cut short can be undone on the next start (#140). */
-  journal?: { record(entry: { path: string; before: string | null; after: string }): void };
+  journal?: { record(entry: { path: string; before: string | null; after: string | null }): void };
 }
 
 export interface ToolOutcome { ok: boolean; content: string; note: string }
@@ -242,7 +242,7 @@ export class StepWorkspace {
    * Keyed by the file really changed (links resolved), so two paths to one file keep one record
    * whose "before" is the content from before the step, and undo puts that back.
    */
-  private record(target: string, before: string | null, after: string): void {
+  private record(target: string, before: string | null, after: string | null): void {
     const known = this.changes.get(target);
     this.changes.set(target, { path: target, before: known ? known.before : before, after });
   }
@@ -305,7 +305,7 @@ export class StepWorkspace {
             // The journal gets the write after it happened: a window closed later in the step is still recovered.
             this.host.journal?.record(change);
             this.record(change.path, change.before, change.after);
-            if (!pathAllowed(change.path, this.step.paths)) { this.addNote({ path: change.path, reason: 'changed by a script outside the paths this step may change (undone with the step)', outside: true, undoable: true }); }
+            if (!pathAllowed(change.path, this.step.paths)) { this.addNote({ path: change.path, reason: `${change.after === null ? 'deleted' : 'changed'} by a script outside the paths this step may change (undone with the step)`, outside: true, undoable: true }); }
           }
           for (const item of effects.unrecoverable) {
             this.addNote({ path: item.path, reason: `${item.reason} by a script: cannot be undone here; check it with Git`, outside: !pathAllowed(item.path, this.step.paths), undoable: false });
@@ -342,6 +342,13 @@ export function revertChanges(root: string, changes: FileChange[], isDirty: (abs
     const absolute = path.join(root, change.path);
     // A folder may have become a link since the change was recorded: never write through one.
     if (!realRoot || !plainPath(root, realRoot, absolute)) { kept.push(change.path); continue; }
+    if (change.after === null) {
+      // A script deleted the file: put it back only where nothing is now (not a file, folder or link) and no editor holds unsaved text.
+      try { fs.lstatSync(absolute); kept.push(change.path); continue; } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') { kept.push(change.path); continue; } }
+      if (change.before === null || isDirty(absolute)) { kept.push(change.path); continue; }
+      try { fs.mkdirSync(path.dirname(absolute), { recursive: true }); fs.writeFileSync(absolute, change.before); } catch { kept.push(change.path); }
+      continue;
+    }
     let current: string | null = null;
     try { current = fs.readFileSync(absolute, 'utf8'); } catch { current = null; }
     if (current !== change.after || isDirty(absolute)) { kept.push(change.path); continue; }

@@ -86,10 +86,10 @@ const VERDICT_TEXT: Record<StepVerification, string> = {
 export function codePreview(result: CodeResult): string {
   let lines = 0;
   const files = result.changes.map(change => {
-    const diff = lineDiff(change.before ?? '', change.after);
+    const diff = lineDiff(change.before ?? '', change.after ?? '');
     const shown = diff.slice(0, Math.max(0, MAX_DIFF_LINES - lines));
     lines += shown.length;
-    return [`### ${change.path}${change.before === null ? ' (new)' : ''}`, ...shown, ...(shown.length < diff.length ? [`… ${diff.length - shown.length} more lines`] : [])].join('\n');
+    return [`### ${change.path}${change.before === null ? ' (new)' : change.after === null ? ' (deleted by a script)' : ''}`, ...shown, ...(shown.length < diff.length ? [`… ${diff.length - shown.length} more lines`] : [])].join('\n');
   });
   return [
     VERDICT_TEXT[result.verification],
