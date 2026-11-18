@@ -396,6 +396,29 @@ async function main() {
     const { codePreview } = out('codeStep.js');
     const preview = codePreview({ changes: [...workspace.changes.values()], verification: 'noChanges', summary: '', branch: 'b', checks: [], aiText: [], scriptNotes: workspace.scriptNotes });
     assert.doesNotMatch(preview, /new\.txt/, 'the preview does not mention it');
+
+    // 11. A committed (clean) symlink: a script that deletes or retargets it leaves a note that cannot be undone,
+    // and an undo never writes a regular file in its place.
+    let canLink = true;
+    try { fs.writeFileSync(path.join(work, 'target.txt'), 'the target\n'); fs.symlinkSync('target.txt', path.join(work, 'link.txt')); } catch { canLink = false; }
+    if (!canLink) { console.log('skipped: fs.symlinkSync is not permitted on this platform, so the tracked-symlink cases did not run'); } else {
+      g(['add', 'target.txt', 'link.txt']); g(['commit', '-q', '-m', 'a tracked link']);
+      assert.match(g(['ls-tree', 'HEAD', '--', 'link.txt']), /^120000 /, 'the fixture link is committed as a symlink');
+      workspace = new StepWorkspace(host(async () => { fs.rmSync(path.join(work, 'link.txt')); }), { tools: ['run_check'], paths: ['lib/'] });
+      await workspace.invoke('run_check', { script: 'x' });
+      assert.equal(workspace.changes.has('link.txt'), false, 'a deleted tracked link is not an undoable change');
+      assert.ok(workspace.scriptNotes.some(note => note.path === 'link.txt' && !note.undoable), JSON.stringify(workspace.scriptNotes));
+      assert.deepEqual(revertChanges(work, [...workspace.changes.values()], () => false), []);
+      assert.equal(fs.existsSync(path.join(work, 'link.txt')) || (() => { try { fs.lstatSync(path.join(work, 'link.txt')); return true; } catch { return false; } })(), false, 'no regular file was written where the link was');
+      g(['checkout', '-q', '--', '.']);
+      assert.ok(fs.lstatSync(path.join(work, 'link.txt')).isSymbolicLink(), 'the fixture link is back');
+
+      workspace = new StepWorkspace(host(async () => { fs.rmSync(path.join(work, 'link.txt')); fs.symlinkSync('elsewhere.txt', path.join(work, 'link.txt')); }), { tools: ['run_check'], paths: ['lib/'] });
+      await workspace.invoke('run_check', { script: 'x' });
+      assert.equal(workspace.changes.has('link.txt'), false, 'a retargeted tracked link is not an undoable change');
+      assert.ok(workspace.scriptNotes.some(note => note.path === 'link.txt' && !note.undoable), JSON.stringify(workspace.scriptNotes));
+      g(['checkout', '-q', '--', '.']);
+    }
   }
 
   // A step that fails or is cancelled after a script changed files keeps the notes in the run log.

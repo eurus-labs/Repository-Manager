@@ -85,6 +85,13 @@ async function dirtyPaths(root: string): Promise<string[]> {
  * disk), or nothing when HEAD does not have it.
  */
 async function headState(root: string, relative: string): Promise<PathState> {
+  // A link or a submodule is not text to put back: `cat-file --filters` would return the link's target path.
+  try {
+    const entry = (await git(root, ['ls-tree', '-z', 'HEAD', '--', relative])).toString('utf8').split('\0')[0];
+    const mode = entry.split(/[ \t]/, 1)[0];
+    if (mode === '120000') { return { kind: 'opaque', signature: 'link:HEAD' }; }
+    if (mode === '160000') { return { kind: 'opaque', signature: 'submodule:HEAD' }; }
+  } catch { return { kind: 'absent' }; }
   try { return classify(await git(root, ['cat-file', '--filters', `HEAD:${relative}`])); } catch { return { kind: 'absent' }; }
 }
 
