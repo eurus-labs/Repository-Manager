@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.6.0] - 2026-11-18
+
+### Changed
+
+- Studio Chat: on a plan card, "Steps use" now says how many steps it applies to ("used by 2 steps"). When every step that uses a model names its own, the menu is disabled and says so (#179).
+
 ## [3.5.0] - 2026-11-17
 
 ### Added

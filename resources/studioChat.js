@@ -155,11 +155,16 @@
     const header = el('div', { class: 'card-head' },
       el('span', { class: `status ${draft.status}` }, STATUS[draft.status] || draft.status),
       el('strong', {}, view.title));
+    // The default applies to a step that uses a model and names none: engine.ts resolves `node.model ?? defaults.model`.
+    const onDefault = view.steps.filter(step => step.usesModel && !step.model).length;
+    const noteId = `default-model-note-${message.id}`;
     const defaults = editable && view.steps.some(step => step.usesModel)
       ? el('label', { class: 'default-model' }, 'Steps use ',
-          el('select', { 'aria-label': 'Default model for the plan’s steps',
+          el('select', { 'aria-label': 'Default model for the plan’s steps', 'aria-describedby': noteId, disabled: onDefault === 0,
             onchange: event => vscode.postMessage({ type: 'edit', operation: { op: 'setDefaultModel', value: event.target.value } }) },
-            modelOptions(view.defaultModel, { value: '', label: 'the model chosen in the dashboard' })))
+            modelOptions(view.defaultModel, { value: '', label: 'the model chosen in the dashboard' })),
+          el('span', { class: 'default-model-note', id: noteId },
+            onDefault === 0 ? 'used by no step: each step that uses a model names its own' : `used by ${onDefault} step${onDefault === 1 ? '' : 's'}`))
       : null;
     const collapsed = draft.status === 'superseded' || draft.status === 'discarded';
     return el('article', { class: `card ${draft.status}`, 'data-card': draft.status },
