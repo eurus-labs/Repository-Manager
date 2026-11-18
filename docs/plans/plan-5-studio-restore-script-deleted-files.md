@@ -1,6 +1,6 @@
 # Plan 5 — Undo restores a text file a script deleted
 
-Status: approved
+Status: implemented
 Date: 2026-11-18
 Branch: `fix/studio-restore-script-deleted-files`
 Baseline: `main` at `bfd830d801f32b90ab363baa141692586910442e`
