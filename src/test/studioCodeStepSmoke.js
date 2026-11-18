@@ -383,6 +383,19 @@ async function main() {
     assert.deepEqual(revertChanges(work, [...workspace.changes.values()].filter(c => c.path === 'lib/dirdel.txt'), () => false), []);
     assert.equal(fs.readFileSync(path.join(work, 'lib', 'dirdel.txt'), 'utf8'), 'in a folder\n', 'the missing folder was recreated');
     g(['checkout', '-q', '--', '.']);
+
+    // 10. A file the step created and a script then deleted is no change: before and after are both null.
+    workspace = new StepWorkspace(host(async () => { fs.rmSync(path.join(work, 'src', 'new.txt')); }), { tools: ['create_file', 'run_check'], paths: ['src/'] });
+    await workspace.invoke('create_file', { path: 'src/new.txt', content: 'made by the step\n' });
+    assert.equal(workspace.changes.has('src/new.txt'), true, 'the created file is recorded while it exists');
+    await workspace.invoke('run_check', { script: 'x' });
+    assert.equal(fs.existsSync(path.join(work, 'src', 'new.txt')), false);
+    assert.equal(workspace.changes.has('src/new.txt'), false, 'a file created and then deleted is not a change');
+    assert.deepEqual(revertChanges(work, [...workspace.changes.values()], () => false), [], 'nothing is kept or left to undo');
+    assert.equal(fs.existsSync(path.join(work, 'src', 'new.txt')), false, 'the file stays absent');
+    const { codePreview } = out('codeStep.js');
+    const preview = codePreview({ changes: [...workspace.changes.values()], verification: 'noChanges', summary: '', branch: 'b', checks: [], aiText: [], scriptNotes: workspace.scriptNotes });
+    assert.doesNotMatch(preview, /new\.txt/, 'the preview does not mention it');
   }
 
   // A step that fails or is cancelled after a script changed files keeps the notes in the run log.

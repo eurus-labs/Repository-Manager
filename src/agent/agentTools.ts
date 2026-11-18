@@ -244,7 +244,10 @@ export class StepWorkspace {
    */
   private record(target: string, before: string | null, after: string | null): void {
     const known = this.changes.get(target);
-    this.changes.set(target, { path: target, before: known ? known.before : before, after });
+    const first = known ? known.before : before;
+    // Created by the step and deleted since: the file is absent, as before the step, so nothing to review or undo.
+    if (first === null && after === null) { this.changes.delete(target); return; }
+    this.changes.set(target, { path: target, before: first, after });
   }
 
   private editFile(input: Record<string, unknown>): ToolOutcome {
