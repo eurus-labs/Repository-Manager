@@ -1,4 +1,4 @@
-# Plan 5 — Undo restores a clean tracked file a script deleted
+# Plan 5 — Undo restores a text file a script deleted
 
 Status: draft
 Date: 2026-11-18
@@ -8,22 +8,24 @@ Target: `src/agent/scriptEffects.ts`, `src/agent/types.ts`, `src/agent/agentTool
 
 ## Goal
 
-Issue #169. When an approved check script deletes a tracked file that was clean before the script (its
-content equals `HEAD` as checked out), the review shows the deletion as one of the step's changes, and Retry
-and Stop put the file back with identical bytes (CRLF checkouts included). Today `diffSince`
-(`src/agent/scriptEffects.ts`) reports every deletion as `unrecoverable: 'deleted'` ("cannot be undone here"),
-although for a clean file the content is in `HEAD`. The same `StepWorkspace` serves the Agent and Studio code
+Issue #169. When an approved check script deletes a file whose content just before the script is known as
+text — a clean tracked file (its content is in `HEAD` as checked out) or a file that was already changed (the
+pre-script snapshot holds its text) — the review shows the deletion as one of the step's changes, and Retry
+and Stop put the file back as it was before the step, with identical bytes (CRLF checkouts included). Today
+`diffSince` (`src/agent/scriptEffects.ts`) reports every deletion as `unrecoverable: 'deleted'` ("cannot be
+undone here"), although that content is known. The same `StepWorkspace` serves the Agent and Studio code
 steps, so both gain it.
 
 ## Decisions
 
-1. **Only files clean before the script** (the user's choice, 2026-11-18, the issue's scope): a deleted path
-   that was not in the pre-script snapshot (`snapshotTree` lists dirty paths only) and whose `HEAD` content
-   is text (`headState` → `kind: 'text'`) becomes a change; every other deletion stays "cannot be undone":
-   a path that was dirty before the script (the person's own uncommitted edits, or a file this step had
-   already changed), and binary, large or linked files — rejected: also restoring dirty paths from the
-   snapshot's text, the user's choice. Consequence, stated in the review note as today: a file the step had
-   already edited and a script then deleted is not put back.
+1. **Every deletion whose prior state is text** (the user's choice, 2026-11-18, wider than the issue): the
+   state before the script is the snapshot's entry for a dirty path (`snapshotTree` reads every dirty path)
+   or `HEAD`'s for a clean one (`headState`); when it is `kind: 'text'`, the deletion becomes a change. So a
+   clean file, a file the person had changed and not committed, and a file this step had already edited all
+   come back; for the last, `record` keeps the step's first `before`, so undo restores the content from
+   before the step. Binary, large or linked files (`kind: 'opaque'`) stay "cannot be undone" — rejected: only
+   clean files (the issue's scope), because a person's uncommitted edits are the content Git cannot give back,
+   and a file the step edited would not come back although its content is known.
 2. **A deletion is a `FileChange` with `after: null`**, symmetric with `before: null` for a created file;
    `ScriptEffects.changes` and `JournalEntry` take `after: string | null` — rejected: a separate list of
    deletions, because review, undo, journal and recovery would each need a second path.
@@ -57,8 +59,8 @@ In:
 
 Out:
 
-- Restoring paths that were dirty before the script (Decision 1), binary, large or linked files.
-- Files Git ignores, untracked files a script deletes (they were never in `HEAD`).
+- Binary, large (over `MAX_TRACKED_BYTES`) or linked files a script deletes.
+- Files Git ignores (never in the snapshot or `HEAD`).
 - Renames: a script that moves a clean file shows a deletion (restored) and a new file (removed on undo).
 - The Agent's own review page and any UI text other than `codePreview`.
 
@@ -66,7 +68,7 @@ Out:
 
 | Existing | Keep, change, or remove |
 | --- | --- |
-| `src/agent/scriptEffects.ts` `snapshotTree` (dirty paths only), `headState` (`git cat-file --filters HEAD:<path>`), `diffSince` (`now.kind === 'absent'` → unrecoverable) | Change `diffSince` only |
+| `src/agent/scriptEffects.ts` `snapshotTree` (every dirty path, text kept up to `MAX_TRACKED_BYTES`), `headState` (`git cat-file --filters HEAD:<path>`), `diffSince` (`now.kind === 'absent'` → unrecoverable) | Change `diffSince` only |
 | `src/agent/types.ts` `FileChange { before: string \| null; after: string }` | Change `after` |
 | `src/agent/agentTools.ts` `tracked` (records script changes, journals them), `record`, `revertChanges`, `plainPath` | Change `revertChanges`; keep `plainPath` |
 | `src/agent/writeJournal.ts` `JournalEntry`, `recoverJournal` (skips entries whose `after` is not a string), `plainTarget`, `writeAtomically` | Change parse and restore |
@@ -85,7 +87,9 @@ Default (`AGENTS.md`).
 - [ ] Outside the step's paths: the deletion is still restored, and its note says it is undone with the step — same test.
 - [ ] A missing parent folder (the script removed the whole folder) is recreated on undo — same test.
 - [ ] Failure case: the path holds a new file, a folder or a link at undo time → nothing is written, the path is in `kept` — same test.
-- [ ] Failure case: a file dirty before the script (the person's edit) and deleted by it stays "cannot be undone" and is not recreated — same test.
+- [ ] A file the person had changed and not committed, deleted by a script: restored with the person's content, not `HEAD`'s — same test.
+- [ ] A file the step edited with `edit_file`, then deleted by a script: undo restores the content from before the step — same test.
+- [ ] An untracked text file (not ignored) the person had, deleted by a script: restored — same test.
 - [ ] Failure case: a binary clean file deleted by a script stays "cannot be undone" — same test.
 - [ ] Recovery: a journal holding a script deletion of a clean file restores it on the next start; a path recreated since is kept — `node src/test/studioRecoverySmoke.js`.
 - [ ] Failure-first: before the `diffSince` change, the new "restored" assertion fails (report the message); with `revertChanges` ignoring `after: null`, it fails too.
@@ -97,6 +101,7 @@ Default (`AGENTS.md`).
 | --- | --- |
 | A consumer of `FileChange.after` assumes a string and breaks on `null` | TypeScript makes every use a compile error to fix; tests cover review, undo and recovery |
 | Undo overwrites something the person created at the path since | Decision 3: write only when absent; failure-case test |
+| Restoring a person's file from a stale snapshot (they edited it between snapshot and script) | The snapshot is taken right before each script run, and the person's editor writes during a run are rare; a dirty editor buffer for the path keeps it (Decision 3) |
 | Recreating parent folders writes through a link | `plainPath` / `plainTarget` checks before any `mkdir`; existing link tests keep passing |
 | Old journals or saved Agent tasks without `null` | Unchanged entries parse as before; `null` is new and only read by the new code |
 | Line-ending drift on restore | `headState` already gives the bytes as checked out; CRLF test |
