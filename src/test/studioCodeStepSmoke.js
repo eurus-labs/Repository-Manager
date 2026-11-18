@@ -199,6 +199,10 @@ async function main() {
     fs.writeFileSync(path.join(repo, 'notes.txt'), 'notes\n');
     fs.writeFileSync(path.join(repo, 'del.txt'), 'delete me\n');
     fs.writeFileSync(path.join(repo, 'user.txt'), 'user\n');
+    fs.mkdirSync(path.join(repo, 'src', 'dir'), { recursive: true });
+    fs.writeFileSync(path.join(repo, 'src', 'inside.txt'), 'inside\n');
+    fs.writeFileSync(path.join(repo, 'src', 'dir', 'f.txt'), 'in a folder\n');
+    fs.writeFileSync(path.join(repo, 'old.bin'), Buffer.from([0, 9, 9, 0]));
     run(['add', '.']); run(['commit', '-q', '--allow-empty', '-m', `script fixtures ${decision}`]);
     fs.appendFileSync(path.join(repo, 'user.txt'), 'my own uncommitted line\n');
     fs.writeFileSync(path.join(repo, 'mine.txt'), 'untracked work of mine\n');
@@ -214,6 +218,9 @@ async function main() {
       fs.writeFileSync(path.join(root, 'gen', 'out.txt'), 'generated\n');
       fs.writeFileSync(path.join(root, 'blob.bin'), Buffer.from([0, 1, 2, 3]));
       fs.rmSync(path.join(root, 'del.txt'), { force: true });
+      fs.rmSync(path.join(root, 'src', 'inside.txt'), { force: true });
+      fs.rmSync(path.join(root, 'src', 'dir'), { recursive: true, force: true });
+      fs.rmSync(path.join(root, 'old.bin'), { force: true });
       fs.appendFileSync(path.join(root, 'user.txt'), 'script line\n');
       return base_(root, script);
     };
@@ -228,7 +235,11 @@ async function main() {
     assert.match(preview, /### user\.txt\n.*\+ script line/s, 'the script\'s line in a file the person already changed is in the review');
     assert.doesNotMatch(preview, /### user\.txt\n(.*\n)*- my own/, 'the person\'s own line is not shown as the step\'s change');
     assert.match(preview, /notes\.txt: changed by a script outside the paths this step may change/);
-    assert.match(preview, /del\.txt: deleted by a script: cannot be undone here/);
+    assert.match(preview, /### del\.txt \(deleted by a script\)\n- delete me/, 'a deleted clean file is a change in the review');
+    assert.match(preview, /### src\/inside\.txt \(deleted by a script\)/, 'a deletion inside the step\'s paths is a change');
+    assert.match(preview, /del\.txt: deleted by a script outside the paths this step may change \(undone with the step\)/);
+    assert.doesNotMatch(preview, /del\.txt: deleted by a script: cannot be undone/, 'a deleted text file is no longer "cannot be undone"');
+    assert.match(preview, /old\.bin: deleted by a script: cannot be undone here/, 'a deleted binary file stays "cannot be undone"');
     assert.match(preview, /blob\.bin: binary, large or not a plain file by a script: cannot be undone here/);
     assert.doesNotMatch(preview, /mine\.txt/, 'the person\'s untracked file is not touched or listed');
     // The person edits a file the script created, after the script ran: that edit must survive the undo.
@@ -239,7 +250,10 @@ async function main() {
     assert.equal(fs.readFileSync(path.join(repo, 'user.txt'), 'utf8'), 'user\nmy own uncommitted line\n', `${decision} kept the person's own work and removed the script's line`);
     assert.equal(fs.readFileSync(path.join(repo, 'mine.txt'), 'utf8'), 'untracked work of mine\n');
     assert.equal(fs.readFileSync(path.join(repo, 'gen', 'out.txt'), 'utf8'), 'generated\nperson edit\n', 'a file changed since the script is kept');
-    assert.equal(fs.existsSync(path.join(repo, 'del.txt')), false, 'a deleted file is reported, not restored');
+    assert.equal(fs.readFileSync(path.join(repo, 'del.txt'), 'utf8'), 'delete me\n', `${decision} restored the deleted clean file`);
+    assert.equal(fs.readFileSync(path.join(repo, 'src', 'inside.txt'), 'utf8'), 'inside\n', `${decision} restored the file deleted inside the step's paths`);
+    assert.equal(fs.readFileSync(path.join(repo, 'src', 'dir', 'f.txt'), 'utf8'), 'in a folder\n', `${decision} recreated the deleted folder`);
+    assert.equal(fs.existsSync(path.join(repo, 'old.bin')), false, 'a deleted binary file is reported, not restored');
     // Leave the repository clean for the next block.
     run(['reset', '-q', '--hard']); run(['clean', '-fdq']);
   }
@@ -256,6 +270,10 @@ async function main() {
     fs.writeFileSync(path.join(work, '.gitattributes'), 'crlf.txt text eol=crlf\n');
     fs.writeFileSync(path.join(work, 'crlf.txt'), 'original\r\n');
     const g = args => run(args, work);
+    fs.writeFileSync(path.join(work, 'lib', 'person.txt'), 'head version\n');
+    fs.writeFileSync(path.join(work, 'lib', 'edited.txt'), 'before the step\n');
+    fs.writeFileSync(path.join(work, 'lib', 'bin.dat'), Buffer.from([0, 1, 0, 1]));
+    fs.writeFileSync(path.join(work, 'lib', 'dirdel.txt'), 'in a folder\n');
     g(['init', '-q', '-b', 'main']); g(['add', '.']); g(['commit', '-q', '-m', 'init']);
     assert.equal(g(['status', '--porcelain']).trim(), '', 'the CRLF fixture is clean');
     const host = script => ({ root: work, isDirty: () => false, allowedScripts: () => ['x'], runScript: async () => { await script(); return { script: 'x', passed: true, exitCode: 0, output: '', durationMs: 0 }; } });
@@ -292,11 +310,120 @@ async function main() {
     assert.equal(workspace.changes.get('crlf.txt').before, 'original\r\n');
     revertChanges(work, [...workspace.changes.values()], () => false);
     assert.equal(fs.readFileSync(path.join(work, 'crlf.txt'), 'utf8'), 'original\r\n', 'the undo restored the CRLF bytes');
+
+    // 3. A clean CRLF file a script deletes comes back with its CRLF bytes (#169).
+    workspace = new StepWorkspace(host(async () => { fs.rmSync(path.join(work, 'crlf.txt')); }), { tools: ['run_check'], paths: ['lib/'] });
+    await workspace.invoke('run_check', { script: 'x' });
+    assert.equal(workspace.changes.get('crlf.txt').after, null, 'a deletion is a change with after: null');
+    assert.equal(workspace.changes.get('crlf.txt').before, 'original\r\n');
+    assert.deepEqual(revertChanges(work, [...workspace.changes.values()], () => false), []);
+    assert.equal(fs.readFileSync(path.join(work, 'crlf.txt')).toString('latin1'), 'original\r\n', 'the undo restored the deleted CRLF file byte for byte');
+
+    // 4. Something is at the path when the undo runs: nothing is written, the path is kept.
+    for (const [what, make] of [
+      ['a new file', file => fs.writeFileSync(file, 'recreated by the person\n')],
+      ['a folder', file => fs.mkdirSync(file)],
+      ['a link', file => fs.symlinkSync(path.join(outside, 'a.txt'), file)]
+    ]) {
+      workspace = new StepWorkspace(host(async () => { fs.rmSync(path.join(work, 'lib', 'person.txt')); }), { tools: ['run_check'], paths: ['lib/'] });
+      await workspace.invoke('run_check', { script: 'x' });
+      assert.equal(workspace.changes.get('lib/person.txt').after, null);
+      make(path.join(work, 'lib', 'person.txt'));
+      const kept = revertChanges(work, [...workspace.changes.values()], () => false);
+      assert.deepEqual(kept, ['lib/person.txt'], `${what} at the path is kept`);
+      const stat = fs.lstatSync(path.join(work, 'lib', 'person.txt'));
+      assert.ok(what === 'a folder' ? stat.isDirectory() : what === 'a link' ? stat.isSymbolicLink() : fs.readFileSync(path.join(work, 'lib', 'person.txt'), 'utf8') === 'recreated by the person\n', `${what} was left as it was`);
+      fs.rmSync(path.join(work, 'lib', 'person.txt'), { recursive: true, force: true }); g(['checkout', '-q', '--', '.']);
+    }
+    // An editor with unsaved text for the absent path keeps it too.
+    workspace = new StepWorkspace(host(async () => { fs.rmSync(path.join(work, 'lib', 'person.txt')); }), { tools: ['run_check'], paths: ['lib/'] });
+    await workspace.invoke('run_check', { script: 'x' });
+    assert.deepEqual(revertChanges(work, [...workspace.changes.values()], () => true), ['lib/person.txt'], 'unsaved editor text keeps the path');
+    assert.equal(fs.existsSync(path.join(work, 'lib', 'person.txt')), false);
+    g(['checkout', '-q', '--', '.']);
+
+    // 5. A file the person had changed and not committed: restored with their content, not HEAD's.
+    fs.writeFileSync(path.join(work, 'lib', 'person.txt'), 'my uncommitted version\n');
+    workspace = new StepWorkspace(host(async () => { fs.rmSync(path.join(work, 'lib', 'person.txt')); }), { tools: ['run_check'], paths: ['lib/'] });
+    await workspace.invoke('run_check', { script: 'x' });
+    assert.equal(workspace.changes.get('lib/person.txt').before, 'my uncommitted version\n');
+    revertChanges(work, [...workspace.changes.values()], () => false);
+    assert.equal(fs.readFileSync(path.join(work, 'lib', 'person.txt'), 'utf8'), 'my uncommitted version\n', 'the person\'s content came back, not HEAD\'s');
+    g(['checkout', '-q', '--', '.']);
+
+    // 6. A file the step edited with edit_file, then a script deleted: undo restores the content from before the step.
+    workspace = new StepWorkspace(host(async () => { fs.rmSync(path.join(work, 'lib', 'edited.txt')); }), { tools: ['edit_file', 'run_check'], paths: ['lib/'] });
+    assert.equal((await workspace.invoke('edit_file', { path: 'lib/edited.txt', oldText: 'before', newText: 'during' })).ok, true);
+    await workspace.invoke('run_check', { script: 'x' });
+    assert.equal(workspace.changes.get('lib/edited.txt').after, null);
+    assert.equal(workspace.changes.get('lib/edited.txt').before, 'before the step\n', 'the first before is kept');
+    revertChanges(work, [...workspace.changes.values()], () => false);
+    assert.equal(fs.readFileSync(path.join(work, 'lib', 'edited.txt'), 'utf8'), 'before the step\n');
+    g(['checkout', '-q', '--', '.']);
+
+    // 7. An untracked text file (not ignored) the person had: restored.
+    fs.writeFileSync(path.join(work, 'lib', 'scratch.txt'), 'my scratch\n');
+    workspace = new StepWorkspace(host(async () => { fs.rmSync(path.join(work, 'lib', 'scratch.txt')); }), { tools: ['run_check'], paths: ['lib/'] });
+    await workspace.invoke('run_check', { script: 'x' });
+    revertChanges(work, [...workspace.changes.values()], () => false);
+    assert.equal(fs.readFileSync(path.join(work, 'lib', 'scratch.txt'), 'utf8'), 'my scratch\n', 'an untracked text file came back');
+    fs.rmSync(path.join(work, 'lib', 'scratch.txt'));
+
+    // 8. A clean binary file a script deletes stays "cannot be undone".
+    workspace = new StepWorkspace(host(async () => { fs.rmSync(path.join(work, 'lib', 'bin.dat')); }), { tools: ['run_check'], paths: ['lib/'] });
+    await workspace.invoke('run_check', { script: 'x' });
+    assert.equal(workspace.changes.has('lib/bin.dat'), false);
+    assert.ok(workspace.scriptNotes.some(note => note.path === 'lib/bin.dat' && !note.undoable && /deleted/.test(note.reason)), JSON.stringify(workspace.scriptNotes));
+    g(['checkout', '-q', '--', '.']);
+
+    // 9. The whole folder is gone: the undo recreates it.
+    workspace = new StepWorkspace(host(async () => { fs.rmSync(path.join(work, 'lib'), { recursive: true }); }), { tools: ['run_check'], paths: ['src/'] });
+    await workspace.invoke('run_check', { script: 'x' });
+    assert.equal(fs.existsSync(path.join(work, 'lib')), false);
+    assert.deepEqual(revertChanges(work, [...workspace.changes.values()].filter(c => c.path === 'lib/dirdel.txt'), () => false), []);
+    assert.equal(fs.readFileSync(path.join(work, 'lib', 'dirdel.txt'), 'utf8'), 'in a folder\n', 'the missing folder was recreated');
+    g(['checkout', '-q', '--', '.']);
+
+    // 10. A file the step created and a script then deleted is no change: before and after are both null.
+    workspace = new StepWorkspace(host(async () => { fs.rmSync(path.join(work, 'src', 'new.txt')); }), { tools: ['create_file', 'run_check'], paths: ['src/'] });
+    await workspace.invoke('create_file', { path: 'src/new.txt', content: 'made by the step\n' });
+    assert.equal(workspace.changes.has('src/new.txt'), true, 'the created file is recorded while it exists');
+    await workspace.invoke('run_check', { script: 'x' });
+    assert.equal(fs.existsSync(path.join(work, 'src', 'new.txt')), false);
+    assert.equal(workspace.changes.has('src/new.txt'), false, 'a file created and then deleted is not a change');
+    assert.deepEqual(revertChanges(work, [...workspace.changes.values()], () => false), [], 'nothing is kept or left to undo');
+    assert.equal(fs.existsSync(path.join(work, 'src', 'new.txt')), false, 'the file stays absent');
+    const { codePreview } = out('codeStep.js');
+    const preview = codePreview({ changes: [...workspace.changes.values()], verification: 'noChanges', summary: '', branch: 'b', checks: [], aiText: [], scriptNotes: workspace.scriptNotes });
+    assert.doesNotMatch(preview, /new\.txt/, 'the preview does not mention it');
+
+    // 11. A committed (clean) symlink: a script that deletes or retargets it leaves a note that cannot be undone,
+    // and an undo never writes a regular file in its place.
+    let canLink = true;
+    try { fs.writeFileSync(path.join(work, 'target.txt'), 'the target\n'); fs.symlinkSync('target.txt', path.join(work, 'link.txt')); } catch { canLink = false; }
+    if (!canLink) { console.log('skipped: fs.symlinkSync is not permitted on this platform, so the tracked-symlink cases did not run'); } else {
+      g(['add', 'target.txt', 'link.txt']); g(['commit', '-q', '-m', 'a tracked link']);
+      assert.match(g(['ls-tree', 'HEAD', '--', 'link.txt']), /^120000 /, 'the fixture link is committed as a symlink');
+      workspace = new StepWorkspace(host(async () => { fs.rmSync(path.join(work, 'link.txt')); }), { tools: ['run_check'], paths: ['lib/'] });
+      await workspace.invoke('run_check', { script: 'x' });
+      assert.equal(workspace.changes.has('link.txt'), false, 'a deleted tracked link is not an undoable change');
+      assert.ok(workspace.scriptNotes.some(note => note.path === 'link.txt' && !note.undoable), JSON.stringify(workspace.scriptNotes));
+      assert.deepEqual(revertChanges(work, [...workspace.changes.values()], () => false), []);
+      assert.equal(fs.existsSync(path.join(work, 'link.txt')) || (() => { try { fs.lstatSync(path.join(work, 'link.txt')); return true; } catch { return false; } })(), false, 'no regular file was written where the link was');
+      g(['checkout', '-q', '--', '.']);
+      assert.ok(fs.lstatSync(path.join(work, 'link.txt')).isSymbolicLink(), 'the fixture link is back');
+
+      workspace = new StepWorkspace(host(async () => { fs.rmSync(path.join(work, 'link.txt')); fs.symlinkSync('elsewhere.txt', path.join(work, 'link.txt')); }), { tools: ['run_check'], paths: ['lib/'] });
+      await workspace.invoke('run_check', { script: 'x' });
+      assert.equal(workspace.changes.has('link.txt'), false, 'a retargeted tracked link is not an undoable change');
+      assert.ok(workspace.scriptNotes.some(note => note.path === 'link.txt' && !note.undoable), JSON.stringify(workspace.scriptNotes));
+      g(['checkout', '-q', '--', '.']);
+    }
   }
 
   // A step that fails or is cancelled after a script changed files keeps the notes in the run log.
   for (const how of ['cancel', 'fail']) {
-    fs.writeFileSync(path.join(repo, 'gone.txt'), 'gone\n');
+    fs.writeFileSync(path.join(repo, 'gone.bin'), Buffer.from([0, 1, 2]));
     run(['add', '.']); run(['commit', '-q', '--allow-empty', '-m', `gone ${how}`]);
     const live = { cancelled: false };
     const turns = [{ tool: 'run_check', input: { script: 'check' } }];
@@ -304,7 +431,7 @@ async function main() {
     const svc = services(turns, [], []);
     const inner = svc.runScript;
     svc.runScript = async (root, script) => {
-      fs.rmSync(path.join(root, 'gone.txt'), { force: true });
+      fs.rmSync(path.join(root, 'gone.bin'), { force: true });
       if (how === 'cancel') { live.cancelled = true; }
       return inner(root, script);
     };
@@ -316,8 +443,8 @@ async function main() {
     assert.notEqual(state.status, 'waiting');
     const entry = (await store.readLog(state.id)).find(item => item.type === 'script-changes');
     assert.ok(entry, `${how}: the log names what a script changed that cannot be undone`);
-    assert.deepEqual(entry.files.map(file => file.path), ['gone.txt']);
-    if (how === 'fail') { assert.match(state.error, /changed by a script and not undone, check with Git: gone\.txt/); }
+    assert.deepEqual(entry.files.map(file => file.path), ['gone.bin']);
+    if (how === 'fail') { assert.match(state.error, /changed by a script and not undone, check with Git: gone\.bin/); }
     run(['reset', '-q', '--hard']); run(['clean', '-fdq']);
   }
 

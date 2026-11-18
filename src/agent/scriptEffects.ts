@@ -3,8 +3,8 @@
  * a process, not through edit_file, so its writes are not in the step's records. The tree is
  * compared before and after the script, through Git: modified tracked files and files not ignored
  * (new, or changed again) are found, anywhere in the repository. A text file becomes a normal change
- * (review shows it, Retry and Stop undo it unless it changed again since); what cannot be put back
- * is named instead: a deleted, binary, large or linked file. Files Git ignores (build output, caches,
+ * (review shows it, Retry and Stop undo it unless it changed again since); a deleted text file is a change with `after: null` (its content just before the script is known).
+ * What cannot be put back is named instead: a deleted binary or large file, or a linked file. Files Git ignores (build output, caches,
  * node_modules) and anything outside the repository are not watched. No `vscode` here.
  */
 import * as crypto from 'crypto';
@@ -19,8 +19,8 @@ const MAX_HASHED_BYTES = 8 * 1024 * 1024;
 export type PathState = { kind: 'text'; text: string } | { kind: 'absent' } | { kind: 'opaque'; signature: string };
 
 export interface ScriptEffects {
-  /** Text files the script created or changed: content before the script (null: created) and after. */
-  changes: Array<{ path: string; before: string | null; after: string }>;
+  /** Text files the script created, changed or deleted: content before the script (null: created) and after (null: deleted). */
+  changes: Array<{ path: string; before: string | null; after: string | null }>;
   /** Paths the script changed that cannot be put back (deleted, binary, large, a link), with why. */
   unrecoverable: Array<{ path: string; reason: string }>;
 }
@@ -85,6 +85,13 @@ async function dirtyPaths(root: string): Promise<string[]> {
  * disk), or nothing when HEAD does not have it.
  */
 async function headState(root: string, relative: string): Promise<PathState> {
+  // A link or a submodule is not text to put back: `cat-file --filters` would return the link's target path.
+  try {
+    const entry = (await git(root, ['ls-tree', '-z', 'HEAD', '--', relative])).toString('utf8').split('\0')[0];
+    const mode = entry.split(/[ \t]/, 1)[0];
+    if (mode === '120000') { return { kind: 'opaque', signature: 'link:HEAD' }; }
+    if (mode === '160000') { return { kind: 'opaque', signature: 'submodule:HEAD' }; }
+  } catch { return { kind: 'absent' }; }
   try { return classify(await git(root, ['cat-file', '--filters', `HEAD:${relative}`])); } catch { return { kind: 'absent' }; }
 }
 
@@ -108,7 +115,11 @@ export async function diffSince(before: ScriptSnapshot): Promise<ScriptEffects> 
     const was = before.states.get(relative) ?? await headState(before.root, relative);
     const now = readState(before.root, relative);
     if (same(was, now)) { continue; }
-    if (now.kind === 'absent') { effects.unrecoverable.push({ path: relative, reason: 'deleted' }); continue; }
+    if (now.kind === 'absent') {
+      // A deletion whose state before the script was text is a change; undo writes it back.
+      if (was.kind === 'text') { effects.changes.push({ path: relative, before: was.text, after: null }); } else { effects.unrecoverable.push({ path: relative, reason: 'deleted' }); }
+      continue;
+    }
     if (now.kind === 'opaque' || was.kind === 'opaque') {
       const link = now.kind === 'opaque' && (now.signature === VIA_LINK || now.signature.startsWith('link:'));
       effects.unrecoverable.push({ path: relative, reason: link ? 'reached through a link' : 'binary, large or not a plain file' });
