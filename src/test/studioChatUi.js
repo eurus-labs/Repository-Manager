@@ -172,9 +172,27 @@ async function main() {
     assert.equal(await card.locator('.step[data-step="write"] .badge.write').textContent(), 'writes · asks first');
     assert.equal(await card.locator('.step[data-step="write"] select').count(), 0, 'a step without a model has no model choice');
     assert.equal(await card.locator('button:has-text("Run")').isDisabled(), false);
+    // "Steps use" says how many steps it applies to (plan 4): the one prompt step names no model, so 1.
+    const defaultSelect = card.locator('.default-model select');
+    const defaultNote = card.locator('.default-model-note');
+    assert.equal(await defaultNote.textContent(), 'used by 1 step');
+    assert.equal(await defaultSelect.isDisabled(), false);
+    assert.equal(await defaultSelect.getAttribute('aria-describedby'), await defaultNote.getAttribute('id'));
     await snap(page, '41-studio-chat-plan');
 
     // A model for one step, and a criterion edited on the card.
+    await card.locator('.step[data-step="summarize"] select').selectOption('copilot:gpt-4o');
+    await page.waitForFunction(() => document.querySelector('.card[data-card="current"] .step[data-step="summarize"] select').value === 'copilot:gpt-4o');
+    // Every model-using step now names its own: the default applies to none, so it cannot be changed, and says why.
+    assert.equal(await defaultNote.textContent(), 'used by no step: each step that uses a model names its own');
+    assert.equal(await defaultSelect.isDisabled(), true);
+    assert.equal(await defaultSelect.inputValue(), '', 'the disabled menu still shows the current default');
+    assert.equal(await defaultSelect.getAttribute('aria-describedby'), await defaultNote.getAttribute('id'));
+    await snap(page, '48-studio-chat-default-unused');
+    // Back to "Plan default": the count goes 0 -> 1 and the menu is usable again.
+    await card.locator('.step[data-step="summarize"] select').selectOption('');
+    await page.waitForFunction(() => document.querySelector('.card[data-card="current"] .default-model-note').textContent === 'used by 1 step');
+    assert.equal(await defaultSelect.isDisabled(), false);
     await card.locator('.step[data-step="summarize"] select').selectOption('copilot:gpt-4o');
     await page.waitForFunction(() => document.querySelector('.card[data-card="current"] .step[data-step="summarize"] select').value === 'copilot:gpt-4o');
     await card.locator('.criteria input').fill('The summary is at most 5 lines');
@@ -233,6 +251,8 @@ async function main() {
     await codeCard.waitFor();
     assert.equal(await codeCard.locator('.step[data-step="fix"] .badge.write').textContent(), 'changes code · you review');
     assert.equal(await codeCard.locator('.step[data-step="fix"] select').count(), 1, 'a code step uses a model, so it has a model choice');
+    assert.equal(await codeCard.locator('.default-model-note').textContent(), 'used by 2 steps');
+    assert.equal(await codeCard.locator('.default-model select').isDisabled(), false);
     await codeCard.locator('[data-skills="summarize"] button.link').click();
     await coding.locator('[data-skills="summarize"] .chip').waitFor();
     assert.match(await coding.locator('[data-skills="summarize"] .chip').textContent(), /^write-tests ⚠×$/);
@@ -240,6 +260,16 @@ async function main() {
     await snap(coding, '45-studio-chat-code-skills');
     await coding.locator('[data-skills="summarize"] .chip button').click();
     await coding.locator('[data-skills="summarize"] .chip').waitFor({ state: 'detached' });
+
+    // A plan with no step that uses a model has no "Steps use" at all.
+    const plain = await open({ height: 600 });
+    const plainPlan = plan(); plainPlan.nodes = [plainPlan.nodes[1]]; plainPlan.edges = []; plainPlan.prompts = {};
+    plainPlan.nodes[0].with.content = 'fixed text';
+    replies.push({ reply: 'Just write the file.', workflow: plainPlan });
+    await plain.fill('#message', 'Write a fixed file');
+    await plain.press('#message', 'Enter');
+    await plain.locator('.card[data-card="current"]').waitFor();
+    assert.equal(await plain.locator('.card[data-card="current"] .default-model').count(), 0);
 
     // A run in progress (plan 3): the steps with a word each, the running step's clock and last lines,
     // "Activity (N)", Stop instead of Send. The run is scripted: it emits log entries and waits.
