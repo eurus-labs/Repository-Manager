@@ -1,6 +1,6 @@
 # Plan 4 — "Steps use" says which steps it applies to
 
-Status: approved
+Status: implemented
 Date: 2026-11-18
 Branch: `fix/studio-chat-default-model-usage`
 Baseline: `main` at `cc5574d31b3e0445744cbdd892c3fedcf853c7b2`
