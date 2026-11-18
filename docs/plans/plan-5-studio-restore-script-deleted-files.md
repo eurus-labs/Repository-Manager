@@ -2,7 +2,7 @@
 
 Status: draft
 Date: 2026-11-18
-Branch: `fix/studio-restore-deleted-clean-files`
+Branch: `fix/studio-restore-script-deleted-files`
 Baseline: `main` at `bfd830d801f32b90ab363baa141692586910442e`
 Target: `src/agent/scriptEffects.ts`, `src/agent/types.ts`, `src/agent/agentTools.ts`, `src/agent/writeJournal.ts`, `src/studio/codeStep.ts`, `src/test/studioCodeStepSmoke.js`, `CHANGELOG.md`, `package.json`
 
