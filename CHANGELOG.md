@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.7.0] - 2026-11-19
+
+### Added
+
+- Studio code steps can run the scripts of their skills. A skill's `scripts/` folder is now downloaded with the skill at its pinned commit (at most 300 files, 2 MB each, 20 MB per skill), and a code step whose skills have scripts may run them with a new tool, `run_skill_script`. The step's approval lists each skill, its source, short commit, the script files and where they run; approving the step approves those scripts for that run. Scripts run in a container when Docker or Podman is available (official slim Python, Node or Debian image pinned by digest, no network, the repository writable, the skill read-only, no environment variables) and otherwise directly on your machine, which the approval says is not isolated. The new setting `repositoryManager.studio.skillScripts` (`auto`, `container`, `direct`, `off`) chooses. Files a script changes in the repository are reviewed and undone with the step, a call is limited to 5 minutes and 64 KB of output, and each call appears in the step's Activity ("Ran scripts/x.py (container): exit 0") and in the review. The skill chip and the + Skill picker now say where a skill's scripts run, and the ⚠ sign shows only where they will not.
+
 ## [3.6.1] - 2026-11-18
 
 ### Fixed
