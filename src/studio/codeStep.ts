@@ -196,36 +196,55 @@ function scriptSkills(context: StepContext): ScriptSkill[] {
     .map(skill => ({ name: skill.name, ref: skill.ref, dir: skill.dir!, scripts: skill.scripts }));
 }
 
-const runnerKey = (context: StepContext) => `skillScripts:${context.node.id}`;
+const approvedKey = (context: StepContext) => `skillScripts:${context.node.id}`;
+
+/** What the preview offered and the person approved for a step: the runner, and per skill the exact script files listed. */
+interface ApprovedScripts { runner: ScriptRunner; skills: { ref: string; scripts: string[] }[] }
 
 const validRunner = (value: unknown): value is ScriptRunner => {
   const item = value as { mode?: unknown; engine?: unknown } | undefined;
   return Boolean(item) && (item!.mode === 'direct' || item!.mode === 'off' || (item!.mode === 'container' && (item!.engine === undefined || item!.engine === 'docker' || item!.engine === 'podman')));
 };
 
+function validApproved(value: unknown): value is ApprovedScripts {
+  const item = value as Partial<ApprovedScripts> | undefined;
+  return Boolean(item) && validRunner(item!.runner) && Array.isArray(item!.skills)
+    && item!.skills.every(skill => Boolean(skill) && typeof skill.ref === 'string' && Array.isArray(skill.scripts) && skill.scripts.every(script => typeof script === 'string'));
+}
+
 /**
- * The runner for this step's skill scripts. The preview chooses it and keeps it in the run's data,
- * so the one the person approved is the one used: an engine that stopped answering since fails the
- * call, it is never swapped for a direct run. Off when the setting says so now, or the host gives none.
+ * What the approval covers, recorded in the run's data when the preview is built (Decisions 2 and 5):
+ * the runner chosen then (an engine that stopped answering since fails the call, it is never swapped for
+ * a direct run) and the script files listed. Retry keeps it. No record (a run approved before this
+ * existed) or an "off" runner means no tool.
  */
-async function scriptRunner(context: StepContext, fresh: boolean): Promise<ScriptRunner> {
+async function approveScripts(context: StepContext): Promise<ApprovedScripts> {
   const services = context.code?.skillScripts;
-  if (!services) { return { mode: 'off' }; }
-  const setting = parseSetting(services.setting());
-  if (setting === 'off') { return { mode: 'off' }; }
-  const kept = context.run.data[runnerKey(context)];
-  if (!fresh && validRunner(kept)) { return kept; }
-  const runner = await chooseRunner(setting, services.detect);
-  context.run.data[runnerKey(context)] = runner;
-  return runner;
+  const offered = services ? scriptSkills(context) : [];
+  let approved: ApprovedScripts = { runner: { mode: 'off' }, skills: [] };
+  if (services && offered.length && parseSetting(services.setting()) !== 'off') {
+    const runner = await chooseRunner(parseSetting(services.setting()), services.detect);
+    approved = { runner, skills: offered.map(skill => ({ ref: skill.ref, scripts: skill.scripts.filter(runnable) })) };
+  }
+  context.run.data[approvedKey(context)] = approved;
+  return approved;
+}
+
+/** The skills the tool may run scripts of now: the recorded approval, cut to the files cached now (never more than were listed). */
+function approvedSkills(context: StepContext, approved: ApprovedScripts): ScriptSkill[] {
+  return scriptSkills(context).flatMap(skill => {
+    const listed = approved.skills.find(item => item.ref === skill.ref);
+    const scripts = listed ? skill.scripts.filter(script => !runnable(script) || listed.scripts.includes(script)) : [];
+    return scripts.some(runnable) ? [{ ...skill, scripts }] : [];
+  });
 }
 
 /** What the person approves with the step for its skills' scripts (Decision 2): skill, source, commit, files, and how they run. */
 async function scriptsPreview(context: StepContext): Promise<string> {
   const unavailable = (context.skills ?? []).filter(skill => skill.scriptsUnavailable).map(skill => `- ${skill.name}: scripts not available (${skill.scriptsUnavailable})`);
   const offered = context.code?.skillScripts ? scriptSkills(context) : [];
+  const { runner } = await approveScripts(context);
   if (!offered.length) { return unavailable.length ? `Skill scripts not run:\n${unavailable.join('\n')}` : ''; }
-  const runner = await scriptRunner(context, true);
   if (runner.mode === 'off') {
     return `Skill scripts: turned off in the settings (repositoryManager.studio.skillScripts), so the scripts of ${offered.map(skill => skill.name).join(', ')} are not run.`;
   }
@@ -313,8 +332,11 @@ export const codeStep: StepDefinition = {
     const token = cancelToken(context.signal);
     const tools: AgentToolName[] = checks.length ? ['edit_file', 'create_file', 'run_check'] : ['edit_file', 'create_file'];
     // Skill scripts: the tool only when a loaded skill has scripts and the approved runner is not "off".
-    const offered = scriptSkills(context);
-    const runner = offered.length ? await scriptRunner(context, false) : { mode: 'off' } as ScriptRunner;
+    const kept = context.run.data[approvedKey(context)];
+    const approved = validApproved(kept) ? kept : undefined;
+    const settingOff = !context.code?.skillScripts || parseSetting(context.code.skillScripts.setting()) === 'off';
+    const offered = approved && !settingOff ? approvedSkills(context, approved) : [];
+    const runner: ScriptRunner = approved && offered.length ? approved.runner : { mode: 'off' };
     const scriptsOn = offered.length > 0 && runner.mode !== 'off';
     if (scriptsOn) { tools.push('run_skill_script'); }
     const scriptRuns: SkillScriptRun[] = [];

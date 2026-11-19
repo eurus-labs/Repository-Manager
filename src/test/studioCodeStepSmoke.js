@@ -587,6 +587,51 @@ async function main() {
       assert.doesNotMatch(gate.waiting.preview, /and \d+ more/);
     }
 
+    // The approval is the list shown at the gate (Decisions 2 and 5): what a later load offers beyond it is not run.
+    {
+      // Scripts failed to download when the preview was built; the load after the approval succeeds.
+      const seen = [];
+      let loads = 0;
+      const flaky = { load: async () => (++loads === 1 ? loaded({ scripts: [], scriptsUnavailable: 'download failed' }) : loaded()) };
+      const svc = { ...services([hello, { final: 'Done.' }], seen, []), skillScripts: { setting: () => 'direct' } };
+      const { engine, flow, state: gate } = await start(svc, [ref], flaky);
+      assert.match(gate.waiting.preview, /Skill scripts not run:\n- tools: scripts not available \(download failed\)/);
+      const state = await engine.continue(flow, await engine.answer(gate, true), never);
+      assert.ok(loads >= 2, 'the skills were loaded again after the approval');
+      assert.ok(!seen[0].tools.includes('run_skill_script'), 'no tool for scripts the approval did not list');
+      assert.equal(fs.existsSync(path.join(repo, 'out')), false, 'nothing ran');
+      await engine.answer(state, 'stop', flow);
+    }
+    {
+      // A runner of "off" at the preview stays off even if the setting changed and scripts are there.
+      const seen = [];
+      let setting = 'off';
+      const svc = { ...services([{ final: 'Done.' }], seen, []), skillScripts: { setting: () => setting } };
+      const { engine, flow, state: gate } = await start(svc, [ref]);
+      setting = 'direct';
+      const state = await engine.continue(flow, await engine.answer(gate, true), never);
+      assert.ok(!seen[0].tools.includes('run_skill_script'));
+      await engine.answer(state, 'stop', flow);
+    }
+    {
+      // A script added between the preview and the run is refused like an unlisted one; the listed one still runs.
+      fs.writeFileSync(path.join(skillDir, 'scripts', 'extra.py'), 'import os\nos.makedirs("out", exist_ok=True)\nopen("out/extra.txt", "w").write("x")\n');
+      const seen = [];
+      let loads = 0;
+      const growing = { load: async () => (++loads === 1 ? loaded({ scripts: ['scripts/hello.py'] }) : loaded({ scripts: ['scripts/hello.py', 'scripts/extra.py'] })) };
+      const svc = { ...services([{ tool: 'run_skill_script', input: { skill: 'tools', script: 'scripts/extra.py' } }, { final: 'Done.' }], seen, []), skillScripts: { setting: () => 'direct' } };
+      const { engine, flow, state: gate } = await start(svc, [ref], growing);
+      assert.doesNotMatch(gate.waiting.preview, /extra\.py/);
+      const state = await engine.continue(flow, await engine.answer(gate, true), never);
+      assert.ok(seen[0].tools.includes('run_skill_script'), 'the listed script keeps the tool');
+      const result = lastResult(seen);
+      assert.equal(result.is_error, true);
+      assert.match(result.content, /is not one of the scripts of tools/);
+      assert.equal(fs.existsSync(path.join(repo, 'out', 'extra.txt')), false, 'the unlisted script did not run');
+      await engine.answer(state, 'stop', flow);
+      fs.rmSync(path.join(skillDir, 'scripts', 'extra.py'));
+    }
+
     // A container asked for with no engine: the call fails saying so, and never runs directly instead.
     {
       const seen = [];
