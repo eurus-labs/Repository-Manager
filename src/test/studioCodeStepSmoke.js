@@ -609,7 +609,16 @@ async function main() {
       const { engine, flow, state: gate } = await start(svc, [ref]);
       assert.match(gate.waiting.preview, /in a container \(podman\)/);
       answers = undefined;
-      const state = await engine.continue(flow, await engine.answer(gate, true), never);
+      // The engine must be absent whatever the machine has installed (CI runners ship podman): run the call with a PATH that holds git only.
+      const pathBefore = process.env.PATH;
+      const emptyPath = path.join(base, 'git-only-path');
+      fs.mkdirSync(emptyPath, { recursive: true });
+      // The step still needs git for its snapshots, so that one tool stays reachable; no container engine does.
+      const gitPath = spawnSync(process.platform === 'win32' ? 'where' : 'which', ['git'], { encoding: 'utf8' }).stdout.split(/\r?\n/)[0].trim();
+      fs.symlinkSync(gitPath, path.join(emptyPath, path.basename(gitPath)));
+      let state;
+      process.env.PATH = emptyPath;
+      try { state = await engine.continue(flow, await engine.answer(gate, true), never); } finally { process.env.PATH = pathBefore; }
       const result = lastResult(seen);
       assert.equal(result.is_error, true);
       assert.match(result.content, /podman is not installed or not on PATH/);
