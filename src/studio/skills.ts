@@ -51,6 +51,8 @@ export interface SkillSummary {
   description: string;
   /** The skill has scripts (or names some). A code step may run them; any other step may not. */
   usesScripts: boolean;
+  /** Set when the folder has no `scripts/` files: SKILL.md only mentions a script, so a code step has none to run. */
+  noScriptFiles?: boolean;
 }
 
 export interface LoadedSkill extends SkillSummary {
@@ -156,7 +158,7 @@ export class SkillLibrary {
     const skills: SkillSummary[] = [];
     for (const folder of folders) {
       const loaded = await this.fetchSkill(owner, repo, commit, folder, files, host);
-      skills.push({ ref: loaded.ref, name: loaded.name, description: loaded.description, usesScripts: loaded.usesScripts });
+      skills.push({ ref: loaded.ref, name: loaded.name, description: loaded.description, usesScripts: loaded.usesScripts, ...(loaded.usesScripts && Array.isArray(loaded.scripts) && !loaded.scripts.length ? { noScriptFiles: true } : {}) });
     }
     await this.writeJson(file, skills);
     await this.writeJson(path.join(this.repoDir(owner, repo, host), 'latest.json'), { commit });

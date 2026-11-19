@@ -18,7 +18,7 @@ import { studioSteps } from './registry';
 import { dashboardSelector, listModels, ModelChoice, onModelsChanged, studioModel } from './studioModels';
 import { parseSkillSource, StudioSkills, studioSkills } from './githubSkills';
 import { SkillSummary } from './skills';
-import { scriptsNote } from './skillScripts';
+import { SkillScriptFiles, scriptsNote } from './skillScripts';
 import { readScripts } from '../agent/repositoryScripts';
 import { StudioRuns } from './studioCommands';
 import { EditOperation, serializeWorkflow } from './workflowEdit';
@@ -91,6 +91,9 @@ export class StudioChatProvider implements vscode.WebviewViewProvider {
   /** Where a code step runs skill scripts now; null until the engine probe (up to 5 s) answered. */
   private scriptMode: 'container' | 'direct' | 'off' | null = null;
   private scriptModeAt = 0;
+  /** What loading a skill showed about its script files (none, or why unavailable); `at` lets a failed download be tried again. */
+  private readonly scriptFiles = new Map<string, SkillScriptFiles & { at: number }>();
+  private readonly scriptFilesAsked = new Set<string>();
 
   constructor(private readonly context: vscode.ExtensionContext, private readonly runs: StudioRuns | undefined, private readonly root: string | undefined) {
     this.store = new ChatStore(path.join(context.storageUri?.fsPath ?? context.globalStorageUri.fsPath, 'studio', 'chats'));
@@ -415,7 +418,7 @@ export class StudioChatProvider implements vscode.WebviewViewProvider {
     const present = new Set(node.skills ?? []);
     const picked = await vscode.window.showQuickPick(listed.filter(skill => !present.has(skill.ref)).map(skill => ({
       label: skill.name, description: skill.ref.replace(/^github:/, '').replace(/@([0-9a-f]{7})[0-9a-f]+$/, '@$1'),
-      detail: `${skill.description}${skill.usesScripts ? ` · ${scriptsNote(node.type, this.scriptMode ?? 'unknown').replace(/^Uses/, 'uses')}` : ''}`, skill
+      detail: `${skill.description}${skill.usesScripts ? ` · ${scriptsNote(node.type, this.scriptMode ?? 'unknown', this.filesOf(skill)).replace(/^[A-Z]/, letter => letter.toLowerCase())}` : ''}`, skill
     })), { title: `Add a skill to "${node.title ?? node.id}"`, placeHolder: failed.length ? `Some sources could not be read: ${failed.join(' ')}` : 'Pinned to the commit listed now', matchOnDetail: true });
     if (!picked) { return; }
     editPlan(conversation, { op: 'setSkills', id, skills: [...present, picked.skill.ref] }, this.steps);
@@ -542,6 +545,32 @@ export class StudioChatProvider implements vscode.WebviewViewProvider {
     return { ...run, steps: live.steps.map(step => ({ ...step, ...(step.outcome === 'running' && live.since.has(step.id) ? { since: live.since.get(step.id) } : {}) })), activity: live.activity };
   }
 
+  /** What is known of a skill's script files: from loading it, else from its listing. */
+  private filesOf(skill: SkillSummary): SkillScriptFiles | undefined {
+    const known = this.scriptFiles.get(skill.ref);
+    if (known) { return { none: known.none, unavailable: known.unavailable }; }
+    return skill.noScriptFiles ? { none: true } : undefined;
+  }
+
+  /**
+   * Loads the skills on code steps that use scripts (pinned and cached, so no new commit is read) to
+   * learn whether their scripts will run there; posts again when something is found. A failed
+   * download is tried again after 30 s.
+   */
+  private refreshScriptFiles(refs: string[]): void {
+    for (const ref of refs) {
+      const known = this.scriptFiles.get(ref);
+      const retry = known?.unavailable !== undefined && /could not be (downloaded|listed)/.test(known.unavailable) && Date.now() - known.at > 30_000;
+      if (this.scriptFilesAsked.has(ref) || (known && !retry)) { continue; }
+      this.scriptFilesAsked.add(ref);
+      void this.skills.load(ref).then(loaded => {
+        const files: SkillScriptFiles = loaded.scriptsUnavailable ? { unavailable: loaded.scriptsUnavailable } : !loaded.scripts.length ? { none: true } : {};
+        this.scriptFiles.set(ref, { ...files, at: Date.now() });
+        this.post();
+      }, () => undefined).finally(() => this.scriptFilesAsked.delete(ref));
+    }
+  }
+
   /** Looks up where skill scripts run (the setting, then the engine probe) without holding up a post; posts again when it changed. */
   private refreshScriptMode(): void {
     const probe = this.runs?.scriptRunner;
@@ -556,12 +585,19 @@ export class StudioChatProvider implements vscode.WebviewViewProvider {
     this.lastPost = Date.now();
     if (!this.view || !this.conversation) { return; }
     const conversation = this.conversation;
+    const onCode = new Set<string>();
+    for (const message of conversation.messages) {
+      for (const node of message.draft?.workflow.nodes ?? []) {
+        if (node.type === 'code') { for (const ref of node.skills ?? []) { if (this.skillNames.get(ref)?.usesScripts) { onCode.add(ref); } } }
+      }
+    }
+    this.refreshScriptFiles([...onCode]);
     const notice = this.notice;
     this.notice = '';
     void this.view.webview.postMessage({
       type: 'state', notice, busy: this.busy ?? null, stopping: Boolean(this.busy && this.cancelled), folder: Boolean(this.root),
       models: this.models.map(model => ({ selector: model.selector, name: model.name, vendor: model.vendor })), modelsLoaded: this.modelsLoaded,
-      skills: Object.fromEntries([...this.skillNames.values()].map(skill => [skill.ref, { name: skill.name, usesScripts: skill.usesScripts }])),
+      skills: Object.fromEntries([...this.skillNames.values()].map(skill => [skill.ref, { name: skill.name, usesScripts: skill.usesScripts, ...(skill.usesScripts ? this.filesOf(skill) : {}) }])),
       scriptRunner: this.scriptMode,
       model: conversation.model ?? null, file: conversation.file ?? null, title: conversation.title,
       messages: conversation.messages.map(message => ({

@@ -90,13 +90,18 @@ export function describeRunner(runner: ScriptRunner): string {
     : 'in a container, but no container engine (Docker or Podman) answers: every script call will fail';
 }
 
+/** What is known of a skill's script files: `none` (SKILL.md mentions scripts, the folder has none) or why they are `unavailable`. */
+export interface SkillScriptFiles { none?: boolean; unavailable?: string }
+
 /**
  * What a skill chip and the skill picker say about a skill that uses scripts, by the step it is on and
  * the runner the setting gives now (`unknown` while the engine is being looked for).
  */
-export function scriptsNote(stepType: string, mode: 'container' | 'direct' | 'off' | 'unknown'): string {
+export function scriptsNote(stepType: string, mode: 'container' | 'direct' | 'off' | 'unknown', files?: SkillScriptFiles): string {
   if (mode === 'off') { return 'Uses scripts: turned off in settings'; }
   if (stepType !== 'code') { return 'Uses scripts: this step type has no tools, so they are not run here; use a code step'; }
+  if (files?.unavailable) { return `Uses scripts: none could be loaded: ${files.unavailable}`; }
+  if (files?.none) { return 'Mentions scripts but has none in its folder, so none are run'; }
   const where = mode === 'container' ? 'in a container' : mode === 'direct' ? 'directly on this machine' : 'in a container when Docker or Podman is available, else directly on this machine';
   return `Uses scripts: run in this step after your approval (${where})`;
 }

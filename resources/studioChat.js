@@ -97,10 +97,12 @@
   }
 
   /** What a chip says about a skill that uses scripts, as scriptsNote in src/studio/skillScripts.ts; the warning sign only where they will not run. */
-  function scriptsNote(stepType) {
+  function scriptsNote(stepType, skill) {
     const mode = state.scriptRunner;
     if (mode === 'off') return { text: 'Uses scripts: turned off in settings', runs: false };
     if (stepType !== 'code') return { text: 'Uses scripts: this step type has no tools, so they are not run here; use a code step', runs: false };
+    if (skill && skill.unavailable) return { text: `Uses scripts: none could be loaded: ${skill.unavailable}`, runs: false };
+    if (skill && skill.none) return { text: 'Mentions scripts but has none in its folder, so none are run', runs: false };
     const where = mode === 'container' ? 'in a container' : mode === 'direct' ? 'directly on this machine' : 'in a container when Docker or Podman is available, else directly on this machine';
     return { text: `Uses scripts: run in this step after your approval (${where})`, runs: true };
   }
@@ -110,9 +112,9 @@
     const set = skills => vscode.postMessage({ type: 'edit', operation: { op: 'setSkills', id: step.id, skills } });
     return el('div', { class: 'skills', 'data-skills': step.id },
       step.skills.map(ref => {
-        const scripts = state.skills && state.skills[ref] && state.skills[ref].usesScripts ? scriptsNote(step.type) : null;
+        const scripts = state.skills && state.skills[ref] && state.skills[ref].usesScripts ? scriptsNote(step.type, state.skills[ref]) : null;
         return el('span', { class: 'chip', title: `${ref}${scripts ? `\n${scripts.text}` : ''}` },
-          skillLabel(ref), scripts && !scripts.runs ? el('span', { class: 'chip-warning', 'aria-label': 'uses scripts, not run here' }, ' ⚠') : null,
+          skillLabel(ref), scripts && !scripts.runs ? el('span', { class: 'chip-warning', 'aria-label': 'its scripts are not run here' }, ' ⚠') : null,
           editable ? el('button', { type: 'button', class: 'icon', 'aria-label': `Remove skill ${skillLabel(ref)}`, onclick: () => set(step.skills.filter(other => other !== ref)) }, '×') : null);
       }),
       editable ? el('button', { type: 'button', class: 'link', onclick: () => vscode.postMessage({ type: 'addSkill', id: step.id }) }, '+ Skill') : null);
