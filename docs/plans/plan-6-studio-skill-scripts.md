@@ -1,6 +1,6 @@
 # Plan 6 — Run a skill's scripts in Studio code steps
 
-Status: approved
+Status: implemented
 Date: 2026-11-18
 Branch: `feat/studio-skill-scripts`
 Baseline: `main` at `b850d050129c9c731854a87f0e3967f140a04d5b`
