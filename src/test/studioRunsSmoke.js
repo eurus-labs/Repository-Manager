@@ -144,6 +144,13 @@ async function main() {
     assert.deepEqual(line({ type: 'read', node: 'docs', files: 12, requirements: 30 }), { text: 'Read 12 files' });
     assert.deepEqual(line({ type: 'read', node: 'docs', files: 1 }), { text: 'Read 1 file' });
     assert.deepEqual(line({ type: 'skills', node: 'ask', skills: ['github:acme/skills/plugins/testing/skills/write-tests@' + 'c'.repeat(40), 'plain'] }), { text: 'Skills: write-tests, plain' });
+    // A skill's script (plan 6): the call as it ended, and the image pull before a container's first run.
+    assert.deepEqual(line({ type: 'skill-script', node: 'fix', skill: 'document-codebase', script: 'scripts/pipeline.py', runner: 'container', engine: 'docker', command: 'python3 scripts/pipeline.py --all', exitCode: 0, durationMs: 1200 }),
+      { text: 'Ran scripts/pipeline.py (container): exit 0', ok: true });
+    assert.deepEqual(line({ type: 'skill-script', node: 'fix', script: 'scripts/detect_stack.py', runner: 'direct', exitCode: 2 }), { text: 'Ran scripts/detect_stack.py (direct): exit 2', ok: false });
+    assert.deepEqual(line({ type: 'skill-script', node: 'fix', script: 'scripts/slow.py', runner: 'direct', exitCode: null, stopped: 'timeout' }), { text: 'Ran scripts/slow.py (direct): stopped at its time limit', ok: false });
+    assert.deepEqual(line({ type: 'skill-script', node: 'fix', phase: 'pull', image: 'python:3.12-slim-bookworm' }), { text: 'Pulling python:3.12-slim-bookworm…' });
+    assert.equal(line({ type: 'skill-script', node: 'fix', script: 's.py', runner: 'direct', exitCode: 0, command: 'python3 s.py --token=SECRET' }).text.includes('SECRET'), false, 'the arguments are in the log, not in the line');
     for (const type of ['start', 'node', 'done', 'skip', 'waiting', 'approval', 'review', 'finish', 'recovered', 'script-changes']) { assert.equal(line({ type, node: 'x' }), undefined, `${type} made a line`); }
     // A tool's input and a file's content are never in the line; a long note is cut.
     const secret = line({ type: 'tool', name: 'edit_file', ok: true, note: 'a.ts', input: { content: 'SECRET FILE TEXT' }, output: 'SECRET' });
