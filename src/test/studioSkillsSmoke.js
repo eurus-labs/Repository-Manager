@@ -113,8 +113,19 @@ async function main() {
   assert.deepEqual((await library.cachedIndex('acme/skills')).map(skill => skill.name), ['write-tests', 'plain-words'], 'the last listing is there offline');
 
   // A pinned skill reads from the cache, with the references of its folder.
+  // Its scripts (cached by the listing without them) come with the first load, once (plan 6, Decision 7).
   const skill = await library.load(writeTests);
-  assert.equal(calls.file, fetched.file, 'a pinned, cached skill needs no request');
+  assert.equal(calls.file, fetched.file + 1, 'the first load of a listed skill downloads its one script file');
+  assert.deepEqual(skill.scripts, ['scripts/run.py']);
+  assert.equal(skill.scriptsUnavailable, undefined);
+  assert.equal(fs.readFileSync(path.join(skill.dir, 'scripts', 'run.py'), 'utf8'), 'print(1)', 'the script is cached at the pinned commit');
+  assert.equal(path.basename(skill.dir), 'write-tests');
+  const afterScripts = { ...calls };
+  const again = await library.load(writeTests);
+  assert.deepEqual(calls, afterScripts, 'a pinned, cached skill with its scripts needs no request');
+  assert.deepEqual(again.scripts, ['scripts/run.py']);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(skill.dir, 'skill.json'), 'utf8')).dir, undefined, 'the cache folder is not written into skill.json');
+  assert.deepEqual((await library.load(plainWords)).scripts, [], 'a skill without a scripts folder has none');
   assert.deepEqual(Object.keys(skill.references).sort(), ['references/standard.md', 'references/unused.md']);
   // The source moved on: a listing shows the new commit; the pinned skill still reads the old one.
   head = newer;
@@ -130,6 +141,75 @@ async function main() {
   assert.match(text, /#### write-tests: references\/standard\.md\nEvery test names/);
   assert.ok(!text.includes('Not named by the skill'), 'a reference the skill does not name is left out');
   assert.match(skillsPrompt([skill], 400), /Not included \(over the size limit\): write-tests/);
+  // With run_skill_script offered, the line about scripts changes; without it, the old line stays (Decision 10).
+  assert.match(text, /Scripts a skill mentions are not available: do their work yourself or say what is missing\./);
+  const withTool = skillsPrompt([skill], undefined, true);
+  assert.match(withTool, /Run a skill's scripts with run_skill_script \(skill, script path as its SKILL\.md writes it, args\); they run from the repository root/);
+  assert.ok(!withTool.includes('are not available'), 'the old line is gone when the tool is offered');
+
+  // ---- Scripts: limits keep the skill loadable but its scripts unavailable (Decision 7).
+  {
+    const big = (name, sizes, extra = {}) => {
+      const tree = { [`plugins/${name}/SKILL.md`]: `---\nname: ${name}\n---\nRun scripts/a.py.`, ...extra };
+      sizes.forEach((size, index) => { tree[`plugins/${name}/scripts/f${index}.py`] = 'x'.repeat(size); });
+      return tree;
+    };
+    const tree = {
+      ...big('many', Array.from({ length: 301 }, () => 1)),
+      ...big('large', [2 * 1024 * 1024 + 1]),
+      ...big('total', Array.from({ length: 11 }, () => 2_000_000)),
+      ...big('fits', [2 * 1024 * 1024], { 'plugins/fits/scripts/sub/deep.sh': 'echo hi' }),
+      'plugins/evil/SKILL.md': '---\nname: evil\n---\nbody', 'plugins/evil/scripts/../../escape.py': 'x'
+    };
+    const fetchedPaths = [];
+    const limitApi = { headCommit: async () => commit, tree: async () => Object.keys(tree), file: async (_o, _r, _c, file) => { fetchedPaths.push(file); return tree[file]; } };
+    const limited = new SkillLibrary(path.join(base, 'limit-cache'), limitApi);
+    const ref = name => skillRef('acme', 'skills', `plugins/${name}`, commit);
+    const many = await limited.load(ref('many'));
+    assert.deepEqual([many.scripts, many.body], [[], 'Run scripts/a.py.'], 'over the file limit: the skill loads, its scripts do not');
+    assert.match(many.scriptsUnavailable, /301 files.*at most 300/);
+    assert.ok(!fetchedPaths.some(file => file.includes('/many/scripts/')), 'nothing is downloaded over the file limit');
+    const large = await limited.load(ref('large'));
+    assert.deepEqual(large.scripts, []);
+    assert.match(large.scriptsUnavailable, /f0\.py is larger than 2 MB/);
+    assert.equal(fs.existsSync(path.join(large.dir, 'scripts')), false, 'an unavailable skill leaves no script files to run');
+    const total = await limited.load(ref('total'));
+    assert.deepEqual(total.scripts, []);
+    assert.match(total.scriptsUnavailable, /more than 20 MB/);
+    assert.equal(fs.existsSync(path.join(total.dir, 'scripts')), false);
+    const fits = await limited.load(ref('fits'));
+    assert.deepEqual(fits.scripts, ['scripts/f0.py', 'scripts/sub/deep.sh'], 'sub-folders are kept; exactly 2 MB fits');
+    assert.equal(fits.scriptsUnavailable, undefined);
+    assert.equal(fs.readFileSync(path.join(fits.dir, 'scripts', 'sub', 'deep.sh'), 'utf8'), 'echo hi');
+    const evil = await limited.load(ref('evil'));
+    assert.deepEqual(evil.scripts, []);
+    assert.match(evil.scriptsUnavailable, /not a plain path/);
+    assert.equal(fs.existsSync(path.join(base, 'limit-cache', 'acme', 'skills', commit, 'plugins', 'escape.py')), false);
+    // The reason is kept: a second load says the same without asking again.
+    const asked = fetchedPaths.length;
+    assert.match((await limited.load(ref('many'))).scriptsUnavailable, /at most 300/);
+    assert.equal(fetchedPaths.length, asked);
+
+    // A skill cached before this change has no `scripts` field: its scripts are downloaded on the next load.
+    const old = new SkillLibrary(path.join(base, 'old-cache'), api);
+    const folder = path.join(base, 'old-cache', 'acme', 'skills', commit, 'plugins/testing/skills/write-tests');
+    fs.mkdirSync(folder, { recursive: true });
+    fs.writeFileSync(path.join(folder, 'skill.json'), JSON.stringify({ ref: writeTests, name: 'write-tests', description: 'd', usesScripts: true, body: 'old body', references: {} }));
+    const upgraded = await old.load(writeTests);
+    assert.equal(upgraded.body, 'old body', 'the cached text is kept');
+    assert.deepEqual(upgraded.scripts, ['scripts/run.py']);
+    assert.equal(fs.readFileSync(path.join(folder, 'scripts', 'run.py'), 'utf8'), 'print(1)');
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(folder, 'skill.json'), 'utf8')).scripts, ['scripts/run.py'], 'the upgrade is cached');
+
+    // A download that fails (a network error) does not fail the skill, and is tried again next time.
+    let fail = true;
+    const flaky = new SkillLibrary(path.join(base, 'flaky-cache'), { ...api, file: async (o, r, c, file) => { if (fail && file.includes('/scripts/')) { throw new Error('offline'); } return api.file(o, r, c, file); } });
+    const first = await flaky.load(writeTests);
+    assert.deepEqual([first.scripts, first.body.startsWith('# Write tests')], [[], true]);
+    assert.match(first.scriptsUnavailable, /could not be downloaded: offline/);
+    fail = false;
+    assert.deepEqual((await flaky.load(writeTests)).scripts, ['scripts/run.py']);
+  }
 
   // ---- Validation: pinned references, steps that use a model, at most five.
   const flow = nodes => ({ schema: 'repository-manager/workflow@1', id: 'w', version: '1', title: 'W', prompts: { p: { instructions: 'Do it.' } }, nodes });
