@@ -27,7 +27,8 @@ let head = commit;
 const api = {
   headCommit: async (owner, repo) => { calls.head++; assert.equal(`${owner}/${repo}`, 'acme/skills'); return head; },
   tree: async () => { calls.tree++; return Object.keys(files); },
-  file: async (_owner, _repo, at, file) => { calls.file++; assert.ok([commit, newer].includes(at)); if (!(file in files)) throw new Error(`no ${file}`); return files[file]; }
+  file: async (_owner, _repo, at, file) => { calls.file++; assert.ok([commit, newer].includes(at)); if (!(file in files)) throw new Error(`no ${file}`); return files[file]; },
+  fileBytes: async (owner, repo, at, file) => Buffer.from(await api.file(owner, repo, at, file))
 };
 
 // --- the fake `vscode` for the host parts -------------------------------------------------------
@@ -162,7 +163,7 @@ async function main() {
       'plugins/evil/SKILL.md': '---\nname: evil\n---\nbody', 'plugins/evil/scripts/../../escape.py': 'x'
     };
     const fetchedPaths = [];
-    const limitApi = { headCommit: async () => commit, tree: async () => Object.keys(tree), file: async (_o, _r, _c, file) => { fetchedPaths.push(file); return tree[file]; } };
+    const limitApi = { headCommit: async () => commit, tree: async () => Object.keys(tree), file: async (_o, _r, _c, file) => { fetchedPaths.push(file); return tree[file]; }, fileBytes: async (_o, _r, _c, file) => { fetchedPaths.push(file); return Buffer.from(tree[file]); } };
     const limited = new SkillLibrary(path.join(base, 'limit-cache'), limitApi);
     const ref = name => skillRef('acme', 'skills', `plugins/${name}`, commit);
     const many = await limited.load(ref('many'));
@@ -190,6 +191,29 @@ async function main() {
     assert.match((await limited.load(ref('many'))).scriptsUnavailable, /at most 300/);
     assert.equal(fetchedPaths.length, asked);
 
+    // Decision 7: every file under scripts/ is kept as it is in the repository: bytes, not text. A binary
+    // file (an image, an archive) and a text file with CRLF line ends come back byte for byte.
+    {
+      const bytes = {
+        'plugins/bin/scripts/logo.png': Buffer.from([0x00, 0xff, 0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0xc3, 0x28, 0xfe]),
+        'plugins/bin/scripts/win.py': Buffer.from('print("a")\r\nprint("b")\r\n'),
+        'plugins/bin/scripts/sub/bom.sh': Buffer.from('﻿echo é\r\n'),
+        'plugins/bin/SKILL.md': Buffer.from('---\nname: bin\n---\nRun scripts/win.py.')
+      };
+      // `file` answers text, as GitHub's raw answer decoded as UTF-8 does: it must not be what scripts come from.
+      const byteApi = {
+        headCommit: async () => commit, tree: async () => Object.keys(bytes),
+        file: async (_o, _r, _c, file) => bytes[file].toString('utf8'),
+        fileBytes: async (_o, _r, _c, file) => Buffer.from(bytes[file])
+      };
+      const loaded = await new SkillLibrary(path.join(base, 'bytes-cache'), byteApi).load(skillRef('acme', 'skills', 'plugins/bin', commit));
+      assert.deepEqual(loaded.scripts, ['scripts/logo.png', 'scripts/sub/bom.sh', 'scripts/win.py']);
+      for (const name of loaded.scripts) {
+        const cached = fs.readFileSync(path.join(loaded.dir, name));
+        assert.ok(cached.equals(bytes[`plugins/bin/${name}`]), `${name} is cached byte for byte`);
+      }
+    }
+
     // A skill cached before this change has no `scripts` field: its scripts are downloaded on the next load.
     const old = new SkillLibrary(path.join(base, 'old-cache'), api);
     const folder = path.join(base, 'old-cache', 'acme', 'skills', commit, 'plugins/testing/skills/write-tests');
@@ -203,7 +227,7 @@ async function main() {
 
     // A download that fails (a network error) does not fail the skill, and is tried again next time.
     let fail = true;
-    const flaky = new SkillLibrary(path.join(base, 'flaky-cache'), { ...api, file: async (o, r, c, file) => { if (fail && file.includes('/scripts/')) { throw new Error('offline'); } return api.file(o, r, c, file); } });
+    const flaky = new SkillLibrary(path.join(base, 'flaky-cache'), { ...api, fileBytes: async (o, r, c, file) => { if (fail && file.includes('/scripts/')) { throw new Error('offline'); } return api.fileBytes(o, r, c, file); } });
     const first = await flaky.load(writeTests);
     assert.deepEqual([first.scripts, first.body.startsWith('# Write tests')], [[], true]);
     assert.match(first.scriptsUnavailable, /could not be downloaded: offline/);
@@ -353,6 +377,25 @@ async function main() {
       watched.forgetSessions();
       await watched.headCommit('acme', 'skills');
       assert.equal(looks.length, 2, 'looked up once, then again after the sessions changed');
+    }
+
+    // Script files come through the contents API as base64 and are decoded to bytes; a file over 1 MB has no
+    // content there and is read as a blob by its sha.
+    {
+      const binary = Buffer.from([0x00, 0xff, 0x89, 0x50, 0x4e, 0x47]);
+      const sha = 'd'.repeat(40);
+      const urls = [];
+      const bytesApi = new GitHubSkillApi(async url => {
+        urls.push(url.replace('https://api.github.com/', ''));
+        if (url.includes('/git/blobs/')) { return JSON.stringify({ encoding: 'base64', content: binary.toString('base64') }); }
+        if (url.includes('/contents/big.bin')) { return JSON.stringify({ type: 'file', encoding: 'none', content: '', sha }); }
+        if (url.includes('/contents/dir')) { return JSON.stringify([{ type: 'file' }]); }
+        return JSON.stringify({ type: 'file', encoding: 'base64', content: binary.toString('base64').replace(/(.{4})/g, '$1\n'), sha });
+      }, auth(undefined, 'cancel'));
+      assert.ok((await bytesApi.fileBytes('acme', 'skills', commit, 'x/logo.png')).equals(binary), 'base64 with line breaks decodes to the bytes');
+      assert.ok((await bytesApi.fileBytes('acme', 'skills', commit, 'big.bin')).equals(binary), 'over 1 MB: the blob');
+      assert.ok(urls.includes(`repos/acme/skills/git/blobs/${sha}`));
+      await assert.rejects(bytesApi.fileBytes('acme', 'skills', commit, 'dir'), /GitHub gave no content for dir|is not a file/);
     }
 
     // A session already there is used, silently, from the first request.

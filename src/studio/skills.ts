@@ -77,6 +77,8 @@ export interface SkillSourceApi {
   /** Every file path in the repository at that commit. */
   tree(owner: string, repo: string, commit: string, host?: string): Promise<string[]>;
   file(owner: string, repo: string, commit: string, filePath: string, host?: string): Promise<string>;
+  /** The file's bytes exactly as stored (scripts may be binary, or text whose line ends must not change). */
+  fileBytes(owner: string, repo: string, commit: string, filePath: string, host?: string): Promise<Buffer>;
 }
 
 export class SkillError extends Error {}
@@ -219,14 +221,14 @@ export class SkillLibrary {
     try {
       let total = 0;
       for (const [index, name] of names.entries()) {
-        const text = await this.api.file(owner, repo, commit, name, host);
-        const bytes = Buffer.byteLength(text);
+        const data = await this.api.fileBytes(owner, repo, commit, name, host);
+        const bytes = data.length;
         if (bytes > MAX_SCRIPT_FILE_BYTES) { return await keep([], `${relative[index]} is larger than ${MAX_SCRIPT_FILE_BYTES / 1024 / 1024} MB`); }
         total += bytes;
         if (total > MAX_SCRIPT_TOTAL_BYTES) { return await keep([], `its scripts are more than ${MAX_SCRIPT_TOTAL_BYTES / 1024 / 1024} MB together`); }
         const target = path.join(staging, relative[index].slice('scripts/'.length));
         await fs.mkdir(path.dirname(target), { recursive: true });
-        await fs.writeFile(target, text);
+        await fs.writeFile(target, data);
       }
       const scripts = path.join(dir, 'scripts');
       await fs.rm(scripts, { recursive: true, force: true });

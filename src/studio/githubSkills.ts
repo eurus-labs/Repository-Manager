@@ -241,6 +241,21 @@ export class GitHubSkillApi implements SkillSourceApi {
     const route = `repos/${owner}/${repo}/contents/${filePath.split('/').map(encodeURIComponent).join('/')}?ref=${commit}`;
     return this.get(route, 'application/vnd.github.raw', host);
   }
+
+  /**
+   * The file's bytes: the contents API answers base64, which is decoded without any text step. A file
+   * over 1 MB comes without content (encoding "none"): it is read as a blob by its sha, also base64.
+   */
+  async fileBytes(owner: string, repo: string, commit: string, filePath: string, host?: string): Promise<Buffer> {
+    const route = `repos/${owner}/${repo}/contents/${filePath.split('/').map(encodeURIComponent).join('/')}?ref=${commit}`;
+    const info = await this.json<{ type?: string; encoding?: string; content?: string; sha?: string }>(route, host);
+    if (info.type && info.type !== 'file') { throw new SkillError(`${filePath} is not a file.`); }
+    if (info.encoding === 'base64' && typeof info.content === 'string') { return Buffer.from(info.content, 'base64'); }
+    if (!info.sha || !/^[0-9a-f]{40}$/.test(info.sha)) { throw new SkillError(`GitHub gave no content for ${filePath}.`); }
+    const blob = await this.json<{ encoding?: string; content?: string }>(`repos/${owner}/${repo}/git/blobs/${info.sha}`, host);
+    if (blob.encoding !== 'base64' || typeof blob.content !== 'string') { throw new SkillError(`GitHub gave no content for ${filePath}.`); }
+    return Buffer.from(blob.content, 'base64');
+  }
 }
 
 export function studioSkills(context: vscode.ExtensionContext, api: SkillSourceApi & { signIn?(force: boolean, host?: string): Promise<string | undefined> } = new GitHubSkillApi()): StudioSkills {
