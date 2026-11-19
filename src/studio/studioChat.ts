@@ -284,7 +284,7 @@ export class StudioChatProvider implements vscode.WebviewViewProvider {
     try {
       const skills = await this.cachedSkills();
       const scripts = this.root ? Object.keys(readScripts(this.root)) : undefined;
-      const draft = await draftPlan(studioModel(this.context), this.steps, { message: text, current: conversation.plan, history: earlier, model: conversation.model, skills, scripts }, signal);
+      const draft = await draftPlan(studioModel(this.context), this.steps, { message: text, current: conversation.plan, history: earlier, model: conversation.model, skills, scripts, scriptsOff: this.scriptMode === 'off' }, signal);
       addDraft(conversation, draft);
       if (currentCard(conversation)?.draft?.workflow === draft.workflow) { await this.writeFile(); }
     } catch (error) {

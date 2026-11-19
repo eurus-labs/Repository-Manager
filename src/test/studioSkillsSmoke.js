@@ -260,11 +260,16 @@ async function main() {
     const script = [reply([invented]), reply([invented])];
     const model = { complete: async prompt => { prompts.push(prompt); return { text: JSON.stringify(script.shift()), model: 'Scripted' }; } };
     const draft = await draftPlan(model, steps, { message: 'Plan it', history: [], skills: offered }, never);
-    assert.match(prompts[0], new RegExp(`Available skills:\\n- ${offered[0].ref.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&')}: write-tests\\. .*\\(its scripts are not run here\\)`));
+    assert.match(prompts[0], new RegExp(`Available skills:\\n- ${offered[0].ref.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&')}: write-tests\\. .*\\(its scripts run only in a code step, after the person approves it\\)`));
+    assert.doesNotMatch(prompts[0], /not run here/, 'with the setting on, the planner is not told the scripts are not run');
     assert.match(prompts[1], /is not one of the available skills/, 'the repair turn names the invented skill');
     assert.ok(draft.problems.some(problem => /is not one of the available skills/.test(problem.message)));
     const kept = await draftPlan({ complete: async () => ({ text: JSON.stringify(reply([offered[1].ref])), model: 'S' }) }, steps, { message: 'Plan it', history: [], skills: offered }, never);
     assert.deepEqual(kept.problems, []);
+    // With the setting `off` the caller says so, and the planner is told they are not run.
+    const offPrompts = [];
+    await draftPlan({ complete: async prompt => { offPrompts.push(prompt); return { text: JSON.stringify(reply(undefined)), model: 'S' }; } }, steps, { message: 'Plan it', history: [], skills: offered, scriptsOff: true }, never);
+    assert.match(offPrompts[0], /write-tests\. .*\(its scripts are not run here\)/);
     const none = [];
     await draftPlan({ complete: async prompt => { none.push(prompt); return { text: JSON.stringify(reply(undefined)), model: 'S' }; } }, steps, { message: 'x', history: [] }, never);
     assert.match(none[0], /No skills are available: do not add "skills"\./);
