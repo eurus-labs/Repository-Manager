@@ -11,7 +11,7 @@ const { execFileSync, spawnSync } = require('node:child_process');
 
 const out = name => require(path.join(__dirname, '../../out/studio', name));
 const {
-  chooseRunner, detectEngine, parseCall, planCall, runSkillScript, interpreterFor, parseSetting, containerNameFor, describeOutcome, describeRunner, IMAGES
+  chooseRunner, detectEngine, parseCall, planCall, runSkillScript, interpreterFor, parseSetting, containerNameFor, describeOutcome, describeRunner, IMAGES, killProcessTree
 } = out('skillScripts.js');
 
 const base = fs.mkdtempSync(path.join(os.tmpdir(), 'repository-manager-skill-scripts-'));
@@ -27,6 +27,12 @@ write(path.join(skillDir, 'scripts', 'hello.py'), [
 ].join('\n'));
 write(path.join(skillDir, 'scripts', 'env.py'), 'import os\nprint(sorted(os.environ))\nprint("SECRET=" + os.environ.get("RM_TEST_SECRET", "unset"))');
 write(path.join(skillDir, 'scripts', 'sleep.py'), 'import time\nprint("started", flush=True)\ntime.sleep(60)\nprint("finished")');
+write(path.join(skillDir, 'scripts', 'spawner.py'), [
+  'import subprocess, sys, time',
+  'subprocess.Popen([sys.executable, "-c", "import time; time.sleep(1); open(\'grandchild.txt\', \'w\').write(\'alive\')"])',
+  'print("started", flush=True)',
+  'time.sleep(60)'
+].join('\n'));
 write(path.join(skillDir, 'scripts', 'noisy.py'), 'import sys\nfor i in range(40000):\n    sys.stdout.write("line %06d xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\\n" % i)\nprint("LAST LINE")');
 write(path.join(skillDir, 'scripts', 'fail.py'), 'import sys\nprint("boom")\nsys.exit(3)');
 write(path.join(skillDir, 'scripts', 'network.py'), [
@@ -54,7 +60,7 @@ write(path.join(skillDir, 'scripts', 'run.sh'), 'echo "bash $1"');
 write(path.join(skillDir, 'scripts', 'types.ts'), 'console.log(1)');
 write(path.join(skillDir, 'scripts', 'sub', 'deep.py'), 'print("deep")');
 const skill = { name: 'tools', ref: `github:acme/skills/tools@${'a'.repeat(40)}`, dir: skillDir,
-  scripts: ['scripts/hello.py', 'scripts/env.py', 'scripts/sleep.py', 'scripts/noisy.py', 'scripts/fail.py', 'scripts/network.py', 'scripts/peek.py', 'scripts/tool.js', 'scripts/run.sh', 'scripts/types.ts', 'scripts/sub/deep.py'] };
+  scripts: ['scripts/hello.py', 'scripts/env.py', 'scripts/sleep.py', 'scripts/spawner.py', 'scripts/noisy.py', 'scripts/fail.py', 'scripts/network.py', 'scripts/peek.py', 'scripts/tool.js', 'scripts/run.sh', 'scripts/types.ts', 'scripts/sub/deep.py'] };
 const plan = (script, args = []) => planCall([skill], { skill: 'tools', script, args });
 const direct = { mode: 'direct' };
 const cancelSource = () => {
@@ -160,6 +166,38 @@ async function main() {
   assert.ok(slow.durationMs < 20_000, `killed at the limit, not after the script: ${slow.durationMs} ms`);
   assert.match(slow.output, /started/);
   assert.match(describeOutcome(slow, []), /^stopped: it ran past its time limit/);
+  // A process the script started is stopped with it: the grandchild never writes its file, and the call returns promptly.
+  if (process.platform !== 'win32') {
+    const tree = await runSkillScript(plan('scripts/spawner.py'), { root, runner: direct, containerName: 'x', timeoutMs: 300 });
+    assert.equal(tree.stopped, 'timeout');
+    assert.ok(tree.durationMs < 5_000, `returned at the limit: ${tree.durationMs} ms`);
+    await new Promise(resolve => setTimeout(resolve, 1500));
+    assert.equal(fs.existsSync(path.join(root, 'grandchild.txt')), false, 'the script\'s own child was killed with it');
+  }
+  // The kill strategy per platform: Windows kills the whole tree with taskkill (no shell) and waits for it; elsewhere the process group.
+  {
+    const spawned = [];
+    const fakeSpawn = (command, args, options) => {
+      spawned.push([command, args, options.shell]);
+      const handlers = {};
+      setTimeout(() => handlers.close && handlers.close(0), 20);
+      const fake = { on(event, handler) { handlers[event] = handler; return fake; } };
+      return fake;
+    };
+    const killed = [];
+    const fakeKill = (pid, signal) => { killed.push([pid, signal]); };
+    const started = Date.now();
+    assert.equal(await killProcessTree(4242, { platform: 'win32', spawn: fakeSpawn, kill: fakeKill }), 'taskkill');
+    assert.ok(Date.now() - started >= 15, 'it waited for taskkill to finish');
+    assert.deepEqual(spawned, [['taskkill', ['/pid', '4242', '/T', '/F'], false]]);
+    assert.deepEqual(killed, []);
+    assert.equal(await killProcessTree(4242, { platform: 'linux', spawn: fakeSpawn, kill: fakeKill }), 'group');
+    assert.deepEqual(killed, [[-4242, 'SIGKILL']]);
+    assert.equal(spawned.length, 1, 'no taskkill on POSIX');
+    // taskkill that cannot start: the caller is told, so it can kill the one process it has.
+    const broken = () => { const fake = { on(event, handler) { if (event === 'error') { setTimeout(() => handler(new Error('ENOENT')), 5); } return fake; } }; return fake; };
+    assert.equal(await killProcessTree(7, { platform: 'win32', spawn: broken, kill: fakeKill }), 'failed');
+  }
   const noisy = await runSkillScript(plan('scripts/noisy.py'), { root, runner: direct, containerName: 'x' });
   assert.equal(noisy.exitCode, 0);
   assert.equal(noisy.cut, true);

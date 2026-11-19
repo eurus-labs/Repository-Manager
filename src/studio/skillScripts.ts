@@ -184,6 +184,37 @@ const quote = (value: string): string => /^[\w@%+=:,./-]+$/.test(value) ? value 
 /** The container's name for the n-th call of a run. */
 export const containerNameFor = (runId: string, n: number): string => `repository-manager-${runId.replace(/[^A-Za-z0-9_.-]/g, '-').slice(0, 40)}-${n}`;
 
+/** What `killProcessTree` needs from the machine; tests give their own. */
+export interface KillOptions {
+  platform?: NodeJS.Platform;
+  spawn?: (command: string, args: string[], options: { shell: false; stdio: 'ignore'; windowsHide: true }) => Pick<ChildProcess, 'on'>;
+  kill?: (pid: number, signal: NodeJS.Signals) => void;
+}
+
+/**
+ * Stops a process and everything it started. Windows has no process groups: `taskkill /T /F` ends the
+ * whole tree, and the call waits for it, so no descendant keeps changing files or holding the pipes
+ * after the call returns. Elsewhere the process was started detached, so its group is killed.
+ * Returns what was used, or "failed" when taskkill could not run (the caller then kills the one process it has).
+ */
+export async function killProcessTree(pid: number, options: KillOptions = {}): Promise<'taskkill' | 'group' | 'failed'> {
+  const platform = options.platform ?? process.platform;
+  if (platform === 'win32') {
+    const start = options.spawn ?? ((command, args, spawnOptions) => spawn(command, args, spawnOptions));
+    return await new Promise<'taskkill' | 'failed'>(resolve => {
+      let done = false;
+      const finish = (result: 'taskkill' | 'failed') => { if (!done) { done = true; clearTimeout(timer); resolve(result); } };
+      const timer = setTimeout(() => finish('failed'), 15_000);
+      try {
+        start('taskkill', ['/pid', String(pid), '/T', '/F'], { shell: false, stdio: 'ignore', windowsHide: true })
+          .on('error', () => finish('failed'))
+          .on('close', code => finish(code === 0 ? 'taskkill' : 'failed'));
+      } catch { finish('failed'); }
+    });
+  }
+  try { (options.kill ?? process.kill)(-pid, 'SIGKILL'); return 'group'; } catch { return 'failed'; }
+}
+
 interface Captured { code: number | null; output: string; cut: boolean; stopped?: 'timeout' | 'cancelled'; error?: NodeJS.ErrnoException }
 
 /**
@@ -198,6 +229,8 @@ function capture(command: string, args: string[], options: { cwd?: string; env?:
     let error: NodeJS.ErrnoException | undefined;
     const posix = process.platform !== 'win32';
     let child: ChildProcess;
+    // What stopping started: the result waits for it, so nothing is still running when the call returns.
+    let killing: Promise<void> | undefined;
     try {
       child = spawn(command, args, { cwd: options.cwd, env: options.env, stdio: ['ignore', 'pipe', 'pipe'], shell: false, detached: posix });
     } catch (thrown) { resolve({ code: null, output: '', cut: false, error: thrown as NodeJS.ErrnoException }); return; }
@@ -210,11 +243,13 @@ function capture(command: string, args: string[], options: { cwd?: string; env?:
     const kill = (why: 'timeout' | 'cancelled') => {
       if (stopped) { return; }
       stopped = why;
-      void (async () => {
+      const killed = (async () => {
         // A container is removed by name: killing the CLI would leave it running.
         try { await options.stop?.(); } catch { /* removed or never started */ }
-        try { if (posix && child.pid) { process.kill(-child.pid, 'SIGKILL'); } else { child.kill('SIGKILL'); } } catch { try { child.kill('SIGKILL'); } catch { /* gone */ } }
+        const tree = child.pid ? await killProcessTree(child.pid) : 'failed';
+        if (tree === 'failed') { try { child.kill('SIGKILL'); } catch { /* gone */ } }
       })();
+      killing = killed;
     };
     const timer = setTimeout(() => kill('timeout'), options.timeoutMs);
     if (options.token?.isCancellationRequested) { kill('cancelled'); }
@@ -223,7 +258,7 @@ function capture(command: string, args: string[], options: { cwd?: string; env?:
     child.on('close', code => {
       clearTimeout(timer);
       listener?.dispose();
-      resolve({ code, output: buffer.toString('utf8'), cut, stopped, error });
+      void (killing ?? Promise.resolve()).then(() => resolve({ code, output: buffer.toString('utf8'), cut, stopped, error }));
     });
   });
 }
