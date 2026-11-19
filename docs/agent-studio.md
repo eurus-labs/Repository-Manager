@@ -299,8 +299,11 @@ All optional, so every 2.19.0 workflow stays valid:
   their read tool; prompt steps get the files the skill names, within the
   input limit).
 - **Limits, said plainly in the picker:**
-  - scripts in a skill (`scripts/`, often Python) are **not run**; a skill
-    that depends on them is marked "uses scripts: not run here";
+  - a skill's scripts (`scripts/`, often Python) run only in a **code** step,
+    after the person approves the step (roadmap item 6); a prompt
+    step has no tools, so a skill that depends on its scripts says "uses
+    scripts: this step type has no tools, so they are not run here; use a
+    code step", and with the setting `off` "turned off in settings";
   - a skill is instructions the model follows, so adding one is trusting its
     repository. The first use of a source asks once, per source, showing its
     URL; skills never lift the engine's gates.
@@ -665,7 +668,13 @@ side panel (the chat's plan card and the JSON do it; the diagram keeps it).
   `scripts/` or its text names a script file. Each commit's listing and each
   skill (with up to 5 files of its `references/`) are cached in global
   storage (`studio/skills/<owner>/<repo>/<commit>/`); a cached commit is never
-  fetched again, so pinned skills work offline.
+  fetched again, so pinned skills work offline. The files of a skill's
+  `scripts/` folder are downloaded at the first load of the skill (not when
+  the source is listed), at its pinned commit, into the skill's cache folder:
+  at most 300 files, 2 MB each and 20 MB per skill. Over a limit, or if a
+  path is not a plain relative one, the skill still loads and its scripts are
+  marked unavailable with the reason (a failed download is retried on the
+  next load).
 - **GitHub** (`src/studio/githubSkills.ts`). The REST API with the VS Code
   GitHub session (`repo` scope). A session the person already has is found
   silently; without one, repositories are read anonymously (public ones
@@ -710,7 +719,7 @@ side panel (the chat's plan card and the JSON do it; the diagram keeps it).
   settings). **Manage Skill Sources** (chat title bar) adds or removes one; a
   removed source's pinned skills keep working from the cache. Then the
   listing of the chosen sources, pinned to the commit listed now; a
-  chip per skill (⚠ when it uses scripts), removable. The planner is offered
+  chip per skill (⚠ when it uses scripts that will not run), removable. The planner is offered
   the skills listed before (from the cache, no request) and may attach only
   those or ones the plan already has; another is a problem and gets the
   repair turn. A newer commit of a skill is taken by adding it again.
@@ -942,7 +951,7 @@ comes before phase 6.
 | 3 | Playwright and CI | Upgrade the dependency and lockfile, check Chromium, every UI test and the VSIX. Keep the pinned runner that works; plan when to check the next upgrade rather than moving back to `ubuntu-latest`. *Done:* `playwright-core` 1.56.1 → 1.65.1 on `ubuntu-24.04`. To check for a runner upgrade, at each Playwright upgrade and about every six months: look for `ubuntu26.04-x64` in the installed `playwright-core` (`grep -o 'ubuntu2[0-9.]*-x64' -rh node_modules/playwright-core/lib \| sort -u`), then try a pull request that changes only `runs-on` in `.github/workflows/build-vsix.yml` and run CI on it. Merge it only if `npx playwright-core install --with-deps chromium` and every UI test pass. |
 | 4 | Split `webview.js` further | Settle state ownership and message routing; change the script loader and the test harness first, then one feature at a time; check repository switches, stale replies and restored state. Its own pull requests, apart from Studio behavior. *Done:* the script loader (`DASHBOARD_SCRIPTS`) and the test harness (`loadDashboard`); the state of Uncommitted changes (`dashboardWorkingTree.js`) and of the Commit dialog (`dashboardCommitDialog.js`), with page-level tests for stale previews and per-repository drafts; the History's loading state (loaded commits, upstream, request id, next offset, Load more pending, viewport, filters per repository: `dashboardHistory.js`), with a page-level test that a reply for an older request or another repository does not replace the rows. Next: the History's rendering and graph, or the Branches state. |
 | 5 | Review step (phase 4) | The review engine as a step: findings, verdict and evidence; review history in the Studio linked to the run, node and reviewed revision. A finished review is distinct from a passing one. |
-| 6 | Skill scripts in the Studio | Today a skill's `scripts/` are not run (the picker says "uses scripts: not run here"), so a skill whose work is in its scripts, such as `document-codebase`, does less than in Claude Code or Copilot. Two ways to run a script *(decided 2026-11-17)*: in a **container** when Docker or Podman is available (isolated, the same interpreter and packages on every machine, the image shared with item 8), else **directly on the machine** with the person's interpreter, not isolated, which the Studio says plainly before each run. A separate OS sandbox is not built: on Linux it uses the same kernel isolation a container does, and on macOS and Windows each would need its own mechanism. Every script is approved before it runs, showing the source, the pinned commit and the command; still to decide: what a container may reach (files, network). A script runs only from the skill's pinned commit, with a timeout and an output limit; a missing interpreter is said, not guessed around; its file changes are tracked and undone like a check script's (#139). Done when a skill's script pipeline runs in a step after approval, its changes are reviewed and undone on Stop, and a refused or failed script ends the step with the reason. |
+| 6 | Skill scripts in the Studio | **Shipped in 3.7.0** (plan 6, `docs/plans/plan-6-studio-skill-scripts.md`). A Studio **code** step whose skills have scripts is offered the tool `run_skill_script` (skill, script path as its SKILL.md writes it, args); prompt steps stay toolless. The step's approval lists each skill, its source, short commit, the script files and the runner; approving the step approves those scripts for that run. The runner follows the setting `repositoryManager.studio.skillScripts`: `auto` (a **container** when `docker version` or else `podman version` answers within 5 s, otherwise **directly on the machine**, not isolated, which the approval says plainly), `container` (never direct: no engine fails the call), `direct`, `off`. The choice is made when the approval is built and is the one used. *What a container may reach (decided 2026-11-18, closing the open question):* the repository read-write at `/work` (the working directory), the skill's cached folder read-only at `/skill`, no network, no home folder, no environment variables (only `HOME=/tmp`), a read-only root file system with a writable `/tmp`, the person's user and group ids (not on Windows), `--pids-limit 256` and `--memory 1g`. Images are the official slim `python`, `node` and `debian` images pinned by digest, chosen by the script's extension (`.py`, `.js` `.mjs` `.cjs`, `.sh`), with no package installation; the image is pulled before the first run that needs it, with its own 10-minute limit. A direct run uses `execFile`-style argument arrays (no shell) and an environment reduced to `PATH`, the home folder, `LANG`, `SystemRoot`, `TEMP` and `TMP`. A script runs only from the cached files at the skill's pinned commit, with a 5-minute limit and the last 64 KB of output; Stop and a timeout kill it, and a container is removed by name. Each call runs inside the step's tracked workspace, so what it changes in the repository is reviewed and undone like a check script's (#139), and each call's exact command, runner, exit code and duration are logged, shown in the step's Activity and in the review. Not built: tools in prompt steps, a `skill.script` step type, package installation, our own image (item 8), network access, PowerShell and `.ts`, an approval remembered across runs. |
 | 7 | MCP steps (phase 5) | One whole Jira workflow: plan → preview → approval → create issue → write the key back to the plan; mapping, partial failures, and resuming without duplicate issues. The MCP server is chosen first. |
 | 8 | Container (phase 6) | A CLI that runs workflows outside VS Code first, then the image: model provider, credentials, run storage and approvals over CLI or HTTP; a restart continues a waiting run. |
 | 9 | Files dropped into the Studio Chat | Drag files from the Explorer or an editor tab into the chat's message box to add them as context, as Copilot Chat does: each becomes a removable chip; the planner gets their text within its input limit; a file outside the workspace, a binary or one over the size limit is refused with the reason. VS Code only hands a webview a file dropped with Shift held, so the box says so, and an **Add file…** button (a host file picker) does the same without dragging. Done when dropping from both places and the button add the same chips, and the plan the planner writes can cite them. |

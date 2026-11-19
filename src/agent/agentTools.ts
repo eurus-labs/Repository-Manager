@@ -35,9 +35,18 @@ export interface ToolHost {
   runScript(script: string): Promise<CheckResult>;
   /** Records each write before it happens, so a step cut short can be undone on the next start (#140). */
   journal?: { record(entry: { path: string; before: string | null; after: string | null }): void };
+  /** Only in a Studio code step whose skills have scripts. */
+  skillScripts?: SkillScriptHost;
 }
 
-export interface ToolOutcome { ok: boolean; content: string; note: string }
+/** What a Studio code step gives for running a skill's scripts (src/studio/skillScripts.ts); the dashboard Agent has none. */
+export interface SkillScriptHost {
+  /** Checks a call: throws the reason when it is refused, and then nothing runs. */
+  prepare(input: Record<string, unknown>): { run(): Promise<{ text(changed: string[]): string; note: string }> };
+}
+
+/** `logged`: the tool reported itself to the run's log, so the loop does not log it again. */
+export interface ToolOutcome { ok: boolean; content: string; note: string; logged?: boolean }
 
 export const TOOL_SPECS: Record<AgentToolName, ToolSpec> = {
   read_file: {
@@ -69,6 +78,11 @@ export const TOOL_SPECS: Record<AgentToolName, ToolSpec> = {
     name: 'run_check',
     description: 'Run one of the repository scripts allowed for this task (for example "test") and get its exit code and the end of its output.',
     input_schema: { type: 'object', properties: { script: { type: 'string' } }, required: ['script'] }
+  },
+  run_skill_script: {
+    name: 'run_skill_script',
+    description: 'Run a script of one of this step\'s skills, from the repository root. skill: the skill\'s name. script: its path in the skill\'s folder as its SKILL.md writes it (such as scripts/pipeline.py; .py, .js, .mjs, .cjs and .sh run). args: text arguments (at most 64). Returns the exit code, the end of the output and the files it changed.',
+    input_schema: { type: 'object', properties: { skill: { type: 'string' }, script: { type: 'string' }, args: { type: 'array', items: { type: 'string' } } }, required: ['skill', 'script'] }
   }
 };
 
@@ -129,6 +143,7 @@ export class StepWorkspace {
         case 'edit_file': return this.editFile(input);
         case 'create_file': return this.createFile(input);
         case 'run_check': return await this.runCheck(input);
+        case 'run_skill_script': return await this.runSkillScript(input);
       }
       throw new Error(`Unknown tool ${name}`);
     } catch (error) {
@@ -287,6 +302,16 @@ export class StepWorkspace {
     }
     const result = await this.tracked(() => this.host.runScript(input.script as string));
     return { ok: true, content: `exit code ${result.exitCode}\n${result.output}`, note: `${input.script}: ${result.passed ? 'passed' : 'failed'}` };
+  }
+
+  private async runSkillScript(input: Record<string, unknown>): Promise<ToolOutcome> {
+    if (!this.host.skillScripts) { throw new Error('This step has no skill scripts to run.'); }
+    // Refused before anything is compared or run.
+    const prepared = this.host.skillScripts.prepare(input);
+    const known = new Map([...this.changes].map(([file, change]) => [file, change.after]));
+    const result = await this.tracked(() => prepared.run());
+    const changed = [...this.changes].filter(([file, change]) => !known.has(file) || known.get(file) !== change.after).map(([file]) => file).sort();
+    return { ok: true, content: result.text(changed), note: result.note, logged: true };
   }
 
   /**

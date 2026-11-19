@@ -12,7 +12,10 @@ import { WriteJournal } from '../agent/writeJournal';
 import * as fs from 'fs';
 import { isDocumentation } from '../agent/agentRunner';
 import { AgentToolName, AiTextWarning, CheckResult, FileChange, ScriptEffectNote, StepVerification, ToolCallRecord } from '../agent/types';
-import { skillsPrompt } from './skills';
+import { parseSkillRef, skillsPrompt } from './skills';
+import {
+  chooseRunner, containerNameFor, describeOutcome, describeRunner, imageName, interpreterFor, parseCall, parseSetting, planCall, runnable, runSkillScript, ScriptRunner, ScriptSkill
+} from './skillScripts';
 import { StepContext, StepDefinition, StepError } from './steps';
 
 export const CODE_ATTEMPTS = 3;
@@ -28,7 +31,21 @@ export interface CodeResult {
   aiText: AiTextWarning[];
   /** What scripts changed outside the step's paths or that cannot be undone (#139). */
   scriptNotes?: ScriptEffectNote[];
+  /** Skill scripts the model ran (plan 6): what ran, where, and how it ended. */
+  skillScripts?: SkillScriptRun[];
   verification: StepVerification;
+}
+
+export interface SkillScriptRun {
+  skill: string;
+  script: string;
+  /** Interpreter, script path and arguments, as they ran inside the skill. */
+  command: string;
+  runner: 'container' | 'direct';
+  engine?: string;
+  exitCode: number | null;
+  durationMs: number;
+  stopped?: 'timeout' | 'cancelled';
 }
 
 const SYSTEM = [
@@ -97,6 +114,7 @@ export function codePreview(result: CodeResult): string {
     `Branch: ${result.branch}`,
     result.checks.length ? `Checks:\n${result.checks.map(check => `${check.passed ? '✓' : '✗'} ${check.script} (exit ${check.exitCode})${check.passed ? '' : `\n${check.output.slice(-1500)}`}`).join('\n')}` : 'Checks: none',
     result.aiText.length ? `Text in the repository speaks to an AI; the step read it. Check the change follows the plan:\n${result.aiText.map(item => `${item.path}:${item.line} ${item.text}`).join('\n')}` : '',
+    result.skillScripts?.length ? `Skill scripts that ran:\n${result.skillScripts.map(run => `${run.command} (${run.skill}, ${run.runner === 'container' ? `container, ${run.engine}` : 'directly on this machine'}): ${run.stopped ? `stopped (${run.stopped})` : `exit ${run.exitCode}`}, ${(run.durationMs / 1000).toFixed(1)} s`).join('\n')}` : '',
     result.scriptNotes?.length ? `A script changed files this review cannot fully cover. Changes it made to text files are listed below and are undone with the step; check the rest with Git:\n${result.scriptNotes.map(note => `${note.path}: ${note.reason}`).join('\n')}` : '',
     files.length ? `Changes:\n${files.join('\n\n')}` : 'No file changed.'
   ].filter(Boolean).join('\n\n');
@@ -151,7 +169,8 @@ async function converse(context: StepContext, system: string, input: string, wor
     calls++;
     const outcome: ToolOutcome = await workspace.invoke(use.name, use.input);
     record({ name: use.name, input: use.input, ok: outcome.ok, note: outcome.note });
-    context.log({ type: 'tool', node: context.node.id, name: use.name, ok: outcome.ok, note: outcome.note });
+    // A skill script reports itself (type skill-script), so Activity shows the call once.
+    if (!outcome.logged) { context.log({ type: 'tool', node: context.node.id, name: use.name, ok: outcome.ok, note: outcome.note }); }
     messages.push({ role: 'assistant', content: [use] },
       { role: 'user', content: [{ type: 'tool_result', tool_use_id: use.id, content: outcome.content, is_error: !outcome.ok }] });
   }
@@ -168,6 +187,81 @@ function settings(input: Record<string, unknown>): { task: string; paths: string
   if (input.branch !== undefined && input.branch !== '' && !branch) { throw new StepError('"branch" is the name of a new branch.'); }
   if (branch && !validBranchName(branch)) { throw new StepError(`"${branch}" is not a branch name Git accepts.`); }
   return { task, paths: [...new Set(paths)], checks: [...new Set(list(input.checks))], branch };
+}
+
+/** The skills of a step whose scripts the tool may run (those with a runnable file in their cached folder). */
+function scriptSkills(context: StepContext): ScriptSkill[] {
+  return (context.skills ?? [])
+    .filter(skill => skill.dir && Array.isArray(skill.scripts) && skill.scripts.some(runnable))
+    .map(skill => ({ name: skill.name, ref: skill.ref, dir: skill.dir!, scripts: skill.scripts }));
+}
+
+const approvedKey = (context: StepContext) => `skillScripts:${context.node.id}`;
+
+/** What the preview offered and the person approved for a step: the runner, and per skill the exact script files listed. */
+interface ApprovedScripts { runner: ScriptRunner; skills: { ref: string; scripts: string[] }[] }
+
+const validRunner = (value: unknown): value is ScriptRunner => {
+  const item = value as { mode?: unknown; engine?: unknown } | undefined;
+  return Boolean(item) && (item!.mode === 'direct' || item!.mode === 'off' || (item!.mode === 'container' && (item!.engine === undefined || item!.engine === 'docker' || item!.engine === 'podman')));
+};
+
+function validApproved(value: unknown): value is ApprovedScripts {
+  const item = value as Partial<ApprovedScripts> | undefined;
+  return Boolean(item) && validRunner(item!.runner) && Array.isArray(item!.skills)
+    && item!.skills.every(skill => Boolean(skill) && typeof skill.ref === 'string' && Array.isArray(skill.scripts) && skill.scripts.every(script => typeof script === 'string'));
+}
+
+/**
+ * What the approval covers, recorded in the run's data when the preview is built (Decisions 2 and 5):
+ * the runner chosen then (an engine that stopped answering since fails the call, it is never swapped for
+ * a direct run) and the script files listed. Retry keeps it. No record (a run approved before this
+ * existed) or an "off" runner means no tool.
+ */
+async function approveScripts(context: StepContext): Promise<ApprovedScripts> {
+  const services = context.code?.skillScripts;
+  const offered = services ? scriptSkills(context) : [];
+  let approved: ApprovedScripts = { runner: { mode: 'off' }, skills: [] };
+  if (services && offered.length && parseSetting(services.setting()) !== 'off') {
+    const runner = await chooseRunner(parseSetting(services.setting()), services.detect);
+    approved = { runner, skills: offered.map(skill => ({ ref: skill.ref, scripts: skill.scripts.filter(runnable) })) };
+  }
+  context.run.data[approvedKey(context)] = approved;
+  return approved;
+}
+
+/** The skills the tool may run scripts of now: the recorded approval, cut to the files cached now (never more than were listed). */
+function approvedSkills(context: StepContext, approved: ApprovedScripts): ScriptSkill[] {
+  return scriptSkills(context).flatMap(skill => {
+    const listed = approved.skills.find(item => item.ref === skill.ref);
+    const scripts = listed ? skill.scripts.filter(script => !runnable(script) || listed.scripts.includes(script)) : [];
+    return scripts.some(runnable) ? [{ ...skill, scripts }] : [];
+  });
+}
+
+/** What the person approves with the step for its skills' scripts (Decision 2): skill, source, commit, files, and how they run. */
+async function scriptsPreview(context: StepContext): Promise<string> {
+  const unavailable = (context.skills ?? []).filter(skill => skill.scriptsUnavailable).map(skill => `- ${skill.name}: scripts not available (${skill.scriptsUnavailable})`);
+  const offered = context.code?.skillScripts ? scriptSkills(context) : [];
+  const { runner } = await approveScripts(context);
+  if (!offered.length) { return unavailable.length ? `Skill scripts not run:\n${unavailable.join('\n')}` : ''; }
+  if (runner.mode === 'off') {
+    return `Skill scripts: turned off in the settings (repositoryManager.studio.skillScripts), so the scripts of ${offered.map(skill => skill.name).join(', ')} are not run.`;
+  }
+  const lines = offered.map(skill => {
+    const ref = parseSkillRef(skill.ref);
+    const files = skill.scripts.filter(runnable);
+    // Every file the tool may run is named: the person approves exactly this list.
+    return `- ${skill.name} (${ref.source} @ ${ref.commit.slice(0, 7)}): ${files.join(', ')}`;
+  });
+  const images = [...new Set(offered.flatMap(skill => skill.scripts.filter(runnable)).map(script => imageName(interpreterFor(script)!.image)))];
+  return [
+    'Skill scripts the step may run (run_skill_script; approving the step approves these for this run):',
+    ...lines, ...unavailable,
+    `How they run: ${describeRunner(runner)}`,
+    runner.mode === 'container' && runner.engine ? `Images (pulled once if missing): ${images.join(', ')}` : '',
+    'Each call (interpreter, script, arguments, runner, exit code) is logged and shown in Activity and in the review. What a script changes in the repository is reviewed and undone with the step.'
+  ].filter(Boolean).join('\n');
 }
 
 export const codeStep: StepDefinition = {
@@ -190,8 +284,9 @@ export const codeStep: StepDefinition = {
       `May change: ${paths.join(', ')}`,
       `Checks after it: ${checks.join(', ') || 'none: a code change it makes can only be accepted as unverified'}`,
       `Branch: ${where}`,
-      'It reads files of this repository and sends what it reads to the model. You review its changes and checks before they are kept.'
-    ].join('\n');
+      'It reads files of this repository and sends what it reads to the model. You review its changes and checks before they are kept.',
+      await scriptsPreview(context)
+    ].filter(Boolean).join('\n');
   },
 
   async run(input, context) {
@@ -236,9 +331,41 @@ export const codeStep: StepDefinition = {
     // The run's Cancel reaches a running check too: the npm script is stopped, not waited out.
     const token = cancelToken(context.signal);
     const tools: AgentToolName[] = checks.length ? ['edit_file', 'create_file', 'run_check'] : ['edit_file', 'create_file'];
+    // Skill scripts: the tool only when a loaded skill has scripts and the approved runner is not "off".
+    const kept = context.run.data[approvedKey(context)];
+    const approved = validApproved(kept) ? kept : undefined;
+    const settingOff = !context.code?.skillScripts || parseSetting(context.code.skillScripts.setting()) === 'off';
+    const offered = approved && !settingOff ? approvedSkills(context, approved) : [];
+    const runner: ScriptRunner = approved && offered.length ? approved.runner : { mode: 'off' };
+    const scriptsOn = offered.length > 0 && runner.mode !== 'off';
+    if (scriptsOn) { tools.push('run_skill_script'); }
+    const scriptRuns: SkillScriptRun[] = [];
+    let scriptCalls = 0;
+    const skillScripts = scriptsOn ? {
+      prepare: (call: Record<string, unknown>) => {
+        const planned = planCall(offered, parseCall(call));
+        const name = containerNameFor(context.run.id, ++scriptCalls);
+        return {
+          async run() {
+            const outcome = await runSkillScript(planned, {
+              root: fs.realpathSync(root), runner, containerName: name, token,
+              timeoutMs: code.skillScripts?.limits?.timeoutMs, pullTimeoutMs: code.skillScripts?.limits?.pullTimeoutMs,
+              onPull: image => context.log({ type: 'skill-script', node: context.node.id, phase: 'pull', image: imageName(image) })
+            });
+            scriptRuns.push({ skill: planned.skill.name, script: planned.script, command: outcome.command, runner: outcome.runner, engine: outcome.engine, exitCode: outcome.exitCode, durationMs: outcome.durationMs, stopped: outcome.stopped });
+            context.log({
+              type: 'skill-script', node: context.node.id, skill: planned.skill.name, script: planned.script, command: outcome.command, runner: outcome.runner,
+              ...(outcome.engine ? { engine: outcome.engine, name } : {}), exitCode: outcome.exitCode, durationMs: outcome.durationMs, ok: outcome.exitCode === 0 && !outcome.stopped,
+              ...(outcome.stopped ? { stopped: outcome.stopped } : {})
+            });
+            return { text: (changed: string[]) => describeOutcome(outcome, changed), note: `${planned.script} (${outcome.runner}): ${outcome.stopped ? outcome.stopped : `exit ${outcome.exitCode}`}` };
+          }
+        };
+      }
+    } : undefined;
     // Each write is journaled first, so a step cut short by a closed window is undone on the next start (#140).
     const journal = context.journalFile ? new WriteJournal(context.journalFile, fs.realpathSync(root)) : undefined;
-    const workspace = new StepWorkspace({ root, isDirty: code.isDirty, allowedScripts: () => code.allowedScripts(root), runScript: script => code.runScript(root, script, token), journal }, { tools, paths });
+    const workspace = new StepWorkspace({ root, isDirty: code.isDirty, allowedScripts: () => code.allowedScripts(root), runScript: script => code.runScript(root, script, token), journal, skillScripts }, { tools, paths });
     const toolCalls: ToolCallRecord[] = [];
     try {
       const input = [
@@ -247,7 +374,7 @@ export const codeStep: StepDefinition = {
         `This step: ${task}\nPaths it may change: ${paths.join(', ')}\nChecks run after it: ${checks.join(', ') || 'none'}`,
         context.feedback ? `An earlier attempt of this step was retried. What went wrong:\n${context.feedback}` : ''
       ].filter(Boolean).join('\n\n');
-      const system = [SYSTEM, skillsPrompt(context.skills ?? [])].filter(Boolean).join('\n\n');
+      const system = [SYSTEM, skillsPrompt(context.skills ?? [], undefined, scriptsOn)].filter(Boolean).join('\n\n');
       const final = await converse(context, system, input, workspace, token, call => toolCalls.push(call));
       const summary = final.final && typeof final.final === 'object' ? (final.final as { summary?: unknown }).summary : final.summary;
       const results: CheckResult[] = [];
@@ -263,7 +390,7 @@ export const codeStep: StepDefinition = {
       const changes = [...workspace.changes.values()];
       const result: CodeResult = {
         summary: typeof summary === 'string' ? summary.trim().slice(0, 2000) : '', branch, changes, checks: results, toolCalls,
-        aiText: workspace.aiText, scriptNotes: workspace.scriptNotes, verification: codeVerification(changes, results)
+        aiText: workspace.aiText, scriptNotes: workspace.scriptNotes, ...(scriptRuns.length ? { skillScripts: scriptRuns } : {}), verification: codeVerification(changes, results)
       };
       return result;
     } catch (error) {

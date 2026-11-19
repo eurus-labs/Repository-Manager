@@ -35,6 +35,7 @@ const lmModel = (family, name) => ({
   }
 });
 let viewProvider;
+const quickPicks = [];
 const fakeVscode = {
   Uri: { file: fileUri, joinPath: (uri, ...parts) => fileUri(path.join(uri.fsPath, ...parts)) },
   Range: class {}, WorkspaceEdit: class { replace() {} },
@@ -44,7 +45,7 @@ const fakeVscode = {
   workspace: { textDocuments: [] },
   window: {
     registerWebviewViewProvider: (_id, provider) => { viewProvider = provider; return { dispose() {} }; }, showWarningMessage: async () => undefined,
-    showQuickPick: async items => items[0]
+    showQuickPick: async items => { quickPicks.push(items); return items[0]; }
   },
   commands: { registerCommand: () => ({ dispose() {} }), executeCommand: async () => undefined }
 };
@@ -98,12 +99,26 @@ async function main() {
 
   const ran = [];
   const commit = 'c'.repeat(40);
-  const skillList = [{ ref: `github:acme/skills/plugins/testing/skills/write-tests@${commit}`, name: 'write-tests', description: 'Tests first.', usesScripts: true }];
+  const skillRefOf = name => `github:acme/skills/plugins/testing/skills/${name}@${commit}`;
+  const skillList = [
+    { ref: skillRefOf('write-tests'), name: 'write-tests', description: 'Tests first.', usesScripts: true },
+    // Plan 6, Decision 10: scripts that will not run on a code step are said to be missing, with the reason.
+    { ref: skillRefOf('mention-only'), name: 'mention-only', description: 'Names a script it does not have.', usesScripts: true, noScriptFiles: true },
+    { ref: skillRefOf('too-big'), name: 'too-big', description: 'Has too many script files.', usesScripts: true }
+  ];
+  const loadedSkill = ref => {
+    const name = ref.replace(/^.*\/skills\//, '').replace(/@.*$/, '');
+    const base = { ref, name, description: '', usesScripts: true, body: '', references: {} };
+    if (name === 'mention-only') { return { ...base, scripts: [] }; }
+    if (name === 'too-big') { return { ...base, scripts: [], scriptsUnavailable: 'its scripts/ folder holds 301 files; at most 300 are cached' }; }
+    return { ...base, scripts: ['scripts/run.py'] };
+  };
   const runs = {
     steps: studioSteps(),
+    scriptRunner: async () => 'container',
     skills: {
       sources: () => ['acme/skills'], ensureTrusted: async () => true, cached: async () => [],
-      index: async () => ({ commit, skills: skillList }), load: async () => { throw new Error('not in this test'); }
+      index: async () => ({ commit, skills: skillList }), load: async ref => loadedSkill(ref)
     },
     run: async (workflow, _hash, onUpdate) => {
       ran.push(workflow);
@@ -256,10 +271,56 @@ async function main() {
     await codeCard.locator('[data-skills="summarize"] button.link').click();
     await coding.locator('[data-skills="summarize"] .chip').waitFor();
     assert.match(await coding.locator('[data-skills="summarize"] .chip').textContent(), /^write-tests ⚠×$/);
-    assert.match(await coding.locator('[data-skills="summarize"] .chip').getAttribute('title'), /Uses scripts: they are not run here\./);
+    assert.match(await coding.locator('[data-skills="summarize"] .chip').getAttribute('title'), /Uses scripts: this step type has no tools, so they are not run here; use a code step/, 'a prompt step does not run scripts');
+    // On the code step the same skill's scripts run after approval, in the runner the setting gives (plan 6): no warning sign.
+    await codeCard.locator('[data-skills="fix"] button.link').click();
+    await coding.locator('[data-skills="fix"] .chip').waitFor();
+    await coding.waitForFunction(() => /in a container\)/.test(document.querySelector('[data-skills="fix"] .chip').title));
+    assert.match(await coding.locator('[data-skills="fix"] .chip').getAttribute('title'), /Uses scripts: run in this step after your approval \(in a container\)/);
+    assert.equal(await coding.locator('[data-skills="fix"] .chip').textContent(), 'write-tests×', 'no warning where the scripts run');
+    assert.equal(await coding.locator('[data-skills="fix"] .chip .chip-warning').count(), 0);
     await snap(coding, '45-studio-chat-code-skills');
+    // Scripts that will not run on a code step keep the warning sign, with the reason: a skill that only
+    // mentions a script, and one whose scripts are over a limit (Decision 10).
+    quickPicks.length = 0;
+    await codeCard.locator('[data-skills="fix"] button.link').click();
+    await coding.locator('[data-skills="fix"] .chip:nth-child(2)').waitFor();
+    await codeCard.locator('[data-skills="fix"] button.link').click();
+    await coding.locator('[data-skills="fix"] .chip:nth-child(3)').waitFor();
+    const mention = coding.locator('[data-skills="fix"] .chip:nth-child(2)');
+    const big = coding.locator('[data-skills="fix"] .chip:nth-child(3)');
+    await coding.waitForFunction(() => /Mentions scripts but has none in its folder/.test(document.querySelector('[data-skills="fix"] .chip:nth-child(2)').title));
+    await coding.waitForFunction(() => /none could be loaded/.test(document.querySelector('[data-skills="fix"] .chip:nth-child(3)').title));
+    assert.equal(await mention.textContent(), 'mention-only ⚠×', 'a skill that only mentions a script has the warning sign on a code step');
+    assert.match(await mention.getAttribute('title'), /(^|\n)Mentions scripts but has none in its folder/);
+    assert.equal(await big.textContent(), 'too-big ⚠×');
+    assert.match(await big.getAttribute('title'), /Uses scripts: none could be loaded: its scripts\/ folder holds 301 files; at most 300 are cached/);
+    assert.equal(await coding.locator('[data-skills="fix"] .chip:nth-child(1) .chip-warning').count(), 0, 'the skill with script files still has no warning');
+    // The picker's detail says the same on a code step, from the host.
+    assert.match(quickPicks.flat().find(item => item.label === 'mention-only').detail, /mentions scripts but has none in its folder/);
+    for (const name of ['mention-only', 'too-big']) {
+      await coding.locator(`[data-skills="fix"] .chip:has-text("${name}") button`).click();
+      await coding.locator(`[data-skills="fix"] .chip:has-text("${name}")`).waitFor({ state: 'detached' });
+    }
+    await coding.locator('[data-skills="fix"] .chip button').click();
+    await coding.locator('[data-skills="fix"] .chip').waitFor({ state: 'detached' });
     await coding.locator('[data-skills="summarize"] .chip button').click();
     await coding.locator('[data-skills="summarize"] .chip').waitFor({ state: 'detached' });
+
+    // Directly on this machine, and turned off in the settings.
+    for (const [mode, title, warned] of [['direct', /\(directly on this machine\)/, false], ['off', /Uses scripts: turned off in settings/, true]]) {
+      const modePage = await open({ height: 700, runs: { ...runs, scriptRunner: async () => mode } });
+      const modePlan = plan();
+      modePlan.nodes.push({ id: 'fix', type: 'code', title: 'Fix the parser', with: { task: 'Fix the parser', paths: ['src/'], checks: ['test'] } });
+      modePlan.edges.push({ from: 'write', to: 'fix' });
+      replies.push({ reply: 'Plan.', workflow: modePlan });
+      await modePage.fill('#message', 'Fix the parser');
+      await modePage.press('#message', 'Enter');
+      await modePage.locator('.card[data-card="current"] [data-skills="fix"] button.link').click();
+      await modePage.locator('[data-skills="fix"] .chip').waitFor();
+      await modePage.waitForFunction(pattern => new RegExp(pattern).test(document.querySelector('[data-skills="fix"] .chip').title), title.source);
+      assert.equal(await modePage.locator('[data-skills="fix"] .chip .chip-warning').count(), warned ? 1 : 0, `${mode}: the warning sign only where the scripts will not run`);
+    }
 
     // A plan with no step that uses a model has no "Steps use" at all.
     const plain = await open({ height: 600 });

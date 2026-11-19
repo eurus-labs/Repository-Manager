@@ -31,6 +31,8 @@ export interface PlanRequest {
   skills?: SkillSummary[];
   /** The repository's package.json scripts: the only checks a code step may name. */
   scripts?: string[];
+  /** The setting `repositoryManager.studio.skillScripts` is `off`: no skill's scripts are run, in any step. */
+  scriptsOff?: boolean;
 }
 
 export interface PlanDiff {
@@ -103,7 +105,7 @@ function buildPrompt(request: PlanRequest, steps: Map<string, StepDefinition>): 
     `Step types:\n${stepCatalog(steps)}`,
     FORMAT,
     request.skills?.length
-      ? `Available skills:\n${request.skills.slice(0, 40).map(skill => `- ${skill.ref}: ${skill.name}. ${cut(skill.description, 300)}${skill.usesScripts ? ' (its scripts are not run here)' : ''}`).join('\n')}`
+      ? `Available skills:\n${request.skills.slice(0, 40).map(skill => `- ${skill.ref}: ${skill.name}. ${cut(skill.description, 300)}${skill.usesScripts ? (request.scriptsOff ? ' (its scripts are not run here)' : ' (its scripts run only in a code step, after the person approves it)') : ''}`).join('\n')}`
       : 'No skills are available: do not add "skills".',
     request.scripts
       ? (request.scripts.length ? `Repository scripts (the only names a code step's "checks" may use; prefer lint and tests): ${request.scripts.slice(0, 60).join(', ')}` : 'This repository has no package.json scripts: code steps have no checks, so their changes can only be accepted as unverified.')

@@ -3,11 +3,14 @@
  * (docs/agent-harness.md): implementation tasks are created by the developer who does them.
  */
 
-export type AgentToolName = 'read_file' | 'list_files' | 'search_code' | 'edit_file' | 'create_file' | 'run_check';
+export type AgentToolName = 'read_file' | 'list_files' | 'search_code' | 'edit_file' | 'create_file' | 'run_check' | 'run_skill_script';
 
 /** Tools that only read: every step may use them. */
 export const READ_TOOLS: readonly AgentToolName[] = ['read_file', 'list_files', 'search_code'];
-/** Tools that change the repository or run a command: only when the step lists them. */
+/**
+ * Tools that change the repository or run a command: only when the step lists them. `run_skill_script`
+ * is not here: only a Studio code step whose skills have scripts is given it (the Agent's planner never offers it).
+ */
 export const WRITE_TOOLS: readonly AgentToolName[] = ['edit_file', 'create_file', 'run_check'];
 export const ALL_TOOLS: readonly AgentToolName[] = [...READ_TOOLS, ...WRITE_TOOLS];
 

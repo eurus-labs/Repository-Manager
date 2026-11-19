@@ -8,7 +8,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { execFileSync } = require('node:child_process');
+const { execFileSync, spawnSync } = require('node:child_process');
 
 const out = name => require(path.join(__dirname, '../../out/studio', name));
 const { RunStore, WorkflowEngine } = out('engine.js');
@@ -36,7 +36,7 @@ const approved = ['check'];
 function router(turns, seen) {
   return {
     call: async (system, messages, tools) => {
-      seen.push({ system, first: messages[0].content, tools: tools.map(tool => tool.name) });
+      seen.push({ system, first: messages[0].content, tools: tools.map(tool => tool.name), messages: messages.slice() });
       const turn = turns.shift();
       assert.ok(turn, 'the script has no turn left');
       if (turn.tool) { return { stopReason: 'tool_use', content: [{ type: 'tool_use', id: `t${seen.length}`, name: turn.tool, input: turn.input }], usage: { inputTokens: 1, outputTokens: 1 }, modelId: 'scripted:1' }; }
@@ -479,6 +479,229 @@ async function main() {
     assert.ok(Date.now() - started < 5000, 'not waited out');
     assert.equal(state.status, 'stopped');
     assert.equal(fs.readFileSync(path.join(repo, 'src', 'value.txt'), 'utf8'), 'value = fixed\n', 'the change was undone');
+  }
+
+  // ---- Skill scripts (plan 6): the tool, the approval text, the tracked changes, the refusals.
+  {
+    const skillDir = path.join(base, 'skill-cache', 'tools');
+    fs.mkdirSync(path.join(skillDir, 'scripts'), { recursive: true });
+    fs.writeFileSync(path.join(skillDir, 'scripts', 'hello.py'), 'import os, sys\nos.makedirs("out", exist_ok=True)\nopen("out/hello.txt", "w").write("hello " + " ".join(sys.argv[1:]) + "\\n")\nprint("args", sys.argv[1:])\nprint("owner", os.getuid() if hasattr(os, "getuid") else "?")\n');
+    fs.writeFileSync(path.join(skillDir, 'scripts', 'types.ts'), 'console.log(1)');
+    const commit = 'c0ffee0'.padEnd(40, '1');
+    const ref = `github:acme/skills/tools@${commit}`;
+    const loaded = (extra = {}) => ({ ref, name: 'tools', description: 'd', usesScripts: true, body: 'Run `python3 scripts/hello.py x`.', references: {}, scripts: ['scripts/hello.py', 'scripts/types.ts'], dir: skillDir, ...extra });
+    const library = (skill = loaded()) => ({ load: async () => skill });
+    const flowWith = skills => workflow({ nodes: [{ id: 'sk', type: 'code', title: 'Run the skill', skills, with: { task: 'Generate the report', paths: ['src/'] } }] });
+    const hello = { tool: 'run_skill_script', input: { skill: 'tools', script: 'scripts/hello.py', args: ['a b', '$HOME'] } };
+    const start = async (svc, skills, skillLibrary = library(), flow = flowWith(skills)) => {
+      const store = new RunStore(path.join(base, 'runs'));
+      const engine = new WorkflowEngine({ root: repo, steps, store, code: svc, skills: skillLibrary });
+      return { engine, store, flow, state: await engine.continue(flow, await engine.start(flow, 'hash', {}), never) };
+    };
+    const lastResult = seen => seen[1].messages[seen[1].messages.length - 1].content[0];
+
+    // Direct: the gate lists what is approved; the call runs the cached file, its file is tracked, reviewed and undone by Stop.
+    {
+      const seen = [];
+      const svc = { ...services([hello, { final: 'Ran the script.' }], seen, []), skillScripts: { setting: () => 'direct' } };
+      const { engine, store, flow, state: gate } = await start(svc, [ref]);
+      assert.equal(gate.waiting.kind, 'effect');
+      assert.match(gate.waiting.preview, /Skill scripts the step may run \(run_skill_script; approving the step approves these for this run\):\n- tools \(acme\/skills @ c0ffee0\): scripts\/hello\.py\n/);
+      assert.match(gate.waiting.preview, /How they run: directly on this machine, not isolated: as you, with your files and network/);
+      assert.doesNotMatch(gate.waiting.preview, /types\.ts/, 'a file the tool would refuse is not listed as runnable');
+      let state = await engine.continue(flow, await engine.answer(gate, true), never);
+      assert.ok(seen[0].tools.includes('run_skill_script'), 'the tool is offered when a skill has scripts');
+      assert.match(seen[0].system, /Run a skill's scripts with run_skill_script \(skill, script path as its SKILL\.md writes it, args\); they run from the repository root/);
+      assert.doesNotMatch(seen[0].system, /Scripts a skill mentions are not available/);
+      const result = lastResult(seen);
+      assert.equal(result.is_error, false);
+      assert.match(result.content, /^exit code 0 \(.* s, directly on this machine\)\nOutput:\nargs \['a b', '\$HOME'\]\nowner /);
+      assert.match(result.content, /Files changed in the repository: out\/hello\.txt$/);
+      assert.equal(fs.readFileSync(path.join(repo, 'out', 'hello.txt'), 'utf8'), 'hello a b $HOME\n');
+      assert.equal(state.waiting.kind, 'review');
+      assert.match(state.waiting.preview, /### out\/hello\.txt \(new\)\n\+ hello a b \$HOME/, 'the review lists the file the script wrote');
+      assert.match(state.waiting.preview, /Skill scripts that ran:\npython3 scripts\/hello\.py "a b" "\$HOME" \(tools, directly on this machine\): exit 0, \d+(\.\d)? s/);
+      const log = await store.readLog(state.id);
+      const entry = log.find(item => item.type === 'skill-script');
+      assert.deepEqual([entry.node, entry.skill, entry.script, entry.runner, entry.exitCode, entry.command], ['sk', 'tools', 'scripts/hello.py', 'direct', 0, 'python3 scripts/hello.py "a b" "$HOME"']);
+      assert.ok(log.some(item => item.type === 'skills' && item.skills[0] === ref));
+      assert.equal(log.filter(item => item.type === 'tool' && item.name === 'run_skill_script').length, 0, 'the call is in Activity once, as skill-script');
+      state = await engine.answer(state, 'stop', flow);
+      assert.equal(state.status, 'stopped');
+      assert.equal(fs.existsSync(path.join(repo, 'out', 'hello.txt')), false, 'Stop removed the file the script made');
+      fs.rmSync(path.join(repo, 'out'), { recursive: true, force: true });
+    }
+
+    // Refusals end the call with the reason; nothing runs.
+    for (const [input, pattern] of [
+      [{ skill: 'other', script: 'scripts/hello.py' }, /No skill named "other"/],
+      [{ skill: 'tools', script: 'scripts/nothing.py' }, /is not one of the scripts of tools/],
+      [{ skill: 'tools', script: '../x.py' }, /may not leave the skill's folder/],
+      [{ skill: 'tools', script: '/etc/passwd' }, /relative to the skill's folder/],
+      [{ skill: 'tools', script: 'scripts/types.ts' }, /are not run/]
+    ]) {
+      const seen = [];
+      const svc = { ...services([{ tool: 'run_skill_script', input }, { final: 'Could not run it.' }], seen, []), skillScripts: { setting: () => 'direct' } };
+      const { engine, flow, state: gate } = await start(svc, [ref]);
+      const state = await engine.continue(flow, await engine.answer(gate, true), never);
+      const result = lastResult(seen);
+      assert.equal(result.is_error, true);
+      assert.match(result.content, pattern);
+      assert.equal(fs.existsSync(path.join(repo, 'out')), false, 'a refused call ran nothing');
+      assert.equal(state.waiting.kind, 'review');
+      await engine.answer(state, 'stop', flow);
+    }
+
+    // Off: the tool is not offered, the old line stays, the gate says so. No skill with scripts: no tool, no section.
+    {
+      const seen = [];
+      const svc = { ...services([{ final: 'Done.' }], seen, []), skillScripts: { setting: () => 'off' } };
+      const { engine, flow, state: gate } = await start(svc, [ref]);
+      assert.match(gate.waiting.preview, /Skill scripts: turned off in the settings \(repositoryManager\.studio\.skillScripts\), so the scripts of tools are not run\./);
+      const state = await engine.continue(flow, await engine.answer(gate, true), never);
+      assert.ok(!seen[0].tools.includes('run_skill_script'));
+      assert.match(seen[0].system, /Scripts a skill mentions are not available/);
+      await engine.answer(state, 'stop', flow);
+      const seenNone = [];
+      const plain = { ...services([{ final: 'Done.' }], seenNone, []), skillScripts: { setting: () => 'direct' } };
+      const none = await start(plain, [ref], library(loaded({ scripts: [], usesScripts: false })));
+      assert.doesNotMatch(none.state.waiting.preview, /Skill scripts/);
+      const after = await none.engine.continue(none.flow, await none.engine.answer(none.state, true), never);
+      assert.ok(!seenNone[0].tools.includes('run_skill_script'));
+      await none.engine.answer(after, 'stop', none.flow);
+      const limited = await start(plain, [ref], library(loaded({ scripts: [], scriptsUnavailable: 'its scripts/ folder holds 301 files; at most 300 are cached' })));
+      assert.match(limited.state.waiting.preview, /tools: scripts not available \(its scripts\/ folder holds 301 files; at most 300 are cached\)/);
+      // A services object without the setting (an older host) offers nothing.
+      const seenOld = [];
+      const old = await start(services([{ final: 'Done.' }], seenOld, []), [ref]);
+      await old.engine.continue(old.flow, await old.engine.answer(old.state, true), never);
+      assert.ok(!seenOld[0].tools.includes('run_skill_script'));
+    }
+
+    // The approval names every script file the tool may run, however many (not a shortened list).
+    {
+      const many = Array.from({ length: 30 }, (_, index) => `scripts/step${index}.py`);
+      const { state: gate } = await start({ ...services([], [], []), skillScripts: { setting: () => 'direct' } }, [ref], library(loaded({ scripts: [...many, 'scripts/data.json'] })));
+      for (const file of many) { assert.ok(gate.waiting.preview.includes(file), `${file} is in the approval`); }
+      assert.ok(!gate.waiting.preview.includes('data.json'), 'a file the tool would refuse is not listed as runnable');
+      assert.doesNotMatch(gate.waiting.preview, /and \d+ more/);
+    }
+
+    // The approval is the list shown at the gate (Decisions 2 and 5): what a later load offers beyond it is not run.
+    {
+      // Scripts failed to download when the preview was built; the load after the approval succeeds.
+      const seen = [];
+      let loads = 0;
+      const flaky = { load: async () => (++loads === 1 ? loaded({ scripts: [], scriptsUnavailable: 'download failed' }) : loaded()) };
+      const svc = { ...services([hello, { final: 'Done.' }], seen, []), skillScripts: { setting: () => 'direct' } };
+      const { engine, flow, state: gate } = await start(svc, [ref], flaky);
+      assert.match(gate.waiting.preview, /Skill scripts not run:\n- tools: scripts not available \(download failed\)/);
+      const state = await engine.continue(flow, await engine.answer(gate, true), never);
+      assert.ok(loads >= 2, 'the skills were loaded again after the approval');
+      assert.ok(!seen[0].tools.includes('run_skill_script'), 'no tool for scripts the approval did not list');
+      assert.equal(fs.existsSync(path.join(repo, 'out')), false, 'nothing ran');
+      await engine.answer(state, 'stop', flow);
+    }
+    {
+      // A runner of "off" at the preview stays off even if the setting changed and scripts are there.
+      const seen = [];
+      let setting = 'off';
+      const svc = { ...services([{ final: 'Done.' }], seen, []), skillScripts: { setting: () => setting } };
+      const { engine, flow, state: gate } = await start(svc, [ref]);
+      setting = 'direct';
+      const state = await engine.continue(flow, await engine.answer(gate, true), never);
+      assert.ok(!seen[0].tools.includes('run_skill_script'));
+      await engine.answer(state, 'stop', flow);
+    }
+    {
+      // A script added between the preview and the run is refused like an unlisted one; the listed one still runs.
+      fs.writeFileSync(path.join(skillDir, 'scripts', 'extra.py'), 'import os\nos.makedirs("out", exist_ok=True)\nopen("out/extra.txt", "w").write("x")\n');
+      const seen = [];
+      let loads = 0;
+      const growing = { load: async () => (++loads === 1 ? loaded({ scripts: ['scripts/hello.py'] }) : loaded({ scripts: ['scripts/hello.py', 'scripts/extra.py'] })) };
+      const svc = { ...services([{ tool: 'run_skill_script', input: { skill: 'tools', script: 'scripts/extra.py' } }, { final: 'Done.' }], seen, []), skillScripts: { setting: () => 'direct' } };
+      const { engine, flow, state: gate } = await start(svc, [ref], growing);
+      assert.doesNotMatch(gate.waiting.preview, /extra\.py/);
+      const state = await engine.continue(flow, await engine.answer(gate, true), never);
+      assert.ok(seen[0].tools.includes('run_skill_script'), 'the listed script keeps the tool');
+      const result = lastResult(seen);
+      assert.equal(result.is_error, true);
+      assert.match(result.content, /is not one of the scripts of tools/);
+      assert.equal(fs.existsSync(path.join(repo, 'out', 'extra.txt')), false, 'the unlisted script did not run');
+      await engine.answer(state, 'stop', flow);
+      fs.rmSync(path.join(skillDir, 'scripts', 'extra.py'));
+    }
+
+    // A container asked for with no engine: the call fails saying so, and never runs directly instead.
+    {
+      const seen = [];
+      const svc = { ...services([hello, { final: 'Could not run it.' }], seen, []), skillScripts: { setting: () => 'container', detect: async () => undefined } };
+      const { engine, flow, state: gate } = await start(svc, [ref]);
+      assert.match(gate.waiting.preview, /in a container, but no container engine \(Docker or Podman\) answers: every script call will fail/);
+      const state = await engine.continue(flow, await engine.answer(gate, true), never);
+      const result = lastResult(seen);
+      assert.equal(result.is_error, true);
+      assert.match(result.content, /No container engine \(Docker or Podman\) answers, and the setting is "container"/);
+      assert.equal(fs.existsSync(path.join(repo, 'out')), false);
+      await engine.answer(state, 'stop', flow);
+    }
+
+    // The runner shown at the gate is the runner used: an engine that answered then is not swapped for a direct run later.
+    {
+      const seen = [];
+      let answers = 'podman';
+      const svc = { ...services([hello, { final: 'Could not run it.' }], seen, []), skillScripts: { setting: () => 'auto', detect: async () => answers } };
+      const { engine, flow, state: gate } = await start(svc, [ref]);
+      assert.match(gate.waiting.preview, /in a container \(podman\)/);
+      answers = undefined;
+      // The engine must be absent whatever the machine has installed (CI runners ship podman): run the call with a PATH that holds git only.
+      const pathBefore = process.env.PATH;
+      const emptyPath = path.join(base, 'git-only-path');
+      fs.mkdirSync(emptyPath, { recursive: true });
+      // The step still needs git for its snapshots, so that one tool stays reachable; no container engine does.
+      const gitPath = spawnSync(process.platform === 'win32' ? 'where' : 'which', ['git'], { encoding: 'utf8' }).stdout.split(/\r?\n/)[0].trim();
+      fs.symlinkSync(gitPath, path.join(emptyPath, path.basename(gitPath)));
+      let state;
+      process.env.PATH = emptyPath;
+      try { state = await engine.continue(flow, await engine.answer(gate, true), never); } finally { process.env.PATH = pathBefore; }
+      const result = lastResult(seen);
+      assert.equal(result.is_error, true);
+      assert.match(result.content, /podman is not installed or not on PATH/);
+      assert.equal(fs.existsSync(path.join(repo, 'out')), false, 'it did not fall back to a direct run');
+      await engine.answer(state, 'stop', flow);
+    }
+
+    // Containers through the step, when an engine answers: the script runs in the pinned image, the file is the person's.
+    {
+      const probe = spawnSync('docker', ['version'], { encoding: 'utf8' });
+      if (probe.status !== 0) {
+        console.log('Step container test SKIPPED: "docker version" did not answer on this machine.');
+      } else {
+        const seen = [];
+        const svc = { ...services([hello, { final: 'Ran in a container.' }], seen, []), skillScripts: { setting: () => 'container' } };
+        const { engine, store, flow, state: gate } = await start(svc, [ref]);
+        assert.match(gate.waiting.preview, /How they run: in a container \(docker\): the repository is writable at \/work/);
+        let state = await engine.continue(flow, await engine.answer(gate, true), never);
+        const result = lastResult(seen);
+        if (result.is_error && /^Could not pull /.test(result.content)) {
+          console.log(`Step container test SKIPPED: ${result.content.slice(0, 120)}`);
+          await engine.answer(state, 'stop', flow);
+        } else {
+        assert.equal(result.is_error, false, result.content);
+        assert.match(result.content, /^exit code 0 \(.*, container, docker\)/);
+        if (process.platform !== 'win32') { assert.equal(fs.statSync(path.join(repo, 'out', 'hello.txt')).uid, process.getuid()); }
+        assert.match(state.waiting.preview, /### out\/hello\.txt \(new\)/);
+        const entry = (await store.readLog(state.id)).find(item => item.type === 'skill-script');
+        assert.deepEqual([entry.runner, entry.engine, entry.exitCode], ['container', 'docker', 0]);
+        assert.match(entry.name, /^repository-manager-.*-1$/);
+        state = await engine.answer(state, 'stop', flow);
+        assert.equal(fs.existsSync(path.join(repo, 'out', 'hello.txt')), false);
+        assert.equal(spawnSync('docker', ['ps', '-a', '--filter', 'name=repository-manager-', '--format', '{{.Names}}'], { encoding: 'utf8' }).stdout.trim(), '', 'no container is left');
+        fs.rmSync(path.join(repo, 'out'), { recursive: true, force: true });
+        console.log('Step container test RAN with docker.');
+        }
+      }
+    }
   }
 
   // ---- The planner: code steps may only name the repository's scripts as checks.

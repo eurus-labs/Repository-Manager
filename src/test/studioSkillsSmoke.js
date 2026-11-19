@@ -27,7 +27,8 @@ let head = commit;
 const api = {
   headCommit: async (owner, repo) => { calls.head++; assert.equal(`${owner}/${repo}`, 'acme/skills'); return head; },
   tree: async () => { calls.tree++; return Object.keys(files); },
-  file: async (_owner, _repo, at, file) => { calls.file++; assert.ok([commit, newer].includes(at)); if (!(file in files)) throw new Error(`no ${file}`); return files[file]; }
+  file: async (_owner, _repo, at, file) => { calls.file++; assert.ok([commit, newer].includes(at)); if (!(file in files)) throw new Error(`no ${file}`); return files[file]; },
+  fileBytes: async (owner, repo, at, file) => Buffer.from(await api.file(owner, repo, at, file))
 };
 
 // --- the fake `vscode` for the host parts -------------------------------------------------------
@@ -48,7 +49,7 @@ const fakeVscode = {
   ConfigurationTarget: { Global: 1 },
   window: {
     showWarningMessage: async (message, options) => { warnings.push([message, options && options.detail]); return answers.warning.shift(); },
-    showQuickPick: async (items, options) => { warnings.push(['pick', options.title, items.map(item => item.label)]); const pick = answers.quickPick.shift(); return pick ? items.find(pick) : undefined; },
+    showQuickPick: async (items, options) => { warnings.push(['pick', options.title, items.map(item => item.label), items.map(item => item.detail)]); const pick = answers.quickPick.shift(); return pick ? items.find(pick) : undefined; },
     showInputBox: async options => { const value = answers.input.shift(); if (value !== undefined && options.validateInput) { assert.equal(options.validateInput(value), undefined, `"${value}" was refused`); } return value; },
     registerWebviewViewProvider: (_id, provider) => { viewProvider = provider; return { dispose() {} }; }
   },
@@ -113,8 +114,19 @@ async function main() {
   assert.deepEqual((await library.cachedIndex('acme/skills')).map(skill => skill.name), ['write-tests', 'plain-words'], 'the last listing is there offline');
 
   // A pinned skill reads from the cache, with the references of its folder.
+  // Its scripts (cached by the listing without them) come with the first load, once (plan 6, Decision 7).
   const skill = await library.load(writeTests);
-  assert.equal(calls.file, fetched.file, 'a pinned, cached skill needs no request');
+  assert.equal(calls.file, fetched.file + 1, 'the first load of a listed skill downloads its one script file');
+  assert.deepEqual(skill.scripts, ['scripts/run.py']);
+  assert.equal(skill.scriptsUnavailable, undefined);
+  assert.equal(fs.readFileSync(path.join(skill.dir, 'scripts', 'run.py'), 'utf8'), 'print(1)', 'the script is cached at the pinned commit');
+  assert.equal(path.basename(skill.dir), 'write-tests');
+  const afterScripts = { ...calls };
+  const again = await library.load(writeTests);
+  assert.deepEqual(calls, afterScripts, 'a pinned, cached skill with its scripts needs no request');
+  assert.deepEqual(again.scripts, ['scripts/run.py']);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(skill.dir, 'skill.json'), 'utf8')).dir, undefined, 'the cache folder is not written into skill.json');
+  assert.deepEqual((await library.load(plainWords)).scripts, [], 'a skill without a scripts folder has none');
   assert.deepEqual(Object.keys(skill.references).sort(), ['references/standard.md', 'references/unused.md']);
   // The source moved on: a listing shows the new commit; the pinned skill still reads the old one.
   head = newer;
@@ -130,6 +142,137 @@ async function main() {
   assert.match(text, /#### write-tests: references\/standard\.md\nEvery test names/);
   assert.ok(!text.includes('Not named by the skill'), 'a reference the skill does not name is left out');
   assert.match(skillsPrompt([skill], 400), /Not included \(over the size limit\): write-tests/);
+  // With run_skill_script offered, the line about scripts changes; without it, the old line stays (Decision 10).
+  assert.match(text, /Scripts a skill mentions are not available: do their work yourself or say what is missing\./);
+  const withTool = skillsPrompt([skill], undefined, true);
+  assert.match(withTool, /Run a skill's scripts with run_skill_script \(skill, script path as its SKILL\.md writes it, args\); they run from the repository root/);
+  assert.ok(!withTool.includes('are not available'), 'the old line is gone when the tool is offered');
+
+  // ---- Scripts: limits keep the skill loadable but its scripts unavailable (Decision 7).
+  {
+    const big = (name, sizes, extra = {}) => {
+      const tree = { [`plugins/${name}/SKILL.md`]: `---\nname: ${name}\n---\nRun scripts/a.py.`, ...extra };
+      sizes.forEach((size, index) => { tree[`plugins/${name}/scripts/f${index}.py`] = 'x'.repeat(size); });
+      return tree;
+    };
+    const tree = {
+      ...big('many', Array.from({ length: 301 }, () => 1)),
+      ...big('large', [2 * 1024 * 1024 + 1]),
+      ...big('total', Array.from({ length: 11 }, () => 2_000_000)),
+      ...big('fits', [2 * 1024 * 1024], { 'plugins/fits/scripts/sub/deep.sh': 'echo hi' }),
+      'plugins/evil/SKILL.md': '---\nname: evil\n---\nbody', 'plugins/evil/scripts/../../escape.py': 'x'
+    };
+    const fetchedPaths = [];
+    const limitApi = { headCommit: async () => commit, tree: async () => Object.keys(tree), file: async (_o, _r, _c, file) => { fetchedPaths.push(file); return tree[file]; }, fileBytes: async (_o, _r, _c, file) => { fetchedPaths.push(file); return Buffer.from(tree[file]); } };
+    const limited = new SkillLibrary(path.join(base, 'limit-cache'), limitApi);
+    const ref = name => skillRef('acme', 'skills', `plugins/${name}`, commit);
+    const many = await limited.load(ref('many'));
+    assert.deepEqual([many.scripts, many.body], [[], 'Run scripts/a.py.'], 'over the file limit: the skill loads, its scripts do not');
+    assert.match(many.scriptsUnavailable, /301 files.*at most 300/);
+    assert.ok(!fetchedPaths.some(file => file.includes('/many/scripts/')), 'nothing is downloaded over the file limit');
+    const large = await limited.load(ref('large'));
+    assert.deepEqual(large.scripts, []);
+    assert.match(large.scriptsUnavailable, /f0\.py is larger than 2 MB/);
+    assert.equal(fs.existsSync(path.join(large.dir, 'scripts')), false, 'an unavailable skill leaves no script files to run');
+    const total = await limited.load(ref('total'));
+    assert.deepEqual(total.scripts, []);
+    assert.match(total.scriptsUnavailable, /more than 20 MB/);
+    assert.equal(fs.existsSync(path.join(total.dir, 'scripts')), false);
+    const fits = await limited.load(ref('fits'));
+    assert.deepEqual(fits.scripts, ['scripts/f0.py', 'scripts/sub/deep.sh'], 'sub-folders are kept; exactly 2 MB fits');
+    assert.equal(fits.scriptsUnavailable, undefined);
+    assert.equal(fs.readFileSync(path.join(fits.dir, 'scripts', 'sub', 'deep.sh'), 'utf8'), 'echo hi');
+    const evil = await limited.load(ref('evil'));
+    assert.deepEqual(evil.scripts, []);
+    assert.match(evil.scriptsUnavailable, /not a plain path/);
+    assert.equal(fs.existsSync(path.join(base, 'limit-cache', 'acme', 'skills', commit, 'plugins', 'escape.py')), false);
+    // The reason is kept: a second load says the same without asking again.
+    const asked = fetchedPaths.length;
+    assert.match((await limited.load(ref('many'))).scriptsUnavailable, /at most 300/);
+    assert.equal(fetchedPaths.length, asked);
+
+    // Decision 7: every file under scripts/ is kept as it is in the repository: bytes, not text. A binary
+    // file (an image, an archive) and a text file with CRLF line ends come back byte for byte.
+    {
+      const bytes = {
+        'plugins/bin/scripts/logo.png': Buffer.from([0x00, 0xff, 0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0xc3, 0x28, 0xfe]),
+        'plugins/bin/scripts/win.py': Buffer.from('print("a")\r\nprint("b")\r\n'),
+        'plugins/bin/scripts/sub/bom.sh': Buffer.from('﻿echo é\r\n'),
+        'plugins/bin/SKILL.md': Buffer.from('---\nname: bin\n---\nRun scripts/win.py.')
+      };
+      // `file` answers text, as GitHub's raw answer decoded as UTF-8 does: it must not be what scripts come from.
+      const byteApi = {
+        headCommit: async () => commit, tree: async () => Object.keys(bytes),
+        file: async (_o, _r, _c, file) => bytes[file].toString('utf8'),
+        fileBytes: async (_o, _r, _c, file) => Buffer.from(bytes[file])
+      };
+      const loaded = await new SkillLibrary(path.join(base, 'bytes-cache'), byteApi).load(skillRef('acme', 'skills', 'plugins/bin', commit));
+      assert.deepEqual(loaded.scripts, ['scripts/logo.png', 'scripts/sub/bom.sh', 'scripts/win.py']);
+      for (const name of loaded.scripts) {
+        const cached = fs.readFileSync(path.join(loaded.dir, name));
+        assert.ok(cached.equals(bytes[`plugins/bin/${name}`]), `${name} is cached byte for byte`);
+      }
+    }
+
+    // Two loads of the same uncached skill at once (two steps, two runs) share one download: every listed file is on disk.
+    {
+      const many = {
+        'plugins/par/SKILL.md': '---\nname: par\n---\nRun scripts/a.py.',
+        ...Object.fromEntries(['a.py', 'b.py', 'c.py', 'd.py'].map(name => [`plugins/par/scripts/${name}`, Buffer.from(`print("${name}")`)]))
+      };
+      const slow = {
+        headCommit: async () => commit, tree: async () => Object.keys(many),
+        file: async (_o, _r, _c, file) => many[file].toString('utf8'),
+        fileBytes: async (_o, _r, _c, file) => { await new Promise(resolve => setTimeout(resolve, 15)); return Buffer.from(many[file]); }
+      };
+      const racing = new SkillLibrary(path.join(base, 'race-cache'), slow);
+      const parRef = skillRef('acme', 'skills', 'plugins/par', commit);
+      const [one, two] = await Promise.all([racing.load(parRef), racing.load(parRef)]);
+      for (const loaded of [one, two]) {
+        assert.deepEqual(loaded.scripts, ['scripts/a.py', 'scripts/b.py', 'scripts/c.py', 'scripts/d.py']);
+        for (const name of loaded.scripts) { assert.equal(fs.readFileSync(path.join(loaded.dir, name), 'utf8'), `print("${name.slice('scripts/'.length)}")`, `${name} is on disk`); }
+      }
+      assert.deepEqual(fs.readdirSync(path.dirname(path.join(one.dir, 'x'))).sort(), ['scripts', 'skill.json'], 'no staging folder is left');
+      // Another process (its own library) with an existing cache: a second staging copy is discarded, the first stays.
+      const other = new SkillLibrary(path.join(base, 'race-cache'), slow);
+      const again = await other.load(parRef);
+      assert.deepEqual(again.scripts, one.scripts);
+    }
+
+    // A skill cached before this change has no `scripts` field: its scripts are downloaded on the next load.
+    const old = new SkillLibrary(path.join(base, 'old-cache'), api);
+    const folder = path.join(base, 'old-cache', 'acme', 'skills', commit, 'plugins/testing/skills/write-tests');
+    fs.mkdirSync(folder, { recursive: true });
+    fs.writeFileSync(path.join(folder, 'skill.json'), JSON.stringify({ ref: writeTests, name: 'write-tests', description: 'd', usesScripts: true, body: 'old body', references: {} }));
+    const upgraded = await old.load(writeTests);
+    assert.equal(upgraded.body, 'old body', 'the cached text is kept');
+    assert.deepEqual(upgraded.scripts, ['scripts/run.py']);
+    assert.equal(fs.readFileSync(path.join(folder, 'scripts', 'run.py'), 'utf8'), 'print(1)');
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(folder, 'skill.json'), 'utf8')).scripts, ['scripts/run.py'], 'the upgrade is cached');
+
+    // A download that fails (a network error) does not fail the skill, and is tried again next time.
+    let fail = true;
+    const flaky = new SkillLibrary(path.join(base, 'flaky-cache'), { ...api, fileBytes: async (o, r, c, file) => { if (fail && file.includes('/scripts/')) { throw new Error('offline'); } return api.fileBytes(o, r, c, file); } });
+    const first = await flaky.load(writeTests);
+    assert.deepEqual([first.scripts, first.body.startsWith('# Write tests')], [[], true]);
+    assert.match(first.scriptsUnavailable, /could not be downloaded: offline/);
+    fail = false;
+    assert.deepEqual((await flaky.load(writeTests)).scripts, ['scripts/run.py']);
+
+    // Offline with a skill cached before this change: it still loads (a prompt step needs no scripts), without them, and is retried.
+    const offlineCache = path.join(base, 'offline-cache');
+    const offlineFolder = path.join(offlineCache, 'acme', 'skills', commit, 'plugins/testing/skills/write-tests');
+    fs.mkdirSync(offlineFolder, { recursive: true });
+    fs.writeFileSync(path.join(offlineFolder, 'skill.json'), JSON.stringify({ ref: writeTests, name: 'write-tests', description: 'd', usesScripts: true, body: 'cached body', references: {} }));
+    let online = false;
+    const offline = new SkillLibrary(offlineCache, { ...api, tree: async () => { if (!online) { throw new Error('GitHub did not answer in time.'); } return api.tree(); } });
+    const cachedOffline = await offline.load(writeTests);
+    assert.deepEqual([cachedOffline.body, cachedOffline.scripts], ['cached body', []]);
+    assert.match(cachedOffline.scriptsUnavailable, /its scripts could not be listed: GitHub did not answer in time\./);
+    assert.equal('scripts' in JSON.parse(fs.readFileSync(path.join(offlineFolder, 'skill.json'), 'utf8')), false, 'a failed lookup is not kept');
+    online = true;
+    assert.deepEqual((await offline.load(writeTests)).scripts, ['scripts/run.py']);
+  }
 
   // ---- Validation: pinned references, steps that use a model, at most five.
   const flow = nodes => ({ schema: 'repository-manager/workflow@1', id: 'w', version: '1', title: 'W', prompts: { p: { instructions: 'Do it.' } }, nodes });
@@ -166,11 +309,16 @@ async function main() {
     const script = [reply([invented]), reply([invented])];
     const model = { complete: async prompt => { prompts.push(prompt); return { text: JSON.stringify(script.shift()), model: 'Scripted' }; } };
     const draft = await draftPlan(model, steps, { message: 'Plan it', history: [], skills: offered }, never);
-    assert.match(prompts[0], new RegExp(`Available skills:\\n- ${offered[0].ref.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&')}: write-tests\\. .*\\(its scripts are not run here\\)`));
+    assert.match(prompts[0], new RegExp(`Available skills:\\n- ${offered[0].ref.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&')}: write-tests\\. .*\\(its scripts run only in a code step, after the person approves it\\)`));
+    assert.doesNotMatch(prompts[0], /not run here/, 'with the setting on, the planner is not told the scripts are not run');
     assert.match(prompts[1], /is not one of the available skills/, 'the repair turn names the invented skill');
     assert.ok(draft.problems.some(problem => /is not one of the available skills/.test(problem.message)));
     const kept = await draftPlan({ complete: async () => ({ text: JSON.stringify(reply([offered[1].ref])), model: 'S' }) }, steps, { message: 'Plan it', history: [], skills: offered }, never);
     assert.deepEqual(kept.problems, []);
+    // With the setting `off` the caller says so, and the planner is told they are not run.
+    const offPrompts = [];
+    await draftPlan({ complete: async prompt => { offPrompts.push(prompt); return { text: JSON.stringify(reply(undefined)), model: 'S' }; } }, steps, { message: 'Plan it', history: [], skills: offered, scriptsOff: true }, never);
+    assert.match(offPrompts[0], /write-tests\. .*\(its scripts are not run here\)/);
     const none = [];
     await draftPlan({ complete: async prompt => { none.push(prompt); return { text: JSON.stringify(reply(undefined)), model: 'S' }; } }, steps, { message: 'x', history: [] }, never);
     assert.match(none[0], /No skills are available: do not add "skills"\./);
@@ -256,6 +404,25 @@ async function main() {
       assert.equal(looks.length, 2, 'looked up once, then again after the sessions changed');
     }
 
+    // Script files come through the contents API as base64 and are decoded to bytes; a file over 1 MB has no
+    // content there and is read as a blob by its sha.
+    {
+      const binary = Buffer.from([0x00, 0xff, 0x89, 0x50, 0x4e, 0x47]);
+      const sha = 'd'.repeat(40);
+      const urls = [];
+      const bytesApi = new GitHubSkillApi(async url => {
+        urls.push(url.replace('https://api.github.com/', ''));
+        if (url.includes('/git/blobs/')) { return JSON.stringify({ encoding: 'base64', content: binary.toString('base64') }); }
+        if (url.includes('/contents/big.bin')) { return JSON.stringify({ type: 'file', encoding: 'none', content: '', sha }); }
+        if (url.includes('/contents/dir')) { return JSON.stringify([{ type: 'file' }]); }
+        return JSON.stringify({ type: 'file', encoding: 'base64', content: binary.toString('base64').replace(/(.{4})/g, '$1\n'), sha });
+      }, auth(undefined, 'cancel'));
+      assert.ok((await bytesApi.fileBytes('acme', 'skills', commit, 'x/logo.png')).equals(binary), 'base64 with line breaks decodes to the bytes');
+      assert.ok((await bytesApi.fileBytes('acme', 'skills', commit, 'big.bin')).equals(binary), 'over 1 MB: the blob');
+      assert.ok(urls.includes(`repos/acme/skills/git/blobs/${sha}`));
+      await assert.rejects(bytesApi.fileBytes('acme', 'skills', commit, 'dir'), /GitHub gave no content for dir|is not a file/);
+    }
+
     // A session already there is used, silently, from the first request.
     asked.length = 0; fetched.length = 0;
     const existing = new GitHubSkillApi(fetch, auth('mine', 'cancel'));
@@ -327,7 +494,7 @@ async function main() {
   const asked = warnings.length;
   assert.equal(await service.ensureTrusted(['acme/skills']), true);
   assert.equal(warnings.length, asked, 'trusted once, not asked again');
-  assert.match(warnings[asked - 1][1], /Its scripts are never run here/);
+  assert.match(warnings[asked - 1][1], /Its scripts run only in a code step you approve, in a container when Docker or Podman is available and otherwise directly on this machine, not isolated/);
 
   // ---- "+ Skill" on the chat's plan card: listed, picked, pinned; names on the card.
   {
@@ -352,6 +519,15 @@ async function main() {
     const last = posted[posted.length - 1];
     assert.equal(last.messages[0].draft.view.steps[0].skills[0], ref);
     assert.deepEqual(last.skills[ref], { name: 'write-tests', usesScripts: true });
+    // The picker says what a skill's scripts do on this step: not run on a prompt step; run after approval on a code step.
+    const skillPick = title => warnings.filter(entry => entry[0] === 'pick' && entry[1] === title).pop()[3][0];
+    assert.match(skillPick('Add a skill to "a"'), /uses scripts: this step type has no tools, so they are not run here; use a code step$/);
+    viewProvider.conversation.plan.nodes.push({ id: 'c', type: 'code', title: 'Change it', with: { task: 'Change', paths: ['src/'] } });
+    answers.quickPick.push(item => item.label === 'acme/skills', item => item.label === 'write-tests');
+    await receive({ type: 'addSkill', id: 'c' });
+    assert.match(skillPick('Add a skill to "Change it"'), /uses scripts: run in this step after your approval \(in a container when Docker or Podman is available, else directly on this machine\)$/);
+    assert.equal(last.scriptRunner, null, 'no runner known without the host\'s probe');
+    viewProvider.conversation.plan.nodes.pop();
     // Picking nothing changes nothing; a step that is gone is said.
     answers.quickPick.push(item => item.label === 'acme/skills');
     await receive({ type: 'addSkill', id: 'a' });

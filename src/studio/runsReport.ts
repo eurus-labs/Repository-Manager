@@ -261,6 +261,12 @@ export function activityLine(entry: RunLogEntry): { text: string; ok?: boolean }
       const code = typeof entry.exitCode === 'number' ? ` (exit ${entry.exitCode})` : '';
       return { text: cut(`Check ${str(entry.script) || 'script'} ${passed ? 'passed' : 'failed'}${code}`), ok: passed };
     }
+    case 'skill-script': {
+      // The image pull before a container's first run, then each call: `Ran <script> (<runner>): exit <code>`.
+      if (str(entry.phase) === 'pull') { return { text: cut(`Pulling ${str(entry.image) || 'an image'}…`) }; }
+      const exit = typeof entry.exitCode === 'number' ? `exit ${entry.exitCode}` : str(entry.stopped) === 'timeout' ? 'stopped at its time limit' : str(entry.stopped) ? 'stopped' : 'no exit code';
+      return { text: cut(`Ran ${str(entry.script) || 'a script'} (${str(entry.runner) || 'unknown'}): ${exit}`), ok: entry.exitCode === 0 };
+    }
     case 'branch': return { text: cut(`On branch ${str(entry.branch) || '?'}${entry.created === true ? ', created' : ''}`) };
     case 'read': return typeof entry.files === 'number' ? { text: `Read ${entry.files} file${entry.files === 1 ? '' : 's'}` } : undefined;
     case 'skills': {
