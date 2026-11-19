@@ -139,8 +139,10 @@ export class SkillLibrary {
 
   private async writeJson(file: string, value: unknown): Promise<void> {
     await fs.mkdir(path.dirname(file), { recursive: true });
-    await fs.writeFile(`${file}.tmp`, JSON.stringify(value));
-    await fs.rename(`${file}.tmp`, file);
+    // A name of its own, so two writers (two processes) never share the temporary file.
+    const temporary = `${file}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
+    await fs.writeFile(temporary, JSON.stringify(value));
+    await fs.rename(temporary, file);
   }
 
   /** The skills of a source at its current commit; the list is cached per commit. */
@@ -178,7 +180,19 @@ export class SkillLibrary {
    * One skill at its pinned commit: from the cache, or fetched once. Its scripts are downloaded
    * the first time it is loaded after being listed (or cached before scripts were), then kept.
    */
-  async load(ref: string): Promise<LoadedSkill> {
+  load(ref: string): Promise<LoadedSkill> {
+    // One load per skill at a time: a second caller waits for the first one's result instead of
+    // downloading the same files into the same folder.
+    const running = this.loading.get(ref);
+    if (running) { return running; }
+    const started = this.loadOnce(ref).finally(() => { this.loading.delete(ref); });
+    this.loading.set(ref, started);
+    return started;
+  }
+
+  private readonly loading = new Map<string, Promise<LoadedSkill>>();
+
+  private async loadOnce(ref: string): Promise<LoadedSkill> {
     const { owner, repo, folder, commit, host } = parseSkillRef(ref);
     const dir = path.join(this.dir(owner, repo, commit, host), folder);
     let stored = await this.readJson<StoredSkill>(path.join(dir, 'skill.json'));
@@ -219,22 +233,33 @@ export class SkillLibrary {
     const relative = names.map(name => name.slice(folder.length + 1));
     const bad = relative.find(name => name.slice('scripts/'.length).split('/').some(part => !part || part === '.' || part === '..' || /[\\:\0]/.test(part)));
     if (bad) { return keep([], `${bad} is not a plain path inside the skill`); }
-    const staging = path.join(dir, `scripts.${process.pid}.${Date.now().toString(36)}`);
+    // A folder of its own (never shared with another load or process), next to the target so the rename stays on one volume.
+    await fs.mkdir(dir, { recursive: true });
+    const staging = await fs.mkdtemp(path.join(dir, 'scripts.staging-'));
     try {
       let total = 0;
+      const sizes: number[] = [];
       for (const [index, name] of names.entries()) {
         const data = await this.api.fileBytes(owner, repo, commit, name, host);
         const bytes = data.length;
         if (bytes > MAX_SCRIPT_FILE_BYTES) { return await keep([], `${relative[index]} is larger than ${MAX_SCRIPT_FILE_BYTES / 1024 / 1024} MB`); }
         total += bytes;
+        sizes.push(bytes);
         if (total > MAX_SCRIPT_TOTAL_BYTES) { return await keep([], `its scripts are more than ${MAX_SCRIPT_TOTAL_BYTES / 1024 / 1024} MB together`); }
         const target = path.join(staging, relative[index].slice('scripts/'.length));
         await fs.mkdir(path.dirname(target), { recursive: true });
         await fs.writeFile(target, data);
       }
       const scripts = path.join(dir, 'scripts');
-      await fs.rm(scripts, { recursive: true, force: true });
-      await fs.rename(staging, scripts);
+      // Another process may have finished first: its complete copy stays, ours is discarded (in `finally`).
+      // A folder that is not complete (an older interrupted download) is replaced.
+      const complete = await Promise.all(relative.map(async (name, index) => {
+        try { return (await fs.stat(path.join(dir, name))).size === sizes[index]; } catch { return false; }
+      }));
+      if (!complete.every(Boolean)) {
+        await fs.rm(scripts, { recursive: true, force: true });
+        await fs.rename(staging, scripts);
+      }
       return await keep(relative);
     } catch (error) {
       return { ...stored, scripts: [], scriptsUnavailable: `its scripts could not be downloaded: ${error instanceof Error ? error.message : String(error)}` };

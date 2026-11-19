@@ -214,6 +214,31 @@ async function main() {
       }
     }
 
+    // Two loads of the same uncached skill at once (two steps, two runs) share one download: every listed file is on disk.
+    {
+      const many = {
+        'plugins/par/SKILL.md': '---\nname: par\n---\nRun scripts/a.py.',
+        ...Object.fromEntries(['a.py', 'b.py', 'c.py', 'd.py'].map(name => [`plugins/par/scripts/${name}`, Buffer.from(`print("${name}")`)]))
+      };
+      const slow = {
+        headCommit: async () => commit, tree: async () => Object.keys(many),
+        file: async (_o, _r, _c, file) => many[file].toString('utf8'),
+        fileBytes: async (_o, _r, _c, file) => { await new Promise(resolve => setTimeout(resolve, 15)); return Buffer.from(many[file]); }
+      };
+      const racing = new SkillLibrary(path.join(base, 'race-cache'), slow);
+      const parRef = skillRef('acme', 'skills', 'plugins/par', commit);
+      const [one, two] = await Promise.all([racing.load(parRef), racing.load(parRef)]);
+      for (const loaded of [one, two]) {
+        assert.deepEqual(loaded.scripts, ['scripts/a.py', 'scripts/b.py', 'scripts/c.py', 'scripts/d.py']);
+        for (const name of loaded.scripts) { assert.equal(fs.readFileSync(path.join(loaded.dir, name), 'utf8'), `print("${name.slice('scripts/'.length)}")`, `${name} is on disk`); }
+      }
+      assert.deepEqual(fs.readdirSync(path.dirname(path.join(one.dir, 'x'))).sort(), ['scripts', 'skill.json'], 'no staging folder is left');
+      // Another process (its own library) with an existing cache: a second staging copy is discarded, the first stays.
+      const other = new SkillLibrary(path.join(base, 'race-cache'), slow);
+      const again = await other.load(parRef);
+      assert.deepEqual(again.scripts, one.scripts);
+    }
+
     // A skill cached before this change has no `scripts` field: its scripts are downloaded on the next load.
     const old = new SkillLibrary(path.join(base, 'old-cache'), api);
     const folder = path.join(base, 'old-cache', 'acme', 'skills', commit, 'plugins/testing/skills/write-tests');
