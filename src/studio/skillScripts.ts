@@ -90,8 +90,16 @@ export function describeRunner(runner: ScriptRunner): string {
     : 'in a container, but no container engine (Docker or Podman) answers: every script call will fail';
 }
 
-/** The images a container run may pull, as the preview lists them. */
-export const imageList = (): string => Object.values(IMAGES).map(imageName).join(', ');
+/**
+ * What a skill chip and the skill picker say about a skill that uses scripts, by the step it is on and
+ * the runner the setting gives now (`unknown` while the engine is being looked for).
+ */
+export function scriptsNote(stepType: string, mode: 'container' | 'direct' | 'off' | 'unknown'): string {
+  if (mode === 'off') { return 'Uses scripts: turned off in settings'; }
+  if (stepType !== 'code') { return 'Uses scripts: this step type has no tools, so they are not run here; use a code step'; }
+  const where = mode === 'container' ? 'in a container' : mode === 'direct' ? 'directly on this machine' : 'in a container when Docker or Podman is available, else directly on this machine';
+  return `Uses scripts: run in this step after your approval (${where})`;
+}
 
 export interface ScriptSkill {
   /** As the skill's prompt names it (`### Skill: <name>`). */

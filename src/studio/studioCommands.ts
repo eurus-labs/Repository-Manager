@@ -12,6 +12,7 @@ import { recoverInterruptedSteps, RunLogEntry, RunState, RunStore, WorkflowEngin
 import { activityLine } from './runsReport';
 import { skillSources, StudioSkills, studioSkills } from './githubSkills';
 import { approveChecks, codeServices } from './codeHost';
+import { chooseRunner, detectEngine, ContainerEngine, parseSetting } from './skillScripts';
 import { CancelSignal, StepDefinition } from './steps';
 import { studioSteps } from './registry';
 import { listModels, resolveSelector, studioModel } from './studioModels';
@@ -50,6 +51,8 @@ export interface StudioRuns {
   resume(id: string): Promise<RunState | undefined>;
   /** Opens a run's state and log as JSON, for investigating. */
   openLog(id: string): Promise<void>;
+  /** Where a code step runs its skills' scripts now (the setting, and whether a container engine answers). */
+  scriptRunner?(): Promise<'container' | 'direct' | 'off'>;
 }
 
 export function registerStudio(context: vscode.ExtensionContext, workspaceRoot: string): StudioRuns {
@@ -420,5 +423,12 @@ export function registerStudio(context: vscode.ExtensionContext, workspaceRoot: 
       await openLog(picked.run.id);
     })
   );
-  return { steps, skills, run, runs: async () => { await recovered(); return store; }, resume, openLog };
+  // The engine probe takes up to 5 s: asked at most every 30 s, however often the chat asks.
+  let probe: { at: number; value: Promise<ContainerEngine | undefined> } | undefined;
+  const detect = () => {
+    if (!probe || Date.now() - probe.at > 30_000) { probe = { at: Date.now(), value: detectEngine() }; }
+    return probe.value;
+  };
+  const scriptRunner = async () => (await chooseRunner(parseSetting(vscode.workspace.getConfiguration('repositoryManager').get<unknown>('studio.skillScripts')), detect)).mode;
+  return { steps, skills, run, runs: async () => { await recovered(); return store; }, resume, openLog, scriptRunner };
 }

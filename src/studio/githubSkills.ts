@@ -273,7 +273,7 @@ export function studioSkills(context: vscode.ExtensionContext, api: SkillSourceA
         const trust = 'Trust Skills';
         const answer = await vscode.window.showWarningMessage(`Use skills from ${sourceLabel(source)}?`, {
           modal: true,
-          detail: 'A skill is instructions the model follows in the steps that use it. Trust only a repository you would take instructions from. Its scripts are never run here, and steps that write, run or send still ask you first. This is asked once for this repository.'
+          detail: 'A skill is instructions the model follows in the steps that use it. Trust only a repository you would take instructions from. Its scripts run only in a code step you approve, in a container when Docker or Podman is available (setting repositoryManager.studio.skillScripts), and steps that write, run or send still ask you first. This is asked once for this repository.'
         }, trust);
         if (answer !== trust) { return false; }
         trusted.add(source);

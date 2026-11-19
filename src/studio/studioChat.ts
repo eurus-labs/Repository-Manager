@@ -18,6 +18,7 @@ import { studioSteps } from './registry';
 import { dashboardSelector, listModels, ModelChoice, onModelsChanged, studioModel } from './studioModels';
 import { parseSkillSource, StudioSkills, studioSkills } from './githubSkills';
 import { SkillSummary } from './skills';
+import { scriptsNote } from './skillScripts';
 import { readScripts } from '../agent/repositoryScripts';
 import { StudioRuns } from './studioCommands';
 import { EditOperation, serializeWorkflow } from './workflowEdit';
@@ -87,6 +88,9 @@ export class StudioChatProvider implements vscode.WebviewViewProvider {
   private readonly skills: StudioSkills;
   /** Names of the skills seen in listings, by reference, for the plan card's chips. */
   private readonly skillNames = new Map<string, SkillSummary>();
+  /** Where a code step runs skill scripts now; null until the engine probe (up to 5 s) answered. */
+  private scriptMode: 'container' | 'direct' | 'off' | null = null;
+  private scriptModeAt = 0;
 
   constructor(private readonly context: vscode.ExtensionContext, private readonly runs: StudioRuns | undefined, private readonly root: string | undefined) {
     this.store = new ChatStore(path.join(context.storageUri?.fsPath ?? context.globalStorageUri.fsPath, 'studio', 'chats'));
@@ -411,7 +415,7 @@ export class StudioChatProvider implements vscode.WebviewViewProvider {
     const present = new Set(node.skills ?? []);
     const picked = await vscode.window.showQuickPick(listed.filter(skill => !present.has(skill.ref)).map(skill => ({
       label: skill.name, description: skill.ref.replace(/^github:/, '').replace(/@([0-9a-f]{7})[0-9a-f]+$/, '@$1'),
-      detail: `${skill.description}${skill.usesScripts ? ' · uses scripts: not run here' : ''}`, skill
+      detail: `${skill.description}${skill.usesScripts ? ` · ${scriptsNote(node.type, this.scriptMode ?? 'unknown').replace(/^Uses/, 'uses')}` : ''}`, skill
     })), { title: `Add a skill to "${node.title ?? node.id}"`, placeHolder: failed.length ? `Some sources could not be read: ${failed.join(' ')}` : 'Pinned to the commit listed now', matchOnDetail: true });
     if (!picked) { return; }
     editPlan(conversation, { op: 'setSkills', id, skills: [...present, picked.skill.ref] }, this.steps);
@@ -538,7 +542,16 @@ export class StudioChatProvider implements vscode.WebviewViewProvider {
     return { ...run, steps: live.steps.map(step => ({ ...step, ...(step.outcome === 'running' && live.since.has(step.id) ? { since: live.since.get(step.id) } : {}) })), activity: live.activity };
   }
 
+  /** Looks up where skill scripts run (the setting, then the engine probe) without holding up a post; posts again when it changed. */
+  private refreshScriptMode(): void {
+    const probe = this.runs?.scriptRunner;
+    if (!probe || Date.now() - this.scriptModeAt < 5000) { return; }
+    this.scriptModeAt = Date.now();
+    void probe().then(mode => { if (mode !== this.scriptMode) { this.scriptMode = mode; this.post(); } }, () => undefined);
+  }
+
   private post(): void {
+    this.refreshScriptMode();
     if (this.postTimer) { clearTimeout(this.postTimer); this.postTimer = undefined; }
     this.lastPost = Date.now();
     if (!this.view || !this.conversation) { return; }
@@ -549,6 +562,7 @@ export class StudioChatProvider implements vscode.WebviewViewProvider {
       type: 'state', notice, busy: this.busy ?? null, stopping: Boolean(this.busy && this.cancelled), folder: Boolean(this.root),
       models: this.models.map(model => ({ selector: model.selector, name: model.name, vendor: model.vendor })), modelsLoaded: this.modelsLoaded,
       skills: Object.fromEntries([...this.skillNames.values()].map(skill => [skill.ref, { name: skill.name, usesScripts: skill.usesScripts }])),
+      scriptRunner: this.scriptMode,
       model: conversation.model ?? null, file: conversation.file ?? null, title: conversation.title,
       messages: conversation.messages.map(message => ({
         id: message.id, role: message.role, text: message.text, model: message.model ?? null, run: message.run ? this.runView(message.run) : null,

@@ -48,7 +48,7 @@ const fakeVscode = {
   ConfigurationTarget: { Global: 1 },
   window: {
     showWarningMessage: async (message, options) => { warnings.push([message, options && options.detail]); return answers.warning.shift(); },
-    showQuickPick: async (items, options) => { warnings.push(['pick', options.title, items.map(item => item.label)]); const pick = answers.quickPick.shift(); return pick ? items.find(pick) : undefined; },
+    showQuickPick: async (items, options) => { warnings.push(['pick', options.title, items.map(item => item.label), items.map(item => item.detail)]); const pick = answers.quickPick.shift(); return pick ? items.find(pick) : undefined; },
     showInputBox: async options => { const value = answers.input.shift(); if (value !== undefined && options.validateInput) { assert.equal(options.validateInput(value), undefined, `"${value}" was refused`); } return value; },
     registerWebviewViewProvider: (_id, provider) => { viewProvider = provider; return { dispose() {} }; }
   },
@@ -407,7 +407,7 @@ async function main() {
   const asked = warnings.length;
   assert.equal(await service.ensureTrusted(['acme/skills']), true);
   assert.equal(warnings.length, asked, 'trusted once, not asked again');
-  assert.match(warnings[asked - 1][1], /Its scripts are never run here/);
+  assert.match(warnings[asked - 1][1], /Its scripts run only in a code step you approve, in a container when Docker or Podman is available/);
 
   // ---- "+ Skill" on the chat's plan card: listed, picked, pinned; names on the card.
   {
@@ -432,6 +432,15 @@ async function main() {
     const last = posted[posted.length - 1];
     assert.equal(last.messages[0].draft.view.steps[0].skills[0], ref);
     assert.deepEqual(last.skills[ref], { name: 'write-tests', usesScripts: true });
+    // The picker says what a skill's scripts do on this step: not run on a prompt step; run after approval on a code step.
+    const skillPick = title => warnings.filter(entry => entry[0] === 'pick' && entry[1] === title).pop()[3][0];
+    assert.match(skillPick('Add a skill to "a"'), /uses scripts: this step type has no tools, so they are not run here; use a code step$/);
+    viewProvider.conversation.plan.nodes.push({ id: 'c', type: 'code', title: 'Change it', with: { task: 'Change', paths: ['src/'] } });
+    answers.quickPick.push(item => item.label === 'acme/skills', item => item.label === 'write-tests');
+    await receive({ type: 'addSkill', id: 'c' });
+    assert.match(skillPick('Add a skill to "Change it"'), /uses scripts: run in this step after your approval \(in a container when Docker or Podman is available, else directly on this machine\)$/);
+    assert.equal(last.scriptRunner, null, 'no runner known without the host\'s probe');
+    viewProvider.conversation.plan.nodes.pop();
     // Picking nothing changes nothing; a step that is gone is said.
     answers.quickPick.push(item => item.label === 'acme/skills');
     await receive({ type: 'addSkill', id: 'a' });
