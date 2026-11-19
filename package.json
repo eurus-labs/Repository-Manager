@@ -469,7 +469,24 @@
           "default": [
             "eurus-labs/skills"
           ],
-          "markdownDescription": "Repositories whose skills (folders with a `SKILL.md`) the Studio offers for its steps: `owner/name` on github.com, or `host/owner/name` on a GitHub Enterprise server (sign-in there uses VS Code's GitHub Enterprise account, set with `github-enterprise.uri`). Read with your sign-in when needed; each repository is trusted once before its skills are used. Skills' scripts are never run."
+          "markdownDescription": "Repositories whose skills (folders with a `SKILL.md`) the Studio offers for its steps: `owner/name` on github.com, or `host/owner/name` on a GitHub Enterprise server (sign-in there uses VS Code's GitHub Enterprise account, set with `github-enterprise.uri`). Read with your sign-in when needed; each repository is trusted once before its skills are used. A skill's scripts run only in a code step, after you approve the step (see `repositoryManager.studio.skillScripts`)."
+        },
+        "repositoryManager.studio.skillScripts": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "container",
+            "direct",
+            "off"
+          ],
+          "enumDescriptions": [
+            "Run in a container when Docker or Podman answers, otherwise directly on this machine.",
+            "Always run in a container (Docker or Podman); with no engine, a script call fails.",
+            "Run directly on this machine with your interpreter: not isolated, as you, with your files and network.",
+            "Never run a skill's scripts."
+          ],
+          "default": "auto",
+          "markdownDescription": "How a Studio code step runs the scripts of its skills (`scripts/` in the skill's folder at its pinned commit; `.py`, `.js`, `.mjs`, `.cjs`, `.sh`). A container has the repository writable, the skill read-only and no network; a direct run is not isolated. The step's approval lists the scripts and how they run."
         }
       }
     },

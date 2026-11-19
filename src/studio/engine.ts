@@ -377,6 +377,15 @@ export class WorkflowEngine {
         }
 
         const context = this.context(workflow, node, state, signal);
+        // Loaded before the gate: what the person approves for a code step includes its skills' scripts.
+        if (node.skills?.length) {
+          if (!this.options.skills) { return await this.fail(state, id, 'Skills cannot be read here.'); }
+          try {
+            context.skills = await Promise.all(node.skills.map(ref => this.options.skills!.load(ref)));
+          } catch (error) {
+            return await this.fail(state, id, `A skill could not be read: ${error instanceof Error ? error.message : String(error)}`);
+          }
+        }
         // The engine's gate: before a step that writes, runs a command or sends; and at every gate node.
         const asks = node.type === 'gate' || step.effect !== 'read';
         if (asks && state.approvals[id] !== 'approved') {
@@ -394,15 +403,7 @@ export class WorkflowEngine {
           return state;
         }
 
-        if (node.skills?.length) {
-          if (!this.options.skills) { return await this.fail(state, id, 'Skills cannot be read here.'); }
-          try {
-            context.skills = await Promise.all(node.skills.map(ref => this.options.skills!.load(ref)));
-          } catch (error) {
-            return await this.fail(state, id, `A skill could not be read: ${error instanceof Error ? error.message : String(error)}`);
-          }
-          await store.log(state.id, { type: 'skills', node: id, skills: context.skills.map(skill => skill.ref) });
-        }
+        if (context.skills) { await store.log(state.id, { type: 'skills', node: id, skills: context.skills.map(skill => skill.ref) }); }
         await store.log(state.id, { type: 'node', node: id, step: node.type, runs: runs.length });
         const outputs: unknown[] = [];
         for (const run of runs) {

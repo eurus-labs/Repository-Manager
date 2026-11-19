@@ -6,6 +6,7 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import { CopilotChatModel, CopilotRouter } from '../agent/lmRouter';
 import { approveScripts, git, readScripts, runNpmScript, samePathKey, ScriptApprovals } from '../agent/repositoryScripts';
+import { parseSetting } from './skillScripts';
 import { CodeServices } from './steps';
 import { pickModel } from './studioModels';
 
@@ -40,7 +41,8 @@ export function codeServices(context: vscode.ExtensionContext): CodeServices {
     },
     scripts: readScripts,
     allowedScripts: root => approvals.allowed(root, readScripts(root)),
-    runScript: runNpmScript
+    runScript: runNpmScript,
+    skillScripts: { setting: () => parseSetting(vscode.workspace.getConfiguration('repositoryManager').get<unknown>('studio.skillScripts')) }
   };
 }
 

@@ -37,6 +37,16 @@ export interface CodeServices {
   scripts(root: string): Record<string, string>;
   allowedScripts(root: string): string[];
   runScript(root: string, script: string, token?: CancelToken): Promise<CheckResult>;
+  /**
+   * Running a skill's scripts in code steps (plan 6). Absent: no tool is offered. `setting` is
+   * repositoryManager.studio.skillScripts; `detect` (the container engine probe) and `limits` are
+   * for tests.
+   */
+  skillScripts?: {
+    setting(): string;
+    detect?(): Promise<'docker' | 'podman' | undefined>;
+    limits?: { timeoutMs?: number; pullTimeoutMs?: number };
+  };
 }
 
 /** What a run keeps for its steps: values steps share (a code step's branch), and the frozen criteria. */
