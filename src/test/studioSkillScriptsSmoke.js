@@ -64,6 +64,17 @@ const cancelSource = () => {
 };
 const leftovers = engine => spawnSync(engine, ['ps', '-a', '--filter', 'name=repository-manager-', '--format', '{{.Names}}'], { encoding: 'utf8' }).stdout.trim();
 
+/** Whether a container can run the pinned Python image here (pulling it if missing); a registry that refuses skips the container tests. */
+async function pythonImageReady(engine) {
+  try {
+    await runSkillScript(plan('scripts/fail.py'), { root, runner: { mode: 'container', engine }, containerName: containerNameFor('t', 0) });
+    return true;
+  } catch (error) {
+    if (/^Could not pull /.test(error.message)) { return false; }
+    throw error;
+  }
+}
+
 async function main() {
   // ---- The setting and the runner it gives (Decision 5).
   assert.deepEqual(['container', 'direct', 'off', 'auto', 'nonsense', undefined].map(parseSetting), ['container', 'direct', 'off', 'auto', 'auto', 'auto']);
@@ -171,6 +182,8 @@ async function main() {
   const engine = await detectEngine();
   if (!engine) {
     console.log('Container tests SKIPPED: neither "docker version" nor "podman version" answered within 5 s on this machine.');
+  } else if (!(await pythonImageReady(engine))) {
+    console.log('Container tests SKIPPED: the pinned Python image could not be pulled here (a registry rate limit, or no network).');
   } else {
     const runner = { mode: 'container', engine };
     // A secret outside the repository and the skill folder: a container cannot see it.

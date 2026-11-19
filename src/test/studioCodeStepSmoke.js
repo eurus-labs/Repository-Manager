@@ -578,6 +578,15 @@ async function main() {
       assert.ok(!seenOld[0].tools.includes('run_skill_script'));
     }
 
+    // The approval names every script file the tool may run, however many (not a shortened list).
+    {
+      const many = Array.from({ length: 30 }, (_, index) => `scripts/step${index}.py`);
+      const { state: gate } = await start({ ...services([], [], []), skillScripts: { setting: () => 'direct' } }, [ref], library(loaded({ scripts: [...many, 'scripts/data.json'] })));
+      for (const file of many) { assert.ok(gate.waiting.preview.includes(file), `${file} is in the approval`); }
+      assert.ok(!gate.waiting.preview.includes('data.json'), 'a file the tool would refuse is not listed as runnable');
+      assert.doesNotMatch(gate.waiting.preview, /and \d+ more/);
+    }
+
     // A container asked for with no engine: the call fails saying so, and never runs directly instead.
     {
       const seen = [];
@@ -620,6 +629,10 @@ async function main() {
         assert.match(gate.waiting.preview, /How they run: in a container \(docker\): the repository is writable at \/work/);
         let state = await engine.continue(flow, await engine.answer(gate, true), never);
         const result = lastResult(seen);
+        if (result.is_error && /^Could not pull /.test(result.content)) {
+          console.log(`Step container test SKIPPED: ${result.content.slice(0, 120)}`);
+          await engine.answer(state, 'stop', flow);
+        } else {
         assert.equal(result.is_error, false, result.content);
         assert.match(result.content, /^exit code 0 \(.*, container, docker\)/);
         if (process.platform !== 'win32') { assert.equal(fs.statSync(path.join(repo, 'out', 'hello.txt')).uid, process.getuid()); }
@@ -632,6 +645,7 @@ async function main() {
         assert.equal(spawnSync('docker', ['ps', '-a', '--filter', 'name=repository-manager-', '--format', '{{.Names}}'], { encoding: 'utf8' }).stdout.trim(), '', 'no container is left');
         fs.rmSync(path.join(repo, 'out'), { recursive: true, force: true });
         console.log('Step container test RAN with docker.');
+        }
       }
     }
   }

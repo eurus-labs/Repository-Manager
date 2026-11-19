@@ -220,8 +220,6 @@ async function scriptRunner(context: StepContext, fresh: boolean): Promise<Scrip
   return runner;
 }
 
-const SCRIPT_FILES_SHOWN = 12;
-
 /** What the person approves with the step for its skills' scripts (Decision 2): skill, source, commit, files, and how they run. */
 async function scriptsPreview(context: StepContext): Promise<string> {
   const unavailable = (context.skills ?? []).filter(skill => skill.scriptsUnavailable).map(skill => `- ${skill.name}: scripts not available (${skill.scriptsUnavailable})`);
@@ -234,8 +232,8 @@ async function scriptsPreview(context: StepContext): Promise<string> {
   const lines = offered.map(skill => {
     const ref = parseSkillRef(skill.ref);
     const files = skill.scripts.filter(runnable);
-    const shown = files.slice(0, SCRIPT_FILES_SHOWN).join(', ') + (files.length > SCRIPT_FILES_SHOWN ? `, and ${files.length - SCRIPT_FILES_SHOWN} more` : '');
-    return `- ${skill.name} (${ref.source} @ ${ref.commit.slice(0, 7)}): ${shown}`;
+    // Every file the tool may run is named: the person approves exactly this list.
+    return `- ${skill.name} (${ref.source} @ ${ref.commit.slice(0, 7)}): ${files.join(', ')}`;
   });
   const images = [...new Set(offered.flatMap(skill => skill.scripts.filter(runnable)).map(script => imageName(interpreterFor(script)!.image)))];
   return [

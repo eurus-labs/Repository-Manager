@@ -209,6 +209,20 @@ async function main() {
     assert.match(first.scriptsUnavailable, /could not be downloaded: offline/);
     fail = false;
     assert.deepEqual((await flaky.load(writeTests)).scripts, ['scripts/run.py']);
+
+    // Offline with a skill cached before this change: it still loads (a prompt step needs no scripts), without them, and is retried.
+    const offlineCache = path.join(base, 'offline-cache');
+    const offlineFolder = path.join(offlineCache, 'acme', 'skills', commit, 'plugins/testing/skills/write-tests');
+    fs.mkdirSync(offlineFolder, { recursive: true });
+    fs.writeFileSync(path.join(offlineFolder, 'skill.json'), JSON.stringify({ ref: writeTests, name: 'write-tests', description: 'd', usesScripts: true, body: 'cached body', references: {} }));
+    let online = false;
+    const offline = new SkillLibrary(offlineCache, { ...api, tree: async () => { if (!online) { throw new Error('GitHub did not answer in time.'); } return api.tree(); } });
+    const cachedOffline = await offline.load(writeTests);
+    assert.deepEqual([cachedOffline.body, cachedOffline.scripts], ['cached body', []]);
+    assert.match(cachedOffline.scriptsUnavailable, /its scripts could not be listed: GitHub did not answer in time\./);
+    assert.equal('scripts' in JSON.parse(fs.readFileSync(path.join(offlineFolder, 'skill.json'), 'utf8')), false, 'a failed lookup is not kept');
+    online = true;
+    assert.deepEqual((await offline.load(writeTests)).scripts, ['scripts/run.py']);
   }
 
   // ---- Validation: pinned references, steps that use a model, at most five.
@@ -407,7 +421,7 @@ async function main() {
   const asked = warnings.length;
   assert.equal(await service.ensureTrusted(['acme/skills']), true);
   assert.equal(warnings.length, asked, 'trusted once, not asked again');
-  assert.match(warnings[asked - 1][1], /Its scripts run only in a code step you approve, in a container when Docker or Podman is available/);
+  assert.match(warnings[asked - 1][1], /Its scripts run only in a code step you approve, in a container when Docker or Podman is available and otherwise directly on this machine, not isolated/);
 
   // ---- "+ Skill" on the chat's plan card: listed, picked, pinned; names on the card.
   {

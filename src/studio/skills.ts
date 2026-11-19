@@ -184,7 +184,14 @@ export class SkillLibrary {
       stored = await this.fetchSkill(owner, repo, commit, folder, tree, host);
     }
     if (!Array.isArray(stored.scripts)) {
-      stored = await this.cacheScripts(stored, dir, owner, repo, commit, folder, tree ?? await this.api.tree(owner, repo, commit, host), host);
+      let files = tree;
+      if (!files) {
+        // A skill cached before scripts were downloaded must still load offline: it just has no scripts until the next load.
+        try { files = await this.api.tree(owner, repo, commit, host); } catch (error) {
+          return { ...stored, scripts: [], scriptsUnavailable: `its scripts could not be listed: ${error instanceof Error ? error.message : String(error)}`, dir };
+        }
+      }
+      stored = await this.cacheScripts(stored, dir, owner, repo, commit, folder, files, host);
     }
     return { ...stored, scripts: stored.scripts ?? [], dir };
   }
