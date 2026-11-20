@@ -49,10 +49,10 @@ chain of steps, not only coding *(decided)*.
 - **Sub-workflows come later** *(decided)*.
 - **Setup is visual** *(decided)*: a diagram editor. The JSON is the source of
   truth; the diagram reads it and writes it.
-- **VS Code extension first** *(decided)*. A workflow can later be packaged as
-  a container *(decided)*. Because of that:
-  - the engine imports no `vscode`;
-  - models are reachable without Copilot.
+- **VS Code extension first** *(decided)*. Workflows may later run outside
+  VS Code, as a container or a low-code service *(deferred 2026-11-19: see
+  [Running outside VS Code](#running-outside-vs-code-deferred))*. To keep that
+  open, the engine and its steps import no `vscode`.
 - **Review becomes a step** and its history a Studio view. Agent tasks come
   from wherever the workflow takes them, Jira for example. Both replace
   earlier decisions in `docs/agent-harness.md` *(decided)*.
@@ -364,25 +364,59 @@ effect, MCP tool and script the workflow uses, and the person approves them
 for this repository. A changed `version` asks again for anything new
 *(proposed)*.
 
-**In a container, no person is present.** A packaged workflow runs Read steps
-and Write steps on a branch, then stops at an External gate until it is
-approved over HTTP or the CLI.
+The engine applies these rules wherever it runs. It stops before every step
+that is not Read (`src/studio/engine.ts`, `continue`), and after a code step
+for its review. No run goes past a Write, Run command or External step without
+a person's answer. An earlier version of this section said that a packaged
+workflow would run Write steps without a person; the engine never did that,
+and nothing is decided about runs without a person.
 
-## Packaging as a container
+## Running outside VS Code *(deferred)*
 
-`repository-manager workflow pack <file>` builds an image *(proposed)* with:
+**Why it was proposed.** The long-term idea is a low-code service: people
+build and run workflows without VS Code, and approve them from a web page or
+a phone. The first steps would be a CLI and a container image (roadmap item 8).
 
-- the engine CLI (Node);
-- the workflow JSON;
-- the built-in steps it uses.
+**Why it is deferred** *(decided 2026-11-19)*:
 
-At run time it takes:
+- **Models without Copilot already work in VS Code.** Studio uses every
+  `vscode.lm` model, including ones added with the person's own API key.
+- **An unattended run stops early.** The engine waits for a person before every
+  step that is not Read. A run in CI with no person can therefore do little
+  more than a single model call.
+- **A service is a separate product.** It needs:
+  - sign-in and permissions;
+  - one workspace per run;
+  - previews shown safely on a web page;
+  - answers that cannot cross.
 
-- the repository;
-- model and MCP credentials as secrets;
-- an approvals endpoint.
+  That costs more than every other roadmap item together, and no user needs
+  it yet. This follows the scope rule under [Risks](#risks).
 
-Copilot does not move: models go through `LmRouter` with an API provider.
+**What holds meanwhile.** Keep the engine and its steps free of `vscode`
+(see [Phase 1 as built](#phase-1-as-built)).
+
+**Reopen when** someone needs to run a workflow outside VS Code. Write the
+need down first. If it opens, settle these before any code:
+
+- **Who approves**, and which effects a policy may approve ahead of time. The
+  External rule stays.
+- **Answers that cannot cross.** An answer is bound to the exact `waiting` it
+  was shown, for example by a digest. Each run has one writer, and the log
+  records who answered. Today `WorkflowEngine.answer` has no lock and no
+  revision.
+- **A workspace per run.** Code steps need a clean working tree, so two runs
+  cannot share one checkout.
+- **Changes awaiting review must survive the process.** A code step's changes
+  wait for review uncommitted in the working tree, so a job on a disposable
+  machine loses them.
+- **No secrets in child processes.** `runNpmScript` passes the whole
+  environment, and an API key in it would reach the repository's scripts.
+- **Paths a remote caller gives are confined.** Today an input path may point
+  anywhere for reading.
+- **Previews are shown as text only.** They hold file contents and model text.
+- **Skill scripts in an image.** An image has no Docker daemon, and a direct
+  run has network access.
 
 ## Sample workflow: requirement to code
 
@@ -411,8 +445,16 @@ Its open points:
 
 ## Phase 1 as built
 
-Code lives in `src/studio/`. Everything except `studioCommands.ts` runs in Node without `vscode`;
-`src/test/studioEngineSmoke.js` covers it.
+Code lives in `src/studio/`. The engine and its steps run in Node without `vscode`:
+`workflow.ts`, `expressions.ts`, `jsonSchema.ts`, `engine.ts`, `steps.ts`, `codeStep.ts`,
+`skills.ts`, `skillScripts.ts`, `runsReport.ts`, and what they import from `src/agent/`. The
+`src/test/studioEngineSmoke.js` test covers it. The VS Code side is the following files:
+
+- `studioCommands.ts`, `studioChat.ts` and `codeHost.ts`;
+- `studioModels.ts` (Copilot and other `vscode.lm` models);
+- `githubSkills.ts` (GitHub sign-in through `vscode.authentication`; it holds `GitHubSkillApi`,
+  the only skill source so far);
+- `runsView.ts` and `workflowEditorProvider.ts`.
 
 **Workflow file** (`workflow.ts`). The format is `repository-manager/workflow@1`, as in the
 example above. Validation reports every problem it finds, with where it is:
@@ -953,7 +995,7 @@ comes before phase 6.
 | 5 | Review step (phase 4) | The review engine as a step: findings, verdict and evidence; review history in the Studio linked to the run, node and reviewed revision. A finished review is distinct from a passing one. |
 | 6 | Skill scripts in the Studio | **Shipped in 3.7.0** (plan 6, `docs/plans/plan-6-studio-skill-scripts.md`). A Studio **code** step whose skills have scripts is offered the tool `run_skill_script` (skill, script path as its SKILL.md writes it, args); prompt steps stay toolless. The step's approval lists each skill, its source, short commit, the script files and the runner; approving the step approves those scripts for that run. The runner follows the setting `repositoryManager.studio.skillScripts`: `auto` (a **container** when `docker version` or else `podman version` answers within 5 s, otherwise **directly on the machine**, not isolated, which the approval says plainly), `container` (never direct: no engine fails the call), `direct`, `off`. The choice is made when the approval is built and is the one used. *What a container may reach (decided 2026-11-18, closing the open question):* the repository read-write at `/work` (the working directory), the skill's cached folder read-only at `/skill`, no network, no home folder, no environment variables (only `HOME=/tmp`), a read-only root file system with a writable `/tmp`, the person's user and group ids (not on Windows), `--pids-limit 256` and `--memory 1g`. Images are the official slim `python`, `node` and `debian` images pinned by digest, chosen by the script's extension (`.py`, `.js` `.mjs` `.cjs`, `.sh`), with no package installation; the image is pulled before the first run that needs it, with its own 10-minute limit. A direct run uses `execFile`-style argument arrays (no shell) and an environment reduced to `PATH`, the home folder, `LANG`, `SystemRoot`, `TEMP` and `TMP`. A script runs only from the cached files at the skill's pinned commit, with a 5-minute limit and the last 64 KB of output; Stop and a timeout kill it, and a container is removed by name. Each call runs inside the step's tracked workspace, so what it changes in the repository is reviewed and undone like a check script's (#139), and each call's exact command, runner, exit code and duration are logged, shown in the step's Activity and in the review. Not built: tools in prompt steps, a `skill.script` step type, package installation, our own image (item 8), network access, PowerShell and `.ts`, an approval remembered across runs. |
 | 7 | MCP steps (phase 5) | One whole Jira workflow: plan → preview → approval → create issue → write the key back to the plan; mapping, partial failures, and resuming without duplicate issues. The MCP server is chosen first. |
-| 8 | Container (phase 6) | A CLI that runs workflows outside VS Code first, then the image: model provider, credentials, run storage and approvals over CLI or HTTP; a restart continues a waiting run. |
+| 8 | Container (phase 6) | **Deferred** *(decided 2026-11-19)*: see [Running outside VS Code](#running-outside-vs-code-deferred) for why, and for what to settle if it reopens. It was: a CLI that runs workflows outside VS Code first, then the image (model provider, credentials, run storage and approvals over CLI or HTTP; a restart continues a waiting run). |
 | 9 | Files dropped into the Studio Chat | Drag files from the Explorer or an editor tab into the chat's message box to add them as context, as Copilot Chat does: each becomes a removable chip; the planner gets their text within its input limit; a file outside the workspace, a binary or one over the size limit is refused with the reason. VS Code only hands a webview a file dropped with Shift held, so the box says so, and an **Add file…** button (a host file picker) does the same without dragging. Done when dropping from both places and the button add the same chips, and the plan the planner writes can cite them. |
 
 How the Runs view measures *(decided)*:
@@ -977,7 +1019,7 @@ How the Runs view measures *(decided)*:
 4. **Review step** and the review history as a Studio view. (Code steps and
    replacing the Agent view moved to 2b-3.)
 5. **MCP steps**, starting with the sample's Jira workflow.
-6. **Container packaging.**
+6. **Running outside VS Code** *(deferred)*.
 
 ## Risks
 
