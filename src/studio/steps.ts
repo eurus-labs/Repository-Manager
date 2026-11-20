@@ -26,6 +26,8 @@ export interface StudioModel {
    * without one, the model chosen in the dashboard answers.
    */
   complete(prompt: string, signal: CancelSignal, model?: string): Promise<{ text: string; model: string }>;
+  /** The model's `maxInputTokens` for a selector (or the dashboard's model), when known; attached files are fitted to it. */
+  inputLimit?(model?: string): Promise<number | undefined>;
 }
 
 /** What a code step needs from the machine (VS Code gives it; tests give scripted ones). */

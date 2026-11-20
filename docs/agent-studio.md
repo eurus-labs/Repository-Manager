@@ -693,6 +693,34 @@ scripted in the tests; a chat with Copilot in VS Code has not been run yet.
   a scripted `runs.run`), `src/test/studioChatUi.js` (the page in Chromium;
   screenshots 40–47).
 
+- **Attached files and folder maps** (3.8.0, plan 7,
+  `docs/plans/plan-7-studio-chat-attached-files.md`; `src/studio/chatAttachments.ts` and
+  `src/studio/folderMap.ts`, no `vscode`). Files and folders of the workspace are added with
+  **Add…** (a Files… or Folder… pick, then the editor's dialog) or dropped on the message box with
+  Shift held. Each is a removable chip on the conversation (`Conversation.attachments`) until the
+  person removes it; **New Studio Chat** starts with none. The host checks every entry and again at
+  each send: `file:` scheme, real path inside the workspace, not a symbolic link or inside one (refused as "is a symbolic link, or inside one"; a link inside an attached folder is skipped), exists,
+  a folder or a text file of at most 5 MB, not the root, not inside `.repository-manager/maps/`, at most
+  10 chips. A chip that fails at send time stays, marked `not sent: <reason>`. At every send the
+  planner gets the current text (an open editor's unsaved text included), fitted to the drafting
+  model's input limit (`StudioModel.inputLimit`; 40% of `maxInputTokens` at 3 characters per token,
+  between 60,000 and 300,000 characters, 60,000 when unknown): a file in full when it is at most
+  200 KB and fits, else its summary, else its outline, else `not sent: over the budget`.
+  Each attached folder has a map at `.repository-manager/maps/<folder with / as -->.md` (a file chip's
+  parent folder has one too, holding the entries that need a summary; the workspace root's is
+  `_root.md`): one entry per file that Git does not ignore, a one-line description (from the file, else
+  from one batched model call of at most 40 files, else from the outline) and, where needed, a summary
+  (at most 3 model calls per send). Only new or changed files are redone, found by content hash; an
+  entry the person edited is kept and marked, and the map is not written while it is open with unsaved
+  changes. A Git-ignored file attached on its own is sent with a warning and never gets a map entry. The index the planner gets counts against the budget: one that does not fit ends with
+  `… and N more (see the map at <path>)`. A map is never read or written through a link (the maps folder or
+  a parent resolving outside the workspace, or the map itself a link, is refused with a note), and its
+  temporary file is created exclusively under a random name. A
+  plan can name the map in a code step's instructions. The saved chat keeps paths, counts and outcomes,
+  never file text. Model paths are scripted in the tests; Shift-drop from the Explorer and from an
+  editor tab, the real `showOpenDialog`, the `maxInputTokens` of real models and real Copilot
+  descriptions and summaries are unverified until run in VS Code.
+
 **Not in 2b-1** (skills and code steps came in 2b-2 and 2b-3, below):
 drafting a single node, trying a prompt step on a sample input, showing a
 proposed change on the diagram, and choosing a step's model in the diagram's
@@ -996,7 +1024,7 @@ comes before phase 6.
 | 6 | Skill scripts in the Studio | **Shipped in 3.7.0** (plan 6, `docs/plans/plan-6-studio-skill-scripts.md`). A Studio **code** step whose skills have scripts is offered the tool `run_skill_script` (skill, script path as its SKILL.md writes it, args); prompt steps stay toolless. The step's approval lists each skill, its source, short commit, the script files and the runner; approving the step approves those scripts for that run. The runner follows the setting `repositoryManager.studio.skillScripts`: `auto` (a **container** when `docker version` or else `podman version` answers within 5 s, otherwise **directly on the machine**, not isolated, which the approval says plainly), `container` (never direct: no engine fails the call), `direct`, `off`. The choice is made when the approval is built and is the one used. *What a container may reach (decided 2026-11-18, closing the open question):* the repository read-write at `/work` (the working directory), the skill's cached folder read-only at `/skill`, no network, no home folder, no environment variables (only `HOME=/tmp`), a read-only root file system with a writable `/tmp`, the person's user and group ids (not on Windows), `--pids-limit 256` and `--memory 1g`. Images are the official slim `python`, `node` and `debian` images pinned by digest, chosen by the script's extension (`.py`, `.js` `.mjs` `.cjs`, `.sh`), with no package installation; the image is pulled before the first run that needs it, with its own 10-minute limit. A direct run uses `execFile`-style argument arrays (no shell) and an environment reduced to `PATH`, the home folder, `LANG`, `SystemRoot`, `TEMP` and `TMP`. A script runs only from the cached files at the skill's pinned commit, with a 5-minute limit and the last 64 KB of output; Stop and a timeout kill it, and a container is removed by name. Each call runs inside the step's tracked workspace, so what it changes in the repository is reviewed and undone like a check script's (#139), and each call's exact command, runner, exit code and duration are logged, shown in the step's Activity and in the review. Not built: tools in prompt steps, a `skill.script` step type, package installation, our own image (item 8), network access, PowerShell and `.ts`, an approval remembered across runs. |
 | 7 | MCP steps (phase 5) | One whole Jira workflow: plan → preview → approval → create issue → write the key back to the plan; mapping, partial failures, and resuming without duplicate issues. The MCP server is chosen first. |
 | 8 | Container (phase 6) | **Deferred** *(decided 2026-11-19)*: see [Running outside VS Code](#running-outside-vs-code-deferred) for why, and for what to settle if it reopens. It was: a CLI that runs workflows outside VS Code first, then the image (model provider, credentials, run storage and approvals over CLI or HTTP; a restart continues a waiting run). |
-| 9 | Files dropped into the Studio Chat | Drag files from the Explorer or an editor tab into the chat's message box to add them as context, as Copilot Chat does: each becomes a removable chip; the planner gets their text within its input limit; a file outside the workspace, a binary or one over the size limit is refused with the reason. VS Code only hands a webview a file dropped with Shift held, so the box says so, and an **Add file…** button (a host file picker) does the same without dragging. Done when dropping from both places and the button add the same chips, and the plan the planner writes can cite them. |
+| 9 | Files dropped into the Studio Chat | **Shipped in 3.8.0** (plan 7, `docs/plans/plan-7-studio-chat-attached-files.md`; see "Attached files and folder maps" under Phase 2b-1). Original scope: Drag files from the Explorer or an editor tab into the chat's message box to add them as context, as Copilot Chat does: each becomes a removable chip; the planner gets their text within its input limit; a file outside the workspace, a binary or one over the size limit is refused with the reason. VS Code only hands a webview a file dropped with Shift held, so the box says so, and an **Add file…** button (a host file picker) does the same without dragging. Done when dropping from both places and the button add the same chips, and the plan the planner writes can cite them. |
 
 How the Runs view measures *(decided)*:
 

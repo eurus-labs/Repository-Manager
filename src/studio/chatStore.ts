@@ -47,6 +47,16 @@ export interface ChatMessage {
   model?: string;
   draft?: ChatDraft;
   run?: ChatRun;
+  /** For a person's message: what went with it (paths, counts and outcomes, never file text). Absent in older chats. */
+  attached?: ChatAttached[];
+}
+
+export interface ChatAttached {
+  path: string;
+  kind: 'file' | 'folder';
+  sent: { full: number; summary: number; outline: number; notSent: number };
+  /** The folder's map, relative to the workspace. */
+  map?: string;
 }
 
 export interface Conversation {
@@ -57,6 +67,8 @@ export interface Conversation {
   /** The `<vendor>:<family>` chosen for drafting. */
   model?: string;
   messages: ChatMessage[];
+  /** Files and folders attached to the conversation until the person removes them; paths relative to the workspace, with `/`. Absent in older chats. */
+  attachments?: Array<{ path: string; kind: 'file' | 'folder'; ignored?: boolean }>;
   /** The plan as it is now (the last accepted draft, with the person's edits). */
   plan?: Workflow;
   /** Where the plan was saved, relative to the workspace: from then on that file is the plan. */
