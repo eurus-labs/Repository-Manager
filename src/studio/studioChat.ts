@@ -638,7 +638,9 @@ export class StudioChatProvider implements vscode.WebviewViewProvider {
   }
 
   private async saveConversation(): Promise<void> {
-    if (!this.conversation || (!this.conversation.messages.length && !this.conversation.attachments?.length)) { return; }
+    if (!this.conversation) { return; }
+    // A chat with nothing in it is not kept, unless it was saved before: then it is saved again, so a removed chip stays removed.
+    if (!this.conversation.messages.length && !this.conversation.attachments?.length && !await this.store.load(this.conversation.id)) { return; }
     await this.store.save(this.conversation);
     await this.context.workspaceState.update(CURRENT_KEY, this.conversation.id);
   }

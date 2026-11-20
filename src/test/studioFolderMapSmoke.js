@@ -162,6 +162,56 @@ async function main() {
     assert.ok(second.notes.some(note => /is a symbolic link/.test(note)));
   }
 
+  // ---- Review findings on PR 188.
+  // 1. A map's temporary file that is a link must not be followed.
+  {
+    const root = repo();
+    const outside = fs.mkdtempSync(path.join(base, 'victim'));
+    write(root, 'docs/a.md', '# A\n\nText.\n');
+    fs.writeFileSync(path.join(outside, 'victim.txt'), 'KEEP');
+    fs.mkdirSync(path.join(root, '.repository-manager/maps'), { recursive: true });
+    fs.symlinkSync(path.join(outside, 'victim.txt'), path.join(root, '.repository-manager/maps/docs.md.tmp'));
+    const result = await prepareAttachments([folderChip('docs')], deps(root, model()));
+    assert.equal(fs.readFileSync(path.join(outside, 'victim.txt'), 'utf8'), 'KEEP', 'the outside file was overwritten through the temporary link');
+    assert.match(result.text, /docs\/a\.md/, 'the send still drafts');
+    assert.ok(fs.lstatSync(path.join(root, mapPathOf('docs'))).isFile(), 'the map is a plain file');
+  }
+  // 2. A link inside an attached folder is never followed: it could lead to a Git-ignored file.
+  {
+    const root = repo();
+    write(root, 'docs/a.md', '# A\n\nText.\n');
+    write(root, '.env', 'SECRET=hunter2\n');
+    write(root, 'elsewhere/x.md', '# X\n\nBehind a linked folder.\n');
+    fs.symlinkSync('../.env', path.join(root, 'docs/config.txt'));
+    fs.symlinkSync('../elsewhere', path.join(root, 'docs/linked'));
+    const result = await prepareAttachments([folderChip('docs')], deps(root, model()));
+    assert.doesNotMatch(result.text, /hunter2/, 'a Git-ignored secret reached the prompt through a link');
+    assert.doesNotMatch(result.text, /Behind a linked folder/);
+    assert.ok(!fs.readFileSync(path.join(root, mapPathOf('docs')), 'utf8').includes('hunter2'));
+    assert.deepEqual(parseMap(mapText(root, 'docs')).map(entry => entry.path), ['docs/a.md']);
+  }
+  // 3. Indexes count against the budget: the attached text never exceeds it.
+  {
+    const root = repo(false);
+    for (let i = 0; i < 500; i++) { write(root, `many/f${String(i).padStart(3, '0')}.ts`, `// ${'d'.repeat(190)}\nexport const x${i} = 1;\n`); }
+    const result = await prepareAttachments([folderChip('many')], deps(root, undefined));
+    assert.ok(result.text.length <= 60_000, `attached text is ${result.text.length} characters, over the budget of 60000`);
+    assert.match(result.text, /^… and \d+ more \(see the map at \.repository-manager\/maps\/many\.md\)$/m);
+  }
+  // 4. An entry the person edited stays protected when another file's change rewrites the map.
+  {
+    const root = repo();
+    write(root, 'proj/one.md', '# One\n\nFirst.\n');
+    write(root, 'proj/two.md', '# Two\n\nSecond.\n');
+    await prepareAttachments([folderChip('proj')], deps(root, model()));
+    fs.writeFileSync(path.join(root, mapPathOf('proj')), mapText(root, 'proj').replace(/^description \(from the file\): One: .*$/m, 'description (from the file): My words about one'));
+    write(root, 'proj/two.md', '# Two\n\nSecond, changed.\n');
+    await prepareAttachments([folderChip('proj')], deps(root, model()));
+    write(root, 'proj/one.md', '# One\n\nFirst, changed.\n');
+    await prepareAttachments([folderChip('proj')], deps(root, model()));
+    assert.equal(entryOf(root, 'proj', 'proj/one.md').description, 'My words about one', 'the person\'s edit was lost after another file rewrote the map');
+  }
+
   // ---- Failure: the model fails: outline, the send still goes, the next send asks again.
   {
     const root = repo(); proj(root);
@@ -205,7 +255,7 @@ async function main() {
     const big = repo(false);
     for (let i = 0; i < 520; i++) { write(big, `many/f${String(i).padStart(3, '0')}.ts`, `// File ${i}\n`); }
     const result = await prepareAttachments([folderChip('many')], deps(big, undefined));
-    assert.match(result.text, /^… and 20 more$/m);
+    assert.match(result.text, /^… and 20 more \(see the map at \.repository-manager\/maps\/many\.md\)$/m);
     assert.equal((result.text.match(/^- many\//gm) || []).length, 500);
   }
 

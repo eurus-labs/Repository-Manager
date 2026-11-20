@@ -21,6 +21,8 @@ fs.writeFileSync(path.join(root, '.repository-manager/maps/docs.md'), '# map');
 fs.writeFileSync(path.join(outside, 'secret.txt'), 'secret');
 fs.symlinkSync(path.join(outside, 'secret.txt'), path.join(root, 'link.txt'));
 fs.symlinkSync(outside, path.join(root, 'linkdir'));
+fs.symlinkSync(path.join(root, 'docs/small.md'), path.join(root, 'inlink.md'));
+fs.symlinkSync(path.join(root, 'docs'), path.join(root, 'inlinkdir'));
 const uri = fsPath => ({ scheme: 'file', fsPath });
 const accept = (target, existing = [], scheme = 'file') => acceptEntry(root, { scheme, fsPath: target }, existing);
 
@@ -29,6 +31,9 @@ const refused = (result, pattern) => { assert.equal(result.ok, false); assert.ma
 refused(accept(path.join(outside, 'secret.txt')), /outside the workspace/);
 refused(accept(path.join(root, 'link.txt')), /resolves outside the workspace/);
 refused(accept(path.join(root, 'linkdir')), /resolves outside the workspace/);
+refused(accept(path.join(root, 'inlink.md')), /symbolic link/);
+refused(accept(path.join(root, 'inlinkdir')), /symbolic link/);
+refused(accept(path.join(root, 'inlinkdir/small.md')), /symbolic link/);
 refused(accept(path.join(root, 'notes.pdf')), /binary file/);
 refused(accept(path.join(root, 'six.txt')), /larger than 5 MB/);
 refused(accept(root), /workspace root/);
@@ -52,6 +57,7 @@ assert.equal(recheck(root, { path: 'docs/small.md', kind: 'file' }), undefined);
 assert.match(recheck(root, { path: 'gone.md', kind: 'file' }), /does not exist/);
 assert.match(recheck(root, { path: 'notes.pdf', kind: 'file' }), /binary/);
 assert.match(recheck(root, { path: 'link.txt', kind: 'file' }), /resolves outside/);
+assert.match(recheck(root, { path: 'inlink.md', kind: 'file' }), /symbolic link/);
 assert.match(recheck(root, { path: 'docs', kind: 'file' }), /is now a folder/);
 
 // ---- Budget.

@@ -5,7 +5,7 @@
  * changed and keeps what the person edited. Also the outline of a file, made without a model.
  * No `vscode` here.
  */
-import { createHash } from 'crypto';
+import { createHash, randomBytes } from 'crypto';
 import { execFile } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -87,7 +87,10 @@ const bodyHash = (lines: string[]) => sha16(lines.map(line => line.trimEnd()).fi
 
 export function renderMap(folder: string, entries: MapEntry[]): string {
   const sorted = [...entries].sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
-  const blocks = sorted.map(entry => {
+  const blocks = sorted.map(original => {
+    // An entry the person edited is written with an explicit marker before it is hashed again, so the
+    // protection survives any number of rewrites of the map.
+    const entry = original.edited && STUDIO_SOURCES.has(original.source) ? { ...original, source: 'edited' } : original;
     const lines = bodyLines(entry);
     return [`## ${entry.path}`, `hash: ${entry.hash} · entry ${bodyHash(lines)} · ${entry.size} bytes`, ...lines].join('\n');
   });
@@ -172,8 +175,11 @@ export function writeMapFile(root: string, mapRelative: string, text: string): v
   if (problem) { throw new Error(problem); }
   const target = path.join(root, mapRelative);
   fs.mkdirSync(path.dirname(target), { recursive: true });
-  fs.writeFileSync(`${target}.tmp`, text);
-  fs.renameSync(`${target}.tmp`, target);
+  // Created exclusively under a name nobody can plan for: a link left at the old fixed name is never followed.
+  const temporary = `${target}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`;
+  const descriptor = fs.openSync(temporary, 'wx', 0o644);
+  try { fs.writeSync(descriptor, text); } finally { fs.closeSync(descriptor); }
+  try { fs.renameSync(temporary, target); } catch (error) { fs.rmSync(temporary, { force: true }); throw error; }
 }
 
 // ---- which files a folder lists -----------------------------------------------------------------
@@ -200,6 +206,16 @@ function walk(root: string, folder: string, out: string[]): void {
   }
 }
 
+/** Whether the real path of `absolute` is `relative` under the real root: no link in the file or in any folder above it. */
+export function samePlace(realRoot: string, absolute: string, relative: string): boolean {
+  try {
+    const found = posixOf(path.relative(realRoot, fs.realpathSync(absolute)));
+    const folded = process.platform === 'win32' || process.platform === 'darwin';
+    return folded ? found.toLowerCase() === relative.toLowerCase() : found === relative;
+  } catch { return false; }
+}
+const posixOf = (value: string) => value.split(path.sep).join('/');
+
 /**
  * The folder's files, relative to the workspace and in path order. In a Git work tree, the files Git
  * tracks or would track (so Git-ignored files, which may hold secrets, are never listed); otherwise a
@@ -224,8 +240,8 @@ export async function listFolder(root: string, folder: string): Promise<string[]
     try {
       const absolute = path.join(root, relative);
       if (!fs.statSync(absolute).isFile()) { continue; }
-      const real = fs.realpathSync(absolute);
-      if (real !== realRoot && !real.startsWith(realRoot + path.sep)) { continue; }
+      // A link is never followed, and neither is a path through a linked folder: the file must be where its name says.
+      if (!samePlace(realRoot, absolute, relative)) { continue; }
       files.add(relative);
     } catch { /* deleted, or a broken link */ }
   }
@@ -494,10 +510,25 @@ export function withSummary(entry: MapEntry, summary: string, today: string): Ma
   return { ...entry, source, summary, summarySource: `by the model, ${today}` };
 }
 
-/** The planner's index: each entry's path and description, one line each, at most 500, then how many more. */
-export function indexText(entries: MapEntry[]): string {
+/**
+ * The planner's index: each entry's path and description, one line each, at most 500 and at most
+ * `maxChars` characters, then how many were left out and where the whole map is.
+ */
+export function indexText(entries: MapEntry[], maxChars: number, mapPath: string): string {
   const sorted = [...entries].sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
-  const lines = sorted.slice(0, MAX_INDEX_ENTRIES).map(entry => `- ${entry.path}: ${entry.description}`);
-  if (sorted.length > MAX_INDEX_ENTRIES) { lines.push(`… and ${sorted.length - MAX_INDEX_ENTRIES} more`); }
+  const all = sorted.map(entry => `- ${entry.path}: ${entry.description}`);
+  const closing = (left: number) => `… and ${left} more (see the map at ${mapPath})`;
+  const cap = all.slice(0, MAX_INDEX_ENTRIES);
+  if (all.length <= MAX_INDEX_ENTRIES && cap.join('\n').length <= maxChars) { return cap.join('\n'); }
+  // Not all of it fits: as many lines as leave room for the closing line.
+  const limit = maxChars - closing(all.length).length - 1;
+  const lines: string[] = [];
+  let used = 0;
+  for (const line of cap) {
+    if (used + line.length + 1 > limit) { break; }
+    lines.push(line);
+    used += line.length + 1;
+  }
+  lines.push(closing(all.length - lines.length));
   return lines.join('\n');
 }

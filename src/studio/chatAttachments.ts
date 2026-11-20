@@ -9,7 +9,7 @@ import * as path from 'path';
 import { MAX_FILE_BYTES } from '../agent/agentTools';
 import {
   indexText, insideMaps, listFolder, ListedFile, MapEntry, MAX_READ_BYTES, mapPathOf,
-  mapProblem, normalizeSummary, outline, parseMap, readListed, readMapFile, renderMap, summaryPrompt, updateEntries, withSummary, writeMapFile
+  mapProblem, normalizeSummary, samePlace, outline, parseMap, readListed, readMapFile, renderMap, summaryPrompt, updateEntries, withSummary, writeMapFile
 } from './folderMap';
 import type { CancelSignal } from './steps';
 
@@ -100,6 +100,8 @@ function inspect(root: string, absolute: string): Inspected {
   const realRelative = path.relative(realRoot, real);
   if (isOutside(realRelative)) { return { ok: false, reason: 'resolves outside the workspace (through a link)' }; }
   if (relative === '' || realRelative === '') { return { ok: false, reason: 'is the workspace root' }; }
+  // A chip is never a link, nor inside a linked folder: its target could be a Git-ignored file or a map.
+  if (!samePlace(realRoot, resolved, posix(relative))) { return { ok: false, reason: 'is a symbolic link, or inside one' }; }
   if (insideMaps(posix(relative)) || insideMaps(posix(realRelative))) { return { ok: false, reason: 'is inside .repository-manager/maps (the Studio\'s own maps)' }; }
   let stat: fs.Stats;
   try { stat = fs.statSync(real); } catch { return { ok: false, reason: 'does not exist' }; }
@@ -275,10 +277,19 @@ export async function prepareAttachments(chips: Attachment[], deps: PrepareDeps)
     place(work.item, work.file!, work.item.ignored);
   }
 
-  const indexOf = (work: FolderWork) => `Folder ${work.folder}\nMap (a file in the repository; a code step can read it): ${work.mapPath}\nIndex (path: description):\n${indexText(work.entries) || '(no files)'}\n`;
-  const fixed = folderWorks.filter(work => !work.item.notSent).reduce((sum, work) => sum + indexOf(work).length + 1, 0);
-  const inputs = () => units.map(unit => ({ path: unit.file.path, text: unit.file.text!, bytes: unit.file.size, summary: storedSummary(unit.file, unit.ignored) }));
   const budget = budgetFor(deps.inputLimit);
+  // Indexes are part of the budget too: each gets what is left (a line at a time), then says how many it left out.
+  const indexes = new Map<FolderWork, string>();
+  let fixed = units.length + folderWorks.length + 2; // the newlines that join the parts
+  for (const work of folderWorks) {
+    if (work.item.notSent) { continue; }
+    const head = `Folder ${work.folder}\nMap (a file in the repository; a code step can read it): ${work.mapPath}\nIndex (path: description):\n`;
+    const text = `${head}${indexText(work.entries, Math.max(0, budget - fixed - head.length - 1), work.mapPath) || '(no files)'}\n`;
+    indexes.set(work, text);
+    fixed += text.length + 1;
+  }
+  const indexOf = (work: FolderWork) => indexes.get(work) ?? '';
+  const inputs = () => units.map(unit => ({ path: unit.file.path, text: unit.file.text!, bytes: unit.file.size, summary: storedSummary(unit.file, unit.ignored) }));
   let fits = fitFiles(inputs(), budget, fixed);
 
   // 3. Summaries for the files that did not fit whole: at most 3 per send; the others go as outlines now.

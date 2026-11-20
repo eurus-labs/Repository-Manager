@@ -809,6 +809,15 @@ async function main() {
     assert.equal(old.attachments, undefined);
     assert.equal(old.messages[0].attached, undefined);
 
+    // Removing the last chip of a chat with no messages is saved: a reload does not bring it back.
+    {
+      const lone = await open('lastchip', ws);
+      await lone.receive({ type: 'attach', uris: [url('docs/other.md')] }); await settle();
+      assert.equal((await lone.chats.list())[0].attachments.length, 1);
+      await lone.receive({ type: 'detach', path: 'docs/other.md' }); await settle();
+      assert.deepEqual((await lone.chats.list())[0].attachments, [], 'the saved chat still holds the removed chip');
+    }
+
     // The 11th chip is refused.
     for (let i = 0; i < 10; i++) { fs.writeFileSync(abs(`n${i}.md`), `# N${i}\n`); }
     await chat.receive({ type: 'attach', uris: Array.from({ length: 10 }, (_, i) => url(`n${i}.md`)) }); await settle();
