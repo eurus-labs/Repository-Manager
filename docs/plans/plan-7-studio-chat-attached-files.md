@@ -1,6 +1,6 @@
 # Plan 7 — Attach files and folders to the Studio Chat, with a map per folder
 
-Status: draft
+Status: approved
 Date: 2026-11-20
 Branch: `feat/studio-chat-attached-files`
 Baseline: `main` at `479e8e46feee0ccbf450fe75f550af5d606f6359`
