@@ -9,7 +9,7 @@ import * as path from 'path';
 import { MAX_FILE_BYTES } from '../agent/agentTools';
 import {
   indexText, insideMaps, listFolder, ListedFile, MapEntry, MAX_READ_BYTES, mapPathOf,
-  normalizeSummary, outline, parseMap, readListed, readMapFile, renderMap, summaryPrompt, updateEntries, withSummary, writeMapFile
+  mapProblem, normalizeSummary, outline, parseMap, readListed, readMapFile, renderMap, summaryPrompt, updateEntries, withSummary, writeMapFile
 } from './folderMap';
 import type { CancelSignal } from './steps';
 
@@ -196,7 +196,7 @@ export async function prepareAttachments(chips: Attachment[], deps: PrepareDeps)
   const items: PreparedItem[] = [];
   const today = deps.today ?? new Date().toISOString().slice(0, 10);
   const absoluteOf = (relative: string) => path.join(deps.root, relative);
-  const textOf = (relative: string) => deps.openText(absoluteOf(relative)) ?? readMapFile(deps.root, relative);
+  const textOf = (relative: string) => mapProblem(deps.root, relative) ? undefined : deps.openText(absoluteOf(relative)) ?? readMapFile(deps.root, relative);
   const works: Array<FolderWork | { item: PreparedItem; chip: Attachment; file?: ListedFile }> = [];
   const complete = deps.complete;
   // One description call per send, whatever the number of folders: a later folder keeps its outlines until the next send.
@@ -312,6 +312,8 @@ export async function prepareAttachments(chips: Attachment[], deps: PrepareDeps)
   // 4. The maps, written whole and renamed; not while the person has one open with unsaved changes.
   const writeMap = (folder: string, mapPath: string, entries: MapEntry[], changed: boolean, existingText: string | undefined, item?: PreparedItem) => {
     if (!changed || (!entries.length && existingText === undefined)) { return; }
+    const problem = mapProblem(deps.root, mapPath);
+    if (problem) { notes.push(`The map of ${folder || 'the workspace root'} was not saved: ${problem}; this send used the updated entries.`); return; }
     if (deps.isDirty(absoluteOf(mapPath))) {
       notes.push(`The map ${mapPath} is open with unsaved changes, so it was not saved; this send used the updated entries.`);
       if (item) { item.mapNotSaved = true; }

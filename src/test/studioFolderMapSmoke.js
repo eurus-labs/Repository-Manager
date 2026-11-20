@@ -139,6 +139,29 @@ async function main() {
     assert.equal(m.describe, 2, 'none in the third');
   }
 
+  // ---- A maps folder that is a link leading out of the workspace: nothing is written outside, the chat says so, the send drafts.
+  {
+    const root = repo();
+    const outside = fs.mkdtempSync(path.join(base, 'outside'));
+    write(root, 'docs/a.md', '# A\n\nText.\n');
+    fs.mkdirSync(path.join(root, '.repository-manager'));
+    fs.symlinkSync(outside, path.join(root, '.repository-manager/maps'));
+    const result = await prepareAttachments([folderChip('docs')], deps(root, model()));
+    assert.deepEqual(fs.readdirSync(outside), [], 'nothing was written outside the workspace');
+    assert.ok(result.notes.some(note => /The map of docs was not saved: \.repository-manager\/maps leads outside the workspace/.test(note)), result.notes.join(' | '));
+    assert.match(result.text, /=== docs\/a\.md \(full\) ===/, 'the send still drafts');
+    assert.equal(result.items[0].map, undefined);
+    // A map that is itself a link is not read or written either.
+    const root2 = repo();
+    write(root2, 'docs/a.md', '# A\n\nText.\n');
+    fs.mkdirSync(path.join(root2, '.repository-manager/maps'), { recursive: true });
+    fs.writeFileSync(path.join(outside, 'target.md'), 'KEEP');
+    fs.symlinkSync(path.join(outside, 'target.md'), path.join(root2, '.repository-manager/maps/docs.md'));
+    const second = await prepareAttachments([folderChip('docs')], deps(root2, model()));
+    assert.equal(fs.readFileSync(path.join(outside, 'target.md'), 'utf8'), 'KEEP');
+    assert.ok(second.notes.some(note => /is a symbolic link/.test(note)));
+  }
+
   // ---- Failure: the model fails: outline, the send still goes, the next send asks again.
   {
     const root = repo(); proj(root);

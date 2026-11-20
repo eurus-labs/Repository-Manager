@@ -140,12 +140,36 @@ export function parseMap(text: string): MapEntry[] {
 /** An entry the Studio must not overwrite: edited by the person, or described in the person's own words. */
 export const isProtected = (entry: MapEntry) => entry.edited || !STUDIO_SOURCES.has(entry.source);
 
+/**
+ * Why a map may not be read or written: the maps folder, or the nearest existing folder above the map,
+ * resolves outside the workspace (a repository can commit such a link), or the map itself is a link.
+ */
+export function mapProblem(root: string, mapRelative: string): string | undefined {
+  try {
+    const realRoot = fs.realpathSync(root);
+    const target = path.join(root, mapRelative);
+    let probe = path.dirname(target);
+    while (!fs.existsSync(probe)) {
+      const parent = path.dirname(probe);
+      if (parent === probe) { break; }
+      probe = parent;
+    }
+    const real = fs.realpathSync(probe);
+    if (real !== realRoot && !real.startsWith(realRoot + path.sep)) { return `${MAPS_DIR} leads outside the workspace`; }
+    if (fs.lstatSync(target, { throwIfNoEntry: false })?.isSymbolicLink()) { return `${mapRelative} is a symbolic link`; }
+    return undefined;
+  } catch { return `${MAPS_DIR} cannot be checked`; }
+}
+
 export function readMapFile(root: string, mapRelative: string): string | undefined {
+  if (mapProblem(root, mapRelative)) { return undefined; }
   try { return fs.readFileSync(path.join(root, mapRelative), 'utf8'); } catch { return undefined; }
 }
 
-/** Written whole, then renamed, as a run is saved: a crash never leaves half a map. */
+/** Written whole, then renamed, as a run is saved: a crash never leaves half a map. Refused where `mapProblem` says. */
 export function writeMapFile(root: string, mapRelative: string, text: string): void {
+  const problem = mapProblem(root, mapRelative);
+  if (problem) { throw new Error(problem); }
   const target = path.join(root, mapRelative);
   fs.mkdirSync(path.dirname(target), { recursive: true });
   fs.writeFileSync(`${target}.tmp`, text);
