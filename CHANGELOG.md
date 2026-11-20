@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.8.0] - 2026-11-20
+
+### Added
+
+- Studio Chat: attach files and folders of the workspace as context. Use **Add…** (Files… or Folder…) or hold Shift and drop them on the message box. Each one is a removable chip that stays on the conversation until you remove it, and the chat reads it again at every send, including unsaved edits of an open file. Files that do not fit the drafting model's input limit are sent as a summary or an outline instead of being cut. Each attached folder gets a map, `.repository-manager/maps/<folder>.md`, with a one-line description (and a summary where needed) for each file; only files that changed are redone, your edits to a map are kept, and a plan or a code step can name the map. Files outside the workspace, links that lead out of it, binary files, files over 5 MB and more than 10 chips are refused with the reason, and a Git-ignored file is sent only when attached on its own, with a warning.
+
 ## [3.7.0] - 2026-11-19
 
 ### Added
