@@ -96,6 +96,9 @@ export async function pickModel(context: vscode.ExtensionContext, selector: stri
 /** One prompt, one reply, through vscode.lm with the model a selector names. */
 export function studioModel(context: vscode.ExtensionContext): StudioModel {
   return {
+    async inputLimit(selector) {
+      try { return (await pickModel(context, selector)).maxInputTokens || undefined; } catch { return undefined; }
+    },
     async complete(prompt, signal, selector) {
       const api = vscode as LmApi;
       if (!api.LanguageModelChatMessage) { throw new Error('The Studio needs VS Code\'s language model API (VS Code 1.104 or newer).'); }
