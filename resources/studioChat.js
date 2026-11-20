@@ -10,6 +10,11 @@
   const modelSelect = document.getElementById('model');
   const send = document.getElementById('send');
   const runStatus = document.getElementById('run-status');
+  const attachmentsEl = document.getElementById('attachments');
+  const attachHint = document.getElementById('attach-hint');
+  const addButton = document.getElementById('add');
+  // Which folder chips have their file list open, by path: a re-render keeps them open.
+  const openChips = new Set();
   let state = null;
   // Which "Activity (N)" lists the reader opened, by run id: a re-render keeps them open.
   const openActivity = new Set();
@@ -242,7 +247,7 @@
         state.folder ? null : el('p', { class: 'warning' }, 'Open a folder to run or save a plan.')));
     }
     for (const message of state.messages) {
-      if (message.role === 'user') { thread.append(el('div', { class: 'message user' }, el('p', {}, message.text))); continue; }
+      if (message.role === 'user') { thread.append(el('div', { class: 'message user' }, el('p', {}, message.text), message.attached ? el('div', { class: 'attached' }, message.attached) : null)); continue; }
       if (message.role === 'run') { thread.append(runCard(message)); continue; }
       if (message.role === 'error') { thread.append(el('div', { class: 'message error', role: 'status' }, el('p', {}, message.text))); continue; }
       thread.append(el('div', { class: 'message assistant' },
@@ -250,7 +255,7 @@
         message.draft ? planCard(message) : null,
         message.model ? el('p', { class: 'who' }, message.model) : null));
     }
-    if (state.busy === 'drafting') thread.append(el('div', { class: 'message assistant thinking', 'data-testid': 'thinking' }, el('p', {}, 'Drafting…')));
+    if (state.busy === 'drafting') thread.append(el('div', { class: 'message assistant thinking', 'data-testid': 'thinking' }, el('p', {}, state.progress || 'Drafting…')));
     // Focus is restored without scrolling to it (Decision 9: the reader keeps their place), then the place is set.
     if (focusKey) { const again = thread.querySelector(`[data-key="${focusKey}"] summary`); if (again) again.focus({ preventScroll: true }); }
     thread.scrollTop = atBottom ? thread.scrollHeight : top;
@@ -266,8 +271,53 @@
     announceSteps();
     startTicker();
     input.disabled = Boolean(state.busy);
+    renderAttachments();
     notice.hidden = !state.notice;
     notice.textContent = state.notice || '';
+  }
+
+  /** What a chip says it did at the last send, in words (never colour alone). */
+  function outcomeWords(chip) {
+    const outcome = chip.outcome;
+    if (!outcome) return 'attached';
+    if (outcome.notSent) return `not sent: ${outcome.notSent}`;
+    const sent = outcome.sent;
+    if (chip.kind === 'file') {
+      if (sent.full) return 'sent in full';
+      if (sent.summary) return 'sent as a summary';
+      if (sent.outline) return 'sent as an outline';
+      return 'not sent';
+    }
+    const total = sent.full + sent.summary + sent.outline + sent.notSent;
+    const parts = [sent.full && `${sent.full} full`, sent.summary && `${sent.summary} summary`, sent.outline && `${sent.outline} outline`, sent.notSent && `${sent.notSent} not sent`].filter(Boolean);
+    return `${total} ${total === 1 ? 'file' : 'files'}${parts.length ? `: ${parts.join(', ')}` : ''}`;
+  }
+
+  function fileWords(file) {
+    return file.outcome === 'not sent' ? `not sent: ${file.reason || 'not sent'}` : file.outcome;
+  }
+
+  function renderAttachments() {
+    const chips = state.attachments || [];
+    const busy = Boolean(state.busy);
+    attachmentsEl.hidden = !chips.length;
+    attachHint.hidden = !state.folder;
+    addButton.disabled = busy;
+    attachmentsEl.replaceChildren(...chips.map(chip => {
+      const words = outcomeWords(chip);
+      const notSent = Boolean(chip.outcome && chip.outcome.notSent);
+      return el('div', { class: `attachment${notSent ? ' attachment-problem' : ''}`, role: 'listitem', 'data-attachment': chip.path },
+        el('div', { class: 'attachment-line' },
+          el('span', { class: 'attachment-name', title: chip.path }, chip.kind === 'folder' ? `${chip.path}/` : chip.path),
+          el('span', { class: 'attachment-outcome' }, words),
+          chip.ignored ? el('span', { class: 'chip-warning', title: 'ignored by Git, may hold secrets' }, '⚠ ignored by Git, may hold secrets') : null,
+          el('button', { type: 'button', class: 'icon', disabled: busy, 'aria-label': `Remove ${chip.path}`, onclick: () => vscode.postMessage({ type: 'detach', path: chip.path }) }, '×')),
+        chip.kind === 'folder' && chip.outcome && !notSent ? el('details', { 'data-chip': chip.path, open: openChips.has(chip.path) || null, ontoggle: event => { if (event.target.open) openChips.add(chip.path); else openChips.delete(chip.path); } },
+          el('summary', {}, 'Files'),
+          el('ul', {}, chip.outcome.files.map(file => el('li', {}, `${file.path}: ${fileWords(file)}`)), chip.outcome.moreFiles ? el('li', {}, `… and ${chip.outcome.moreFiles} more`) : null),
+          chip.outcome.mapNotSaved ? el('p', { class: 'muted' }, 'The map is open with unsaved changes, so it was not saved.') : null,
+          chip.map ? el('button', { type: 'button', class: 'link', onclick: () => vscode.postMessage({ type: 'openMap', path: chip.map }) }, 'Open map') : null) : null);
+    }));
   }
 
   /** The one status line: it changes only when a step starts or ends, so a reader hears that, not every line. */
@@ -306,6 +356,19 @@
   input.addEventListener('keydown', event => {
     if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); form.requestSubmit(); }
   });
+  addButton.addEventListener('click', () => vscode.postMessage({ type: 'pickAttachments' }));
+  // VS Code hands a webview a dropped file only with Shift held, as a URI list. Plain text keeps the box's own behavior.
+  const URI_LISTS = ['application/vnd.code.uri-list', 'text/uri-list'];
+  const carriesUris = event => Boolean(event.dataTransfer) && URI_LISTS.some(type => Array.from(event.dataTransfer.types || []).includes(type));
+  for (const target of [form]) {
+    target.addEventListener('dragover', event => { if (carriesUris(event)) { event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; } });
+    target.addEventListener('drop', event => {
+      if (!carriesUris(event)) return;
+      event.preventDefault();
+      const type = URI_LISTS.find(name => event.dataTransfer.getData(name));
+      if (type) vscode.postMessage({ type: 'attach', uris: [event.dataTransfer.getData(type)] });
+    });
+  }
   modelSelect.addEventListener('change', () => vscode.postMessage({ type: 'setModel', selector: modelSelect.value }));
   // Opening the menu asks VS Code again: the models may have loaded since the chat opened.
   modelSelect.addEventListener('mousedown', () => vscode.postMessage({ type: 'refreshModels' }));

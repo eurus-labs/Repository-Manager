@@ -8,12 +8,15 @@ import * as vscode from 'vscode';
 import { promises as fs } from 'fs';
 import * as path from 'path';
 import { randomBytes } from 'crypto';
+import { fileURLToPath } from 'url';
 import { draftPlan, planProblems } from './chatPlanner';
 import { acceptDraft, addDraft, addRun, addUserMessage, ChatError, currentCard, discardDraft, editPlan, history, planView, setPlan } from './chatSession';
-import { ChatRun, ChatRunActivity, ChatRunStep, ChatStore, Conversation, newMessage } from './chatStore';
+import { ChatMessage, ChatRun, ChatRunActivity, ChatRunStep, ChatStore, Conversation, newMessage } from './chatStore';
+import { acceptEntry, Attachment, attachedLine, PreparedItem, prepareAttachments } from './chatAttachments';
+import { gitIgnored, insideMaps } from './folderMap';
 import { RunLogEntry, RunState } from './engine';
 import { activityLine, runTimeline } from './runsReport';
-import { CancelSignal, StepDefinition } from './steps';
+import { CancelSignal, StepDefinition, StudioModel } from './steps';
 import { studioSteps } from './registry';
 import { dashboardSelector, listModels, ModelChoice, onModelsChanged, studioModel } from './studioModels';
 import { parseSkillSource, StudioSkills, studioSkills } from './githubSkills';
@@ -70,7 +73,8 @@ type Incoming =
   | { type: 'ready' } | { type: 'send'; text: string } | { type: 'cancel' }
   | { type: 'setModel'; selector: string } | { type: 'accept'; id: string } | { type: 'discard'; id: string }
   | { type: 'edit'; operation: EditOperation } | { type: 'run' } | { type: 'save' } | { type: 'openDiagram' }
-  | { type: 'addSkill'; id: string } | { type: 'refreshModels' } | { type: 'export' };
+  | { type: 'addSkill'; id: string } | { type: 'refreshModels' } | { type: 'export' }
+  | { type: 'attach'; uris: string[] } | { type: 'pickAttachments' } | { type: 'detach'; path: string } | { type: 'openMap'; path: string };
 
 export class StudioChatProvider implements vscode.WebviewViewProvider {
   private view?: vscode.WebviewView;
@@ -80,6 +84,10 @@ export class StudioChatProvider implements vscode.WebviewViewProvider {
   private busy: 'drafting' | 'running' | undefined;
   private cancelled = false;
   private notice = '';
+  /** What the send in progress is doing before the plan's call ("Updating the map of docs/req…"). */
+  private progress = '';
+  /** How each chip went at the last send, by conversation and path. */
+  private readonly outcomes = new Map<string, Map<string, PreparedItem>>();
   private live?: LiveRun;
   private lastPost = 0;
   private postTimer?: ReturnType<typeof setTimeout>;
@@ -260,6 +268,10 @@ export class StudioChatProvider implements vscode.WebviewViewProvider {
         case 'export': await this.exportPlan(); return;
         case 'addSkill': await this.addSkill(message.id); return;
         case 'refreshModels': await this.refreshModels(); return;
+        case 'attach': return await this.attach(message.uris);
+        case 'pickAttachments': return await this.pickAttachments();
+        case 'detach': return await this.detach(message.path);
+        case 'openMap': return await this.openMap(message.path);
         case 'openDiagram': {
           const file = await this.save();
           if (file) { await vscode.commands.executeCommand('vscode.openWith', vscode.Uri.file(file), WORKFLOW_EDITOR); }
@@ -277,9 +289,10 @@ export class StudioChatProvider implements vscode.WebviewViewProvider {
     const conversation = await this.ensureConversation();
     await this.syncFromFile();
     const earlier = history(conversation);
-    addUserMessage(conversation, text);
+    const userMessage = addUserMessage(conversation, text);
     this.busy = 'drafting';
     this.cancelled = false;
+    this.progress = '';
     this.post();
     // The signal reads the flag the Stop button sets.
     const stopped = () => this.cancelled;
@@ -287,7 +300,9 @@ export class StudioChatProvider implements vscode.WebviewViewProvider {
     try {
       const skills = await this.cachedSkills();
       const scripts = this.root ? Object.keys(readScripts(this.root)) : undefined;
-      const draft = await draftPlan(studioModel(this.context), this.steps, { message: text, current: conversation.plan, history: earlier, model: conversation.model, skills, scripts, scriptsOff: this.scriptMode === 'off' }, signal);
+      const model = studioModel(this.context);
+      const attachments = await this.readAttachments(conversation, userMessage, model, signal);
+      const draft = await draftPlan(model, this.steps, { message: text, current: conversation.plan, history: earlier, model: conversation.model, skills, scripts, scriptsOff: this.scriptMode === 'off', ...(attachments ? { attachments } : {}) }, signal);
       addDraft(conversation, draft);
       if (currentCard(conversation)?.draft?.workflow === draft.workflow) { await this.writeFile(); }
     } catch (error) {
@@ -295,9 +310,112 @@ export class StudioChatProvider implements vscode.WebviewViewProvider {
       conversation.messages.push(newMessage({ role: 'error', text: message === 'Cancelled' ? 'Stopped.' : message }));
     } finally {
       this.busy = undefined;
+      this.progress = '';
       await this.saveConversation();
       this.post();
     }
+  }
+
+  /**
+   * What is attached, read again at this send (what the editor shows), with the folder maps brought up to
+   * date first. Records on the message what went with it: paths, counts and outcomes, never file text.
+   */
+  private async readAttachments(conversation: Conversation, message: ChatMessage, model: StudioModel, signal: CancelSignal): Promise<string | undefined> {
+    const chips = conversation.attachments ?? [];
+    if (!chips.length || !this.root) { return undefined; }
+    const root = this.root;
+    const limit = await model.inputLimit?.(conversation.model).catch(() => undefined);
+    const prepared = await prepareAttachments(chips, {
+      root,
+      openText: absolute => this.documentAt(absolute)?.getText(),
+      isDirty: absolute => Boolean(this.documentAt(absolute)?.isDirty),
+      ignored: relative => gitIgnored(root, relative),
+      complete: async prompt => (await model.complete(prompt, signal, conversation.model)).text,
+      signal, inputLimit: limit,
+      progress: text => { this.progress = text; this.post(); }
+    });
+    const byPath = new Map<string, PreparedItem>();
+    for (const item of prepared.items) {
+      byPath.set(item.path, item);
+      const chip = chips.find(candidate => candidate.path === item.path);
+      if (chip && item.kind === 'file') { if (item.ignored) { chip.ignored = true; } else { delete chip.ignored; } }
+    }
+    this.outcomes.set(conversation.id, byPath);
+    message.attached = prepared.items.map(item => ({ path: item.path, kind: item.kind, sent: item.sent, ...(item.map ? { map: item.map } : {}) }));
+    if (prepared.notes.length) { this.notice = prepared.notes.join(' '); }
+    return prepared.text;
+  }
+
+  private documentAt(absolute: string): vscode.TextDocument | undefined {
+    return vscode.workspace.textDocuments.find(document => document.uri.fsPath === absolute);
+  }
+
+  /** The entries the page dropped (URI lists in the data types VS Code uses): parsed here, never trusted. */
+  private async attach(uris: string[]): Promise<void> {
+    const entries: Array<{ scheme: string; fsPath: string }> = [];
+    const refusals: string[] = [];
+    for (const raw of Array.isArray(uris) ? uris.filter(item => typeof item === 'string') : []) {
+      for (const line of raw.split(/\r?\n/).map(item => item.trim()).filter(item => item && !item.startsWith('#'))) {
+        const scheme = /^([a-z][a-z0-9+.-]*):/i.exec(line)?.[1]?.toLowerCase() ?? '';
+        if (scheme !== 'file') { refusals.push(`Not added: ${line.slice(0, 80)} is not a file on this machine.`); continue; }
+        try { entries.push({ scheme, fsPath: fileURLToPath(line) }); } catch { refusals.push(`Not added: ${line.slice(0, 80)} is not a valid file address.`); }
+      }
+    }
+    await this.addEntries(entries, refusals);
+  }
+
+  /** Add…: Files… or Folder…, then the editor's own dialog (one dialog for both shows only folders on Windows and Linux). */
+  private async pickAttachments(): Promise<void> {
+    if (this.busy) { this.say('Wait for the current reply or run to finish, or stop it, before adding files.'); return; }
+    if (!this.root) { this.say('Open a folder to attach files and folders: they are read from it.'); return; }
+    const choice = await vscode.window.showQuickPick([{ label: 'Files…', folders: false }, { label: 'Folder…', folders: true }], { title: 'Add to the chat', placeHolder: 'Attach files or a folder of this workspace' });
+    if (!choice) { return; }
+    const picked = await vscode.window.showOpenDialog({
+      canSelectFiles: !choice.folders, canSelectFolders: choice.folders, canSelectMany: !choice.folders,
+      defaultUri: vscode.Uri.file(this.root), openLabel: 'Attach', title: choice.folders ? 'Attach a folder' : 'Attach files'
+    });
+    if (!picked?.length) { return; }
+    await this.addEntries(picked.map(uri => ({ scheme: uri.scheme, fsPath: uri.fsPath })), []);
+  }
+
+  private async addEntries(entries: Array<{ scheme: string; fsPath: string }>, refusals: string[]): Promise<void> {
+    if (this.busy) { this.say('Wait for the current reply or run to finish, or stop it, before adding files.'); return; }
+    if (!this.root) { this.say('Open a folder to attach files and folders: they are read from it.'); return; }
+    const conversation = await this.ensureConversation();
+    const list = conversation.attachments ?? [];
+    for (const entry of entries) {
+      const accepted = acceptEntry(this.root, entry, list);
+      if (accepted.ok) {
+        const chip: Attachment = { ...accepted.attachment };
+        if (chip.kind === 'file' && await gitIgnored(this.root, chip.path)) { chip.ignored = true; }
+        list.push(chip);
+      } else if (!accepted.duplicate) {
+        const relative = path.relative(this.root, entry.fsPath);
+        const shown = !relative || relative.startsWith('..') || path.isAbsolute(relative) ? entry.fsPath : relative.split(path.sep).join('/');
+        refusals.push(`Not added: ${shown} ${accepted.reason}.`);
+      }
+    }
+    conversation.attachments = list;
+    await this.saveConversation();
+    if (refusals.length) { this.notice = refusals.join('\n'); }
+    this.post();
+  }
+
+  private async detach(relative: string): Promise<void> {
+    if (this.busy) { this.say('Wait for the current reply or run to finish, or stop it, before removing files.'); return; }
+    const conversation = await this.ensureConversation();
+    conversation.attachments = (conversation.attachments ?? []).filter(chip => chip.path !== relative);
+    this.outcomes.get(conversation.id)?.delete(relative);
+    await this.saveConversation();
+    this.post();
+  }
+
+  /** Open map: a map file under .repository-manager/maps, nothing else. */
+  private async openMap(relative: string): Promise<void> {
+    if (!this.root || typeof relative !== 'string' || !insideMaps(relative) || relative.includes('..')) { return; }
+    const target = path.join(this.root, relative);
+    if (!await fs.stat(target).then(stat => stat.isFile(), () => false)) { this.say('That map does not exist yet: it is made at the next send.'); return; }
+    await vscode.commands.executeCommand('vscode.open', vscode.Uri.file(target));
   }
 
   private async run(): Promise<void> {
@@ -520,7 +638,7 @@ export class StudioChatProvider implements vscode.WebviewViewProvider {
   }
 
   private async saveConversation(): Promise<void> {
-    if (!this.conversation || !this.conversation.messages.length) { return; }
+    if (!this.conversation || (!this.conversation.messages.length && !this.conversation.attachments?.length)) { return; }
     await this.store.save(this.conversation);
     await this.context.workspaceState.update(CURRENT_KEY, this.conversation.id);
   }
@@ -579,6 +697,16 @@ export class StudioChatProvider implements vscode.WebviewViewProvider {
     void probe().then(mode => { if (mode !== this.scriptMode) { this.scriptMode = mode; this.post(); } }, () => undefined);
   }
 
+  /** A chip as the page gets it: what it is and how it went at the last send. */
+  private chipView(conversation: Conversation, chip: Attachment): unknown {
+    const last = this.outcomes.get(conversation.id)?.get(chip.path);
+    return {
+      path: chip.path, kind: chip.kind, ignored: Boolean(last ? last.ignored : chip.ignored),
+      map: chip.kind === 'folder' ? (last?.map ?? null) : null,
+      outcome: last ? { notSent: last.notSent ?? null, sent: last.sent, files: last.files, moreFiles: last.moreFiles, mapNotSaved: Boolean(last.mapNotSaved) } : null
+    };
+  }
+
   private post(): void {
     this.refreshScriptMode();
     if (this.postTimer) { clearTimeout(this.postTimer); this.postTimer = undefined; }
@@ -599,9 +727,10 @@ export class StudioChatProvider implements vscode.WebviewViewProvider {
       models: this.models.map(model => ({ selector: model.selector, name: model.name, vendor: model.vendor })), modelsLoaded: this.modelsLoaded,
       skills: Object.fromEntries([...this.skillNames.values()].map(skill => [skill.ref, { name: skill.name, usesScripts: skill.usesScripts, ...(skill.usesScripts ? this.filesOf(skill) : {}) }])),
       scriptRunner: this.scriptMode,
-      model: conversation.model ?? null, file: conversation.file ?? null, title: conversation.title,
+      model: conversation.model ?? null, file: conversation.file ?? null, title: conversation.title, progress: this.progress,
+      attachments: (conversation.attachments ?? []).map(chip => this.chipView(conversation, chip)),
       messages: conversation.messages.map(message => ({
-        id: message.id, role: message.role, text: message.text, model: message.model ?? null, run: message.run ? this.runView(message.run) : null,
+        id: message.id, role: message.role, text: message.text, model: message.model ?? null, attached: message.attached ? attachedLine(message.attached) : null, run: message.run ? this.runView(message.run) : null,
         draft: message.draft ? {
           status: message.draft.status, problems: message.draft.problems, diff: message.draft.diff ?? null,
           view: planView(message.draft.workflow, this.steps)
@@ -627,8 +756,11 @@ function chatHtml(script: string, style: string, cspSource: string): string {
   <div id="run-status" class="visually-hidden" role="status"></div>
   <div id="notice" role="alert" hidden></div>
   <form id="composer" autocomplete="off">
+    <div id="attachments" role="list" aria-label="Attached files and folders" hidden></div>
     <textarea id="message" rows="3" placeholder="Describe what you want done…" aria-label="Message"></textarea>
+    <p id="attach-hint" class="hint" hidden>Hold Shift to drop files or folders here.</p>
     <div class="composer-bar">
+      <button type="button" id="add" title="Attach files or a folder of this workspace">Add…</button>
       <label class="model-label">Model <select id="model" aria-label="Model for drafting the plan"></select></label>
       <button type="submit" id="send" class="primary">Send</button>
     </div>
