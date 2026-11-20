@@ -89,15 +89,16 @@ async function main() {
     // b.ts changes: one call, only b.ts's entry changes.
     const beforeEntries = parseMap(mapText(root, 'proj'));
     write(root, 'proj/b.ts', 'export const b = 2;\nfunction y() {}\n');
-    await prepareAttachments([folderChip('proj')], deps(root, model({ describe: () => 'Constant b, changed' })));
-    const m2 = model({ describe: () => 'unused' });
+    const m2 = model({ describe: () => 'Constant b, changed' });
+    await prepareAttachments([folderChip('proj')], deps(root, m2));
+    assert.equal(m2.describe, 1, 'exactly one description call after b.ts changed');
+    assert.deepEqual([...m2.prompts[0].matchAll(/^=== (.+) ===$/gm)].map(match => match[1]), ['proj/b.ts'], 'and it names only b.ts');
     const afterEntries = parseMap(mapText(root, 'proj'));
     for (const entry of afterEntries) {
       const old = beforeEntries.find(item => item.path === entry.path);
       if (entry.path === 'proj/b.ts') { assert.notDeepEqual(entry, old); assert.equal(entry.description, 'Constant b, changed'); }
       else { assert.deepEqual(entry, old, `${entry.path} is unchanged`); }
     }
-    assert.equal(m2.describe, 0);
 
     // A removed file drops its entry.
     fs.rmSync(path.join(root, 'proj/a.ts'));
@@ -119,6 +120,23 @@ async function main() {
     readme = entryOf(root, 'proj', 'proj/README.md');
     assert.equal(readme.description, 'My own words about the README', 'kept again at the next change');
     assert.equal(readme.source, 'edited, the file changed since');
+  }
+
+  // ---- Two folders in one send: one description call per send; the other folder's file keeps its outline until the next send.
+  {
+    const root = repo();
+    write(root, 'p1/x.ts', 'export const x = 1;\n');
+    write(root, 'p2/y.ts', 'export const y = 1;\n');
+    const m = model();
+    await prepareAttachments([folderChip('p1'), folderChip('p2')], deps(root, m));
+    assert.equal(m.describe, 1, 'one description call in the first send');
+    assert.equal(entryOf(root, 'p1', 'p1/x.ts').source, 'by the model');
+    assert.equal(entryOf(root, 'p2', 'p2/y.ts').source, 'outline');
+    await prepareAttachments([folderChip('p1'), folderChip('p2')], deps(root, m));
+    assert.equal(m.describe, 2, 'one more in the second send');
+    assert.equal(entryOf(root, 'p2', 'p2/y.ts').source, 'by the model');
+    await prepareAttachments([folderChip('p1'), folderChip('p2')], deps(root, m));
+    assert.equal(m.describe, 2, 'none in the third');
   }
 
   // ---- Failure: the model fails: outline, the send still goes, the next send asks again.

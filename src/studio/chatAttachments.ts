@@ -199,6 +199,13 @@ export async function prepareAttachments(chips: Attachment[], deps: PrepareDeps)
   const textOf = (relative: string) => deps.openText(absoluteOf(relative)) ?? readMapFile(deps.root, relative);
   const works: Array<FolderWork | { item: PreparedItem; chip: Attachment; file?: ListedFile }> = [];
   const complete = deps.complete;
+  // One description call per send, whatever the number of folders: a later folder keeps its outlines until the next send.
+  let described = false;
+  const describeOnce = complete && (async (prompt: string) => {
+    if (described) { throw new Error('one description call per send'); }
+    described = true;
+    return complete(prompt);
+  });
   const parents = new Map<string, ParentMap>();
   const memorySummaries = new Map<string, string>();
   let cancelled = false;
@@ -218,7 +225,7 @@ export async function prepareAttachments(chips: Attachment[], deps: PrepareDeps)
       const existingText = textOf(mapPath);
       const existing = existingText ? parseMap(existingText) : [];
       let updated: { entries: MapEntry[]; changed: boolean };
-      try { updated = await updateEntries(existing, listed, 'folder', { complete, signal: deps.signal, today }); }
+      try { updated = await updateEntries(existing, listed, 'folder', { complete: describeOnce, signal: deps.signal, today }); }
       catch (error) { if (deps.signal.cancelled) { cancelled = true; items.pop(); break; } throw error; }
       works.push({ item, folder, mapPath, listed, entries: updated.entries, existingText, changed: updated.changed });
       if (existingText !== undefined) { item.map = mapPath; }

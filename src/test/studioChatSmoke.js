@@ -673,9 +673,10 @@ async function main() {
         globalState: memento(), workspaceState: memento()
       };
       const posted = [];
-      StudioChatProvider.register(context, { steps, run: async () => undefined }, root);
-      let receive;
-      viewProvider.resolveWebviewView({ webview: { options: {}, html: '', cspSource: 'csp', asWebviewUri: uri => uri, postMessage: async message => { posted.push(message); }, onDidReceiveMessage: listener => { receive = listener; } } });
+      const provider = StudioChatProvider.register(context, { steps, run: async () => undefined }, root);
+      // The provider's own handler, which returns when the message is handled (the view listener does not).
+      const receive = message => provider.receive(message);
+      viewProvider.resolveWebviewView({ webview: { options: {}, html: '', cspSource: 'csp', asWebviewUri: uri => uri, postMessage: async message => { posted.push(message); }, onDidReceiveMessage: () => undefined } });
       await receive({ type: 'ready' }); await settle();
       return { receive, posted, last: () => posted[posted.length - 1], chats: new ChatStore(path.join(base, `storage-${name}`, 'studio', 'chats')) };
     };
@@ -810,7 +811,7 @@ async function main() {
 
     // The 11th chip is refused.
     for (let i = 0; i < 10; i++) { fs.writeFileSync(abs(`n${i}.md`), `# N${i}\n`); }
-    await chat.receive({ type: 'attach', uris: Array.from({ length: 10 }, (_, i) => url(`n${i}.md`)) }); await new Promise(resolve => setTimeout(resolve, 600));
+    await chat.receive({ type: 'attach', uris: Array.from({ length: 10 }, (_, i) => url(`n${i}.md`)) }); await settle();
     assert.equal(chat.last().attachments.length, 10, chat.last().notice);
     assert.match(chat.last().notice, /would be the 11th/);
   }

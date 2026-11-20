@@ -439,6 +439,7 @@ async function main() {
       assert.equal(await running.evaluate(() => document.activeElement.tagName), 'SUMMARY', 'Activity lost its focus after the scroll');
       await running.locator('details.all-activity summary').click();
       await running.evaluate(() => { const thread = document.getElementById('thread'); thread.scrollTop = thread.scrollHeight; });
+      assert.equal(await running.isDisabled('#add'), true, 'Add… waits while a run goes');
       await snap(running, '46-studio-chat-run-progress');
       // The step ends: the status line changes now.
       control.emit({ type: 'done', node: 'fix' });
@@ -501,11 +502,12 @@ async function main() {
       }, [target, type, data]);
       // A plain-text drop keeps the box's own behavior: nothing is posted, the event is not taken.
       assert.equal(await drop('#message', 'text/plain', 'just some words'), false);
-      await chat.waitForTimeout(150);
-      assert.equal(await chat.locator('.attachment').count(), 0);
       // A URI list posts `attach`: a file, and a folder.
       assert.equal(await drop('#message', 'text/uri-list', `${url('notes.md')}\r\n${url('.env')}`), true);
       await chat.locator('.attachment[data-attachment="notes.md"]').waitFor();
+      await chat.locator('.attachment[data-attachment=".env"]').waitFor();
+      // Messages are handled in order: had the plain-text drop posted anything, it would be a chip by now.
+      assert.equal(await chat.locator('.attachment').count(), 2);
       assert.equal(await chat.locator('.attachment[data-attachment=".env"] .chip-warning').textContent(), '⚠ ignored by Git, may hold secrets');
       assert.equal(await chat.locator('.attachment[data-attachment="notes.md"] .attachment-outcome').textContent(), 'attached');
       await drop('#message', 'application/vnd.code.uri-list', url('docs'));
