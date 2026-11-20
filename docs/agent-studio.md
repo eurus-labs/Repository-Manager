@@ -699,7 +699,7 @@ scripted in the tests; a chat with Copilot in VS Code has not been run yet.
   **Add…** (a Files… or Folder… pick, then the editor's dialog) or dropped on the message box with
   Shift held. Each is a removable chip on the conversation (`Conversation.attachments`) until the
   person removes it; **New Studio Chat** starts with none. The host checks every entry and again at
-  each send: `file:` scheme, real path inside the workspace (a link that leads out is refused), exists,
+  each send: `file:` scheme, real path inside the workspace, not a symbolic link or inside one (refused as "is a symbolic link, or inside one"; a link inside an attached folder is skipped), exists,
   a folder or a text file of at most 5 MB, not the root, not inside `.repository-manager/maps/`, at most
   10 chips. A chip that fails at send time stays, marked `not sent: <reason>`. At every send the
   planner gets the current text (an open editor's unsaved text included), fitted to the drafting
@@ -712,7 +712,10 @@ scripted in the tests; a chat with Copilot in VS Code has not been run yet.
   from one batched model call of at most 40 files, else from the outline) and, where needed, a summary
   (at most 3 model calls per send). Only new or changed files are redone, found by content hash; an
   entry the person edited is kept and marked, and the map is not written while it is open with unsaved
-  changes. A Git-ignored file attached on its own is sent with a warning and never gets a map entry. A
+  changes. A Git-ignored file attached on its own is sent with a warning and never gets a map entry. The index the planner gets counts against the budget: one that does not fit ends with
+  `… and N more (see the map at <path>)`. A map is never read or written through a link (the maps folder or
+  a parent resolving outside the workspace, or the map itself a link, is refused with a note), and its
+  temporary file is created exclusively under a random name. A
   plan can name the map in a code step's instructions. The saved chat keeps paths, counts and outcomes,
   never file text. Model paths are scripted in the tests; Shift-drop from the Explorer and from an
   editor tab, the real `showOpenDialog`, the `maxInputTokens` of real models and real Copilot
