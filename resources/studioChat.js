@@ -286,7 +286,8 @@
       if (sent.full) return 'sent in full';
       if (sent.summary) return 'sent as a summary';
       if (sent.outline) return 'sent as an outline';
-      return 'not sent';
+      const again = outcome.files.find(file => file.reason && file.reason.startsWith('sent with'));
+      return again ? again.reason : 'not sent';
     }
     const total = sent.full + sent.summary + sent.outline + sent.notSent;
     const parts = [sent.full && `${sent.full} full`, sent.summary && `${sent.summary} summary`, sent.outline && `${sent.outline} outline`, sent.notSent && `${sent.notSent} not sent`].filter(Boolean);

@@ -10,6 +10,7 @@ const os = require('os');
 const path = require('path');
 const Module = require('module');
 const { chromium } = require('playwright-core');
+const { execFileSync } = require('child_process');
 
 const root = path.resolve(__dirname, '../..');
 const outputDir = path.join(root, 'ui-snapshots');
@@ -36,6 +37,7 @@ const lmModel = (family, name) => ({
 });
 let viewProvider;
 const quickPicks = [];
+const openAnswers = [];
 const fakeVscode = {
   Uri: { file: fileUri, joinPath: (uri, ...parts) => fileUri(path.join(uri.fsPath, ...parts)) },
   Range: class {}, WorkspaceEdit: class { replace() {} },
@@ -45,7 +47,8 @@ const fakeVscode = {
   workspace: { textDocuments: [] },
   window: {
     registerWebviewViewProvider: (_id, provider) => { viewProvider = provider; return { dispose() {} }; }, showWarningMessage: async () => undefined,
-    showQuickPick: async items => { quickPicks.push(items); return items[0]; }
+    showQuickPick: async items => { quickPicks.push(items); return items[0]; },
+    showOpenDialog: async () => openAnswers.shift()
   },
   commands: { registerCommand: () => ({ dispose() {} }), executeCommand: async () => undefined }
 };
@@ -131,12 +134,12 @@ async function main() {
     }
   };
 
-  const open = async ({ theme = 'dark', width = 420, height = 900, folder = true, runs: scripted } = {}) => {
+  const open = async ({ theme = 'dark', width = 420, height = 900, folder = true, runs: scripted, root: workspaceRoot = workspace } = {}) => {
     const context = {
       subscriptions: [], extensionUri: fileUri(root), storageUri: fileUri(path.join(base, `storage-${pages.size}`)),
       globalStorageUri: fileUri(path.join(base, 'global')), globalState: memento(), workspaceState: memento()
     };
-    StudioChatProvider.register(context, folder ? scripted ?? runs : undefined, folder ? workspace : undefined);
+    StudioChatProvider.register(context, folder ? scripted ?? runs : undefined, folder ? workspaceRoot : undefined);
     const page = await browser.newPage({ viewport: { width, height } });
     let listener;
     const view = {
@@ -474,6 +477,82 @@ async function main() {
       assert.equal(await light.isDisabled('#message'), false);
     }
 
+    // Plan 7: files and folders attached to the chat. A Git work tree, so a Git-ignored file can be flagged.
+    {
+      const ws = path.join(base, 'attach-workspace');
+      fs.mkdirSync(path.join(ws, 'docs'), { recursive: true });
+      execFileSync('git', ['init', '-q'], { cwd: ws });
+      fs.writeFileSync(path.join(ws, '.gitignore'), '.env\n');
+      fs.writeFileSync(path.join(ws, 'docs/req.md'), '# Requirements\n\nREQ-1 the system shall attach files.\n');
+      fs.writeFileSync(path.join(ws, 'docs/design.md'), '# Design\n\nHow the chips look.\n');
+      fs.writeFileSync(path.join(ws, 'notes.md'), '# Notes\n\nA file chip.\n');
+      fs.writeFileSync(path.join(ws, '.env'), 'KEY=1\n');
+      const url = relative => `file://${path.join(ws, relative)}`;
+      const chat = await open({ root: ws });
+      assert.equal(await chat.isHidden('#attachments'), true, 'no chips, no row');
+      assert.equal(await chat.isVisible('#attach-hint'), true);
+      assert.equal(await chat.textContent('#attach-hint'), 'Hold Shift to drop files or folders here.');
+      const drop = (target, type, data) => chat.evaluate(([selector, mime, text]) => {
+        const transfer = new DataTransfer();
+        transfer.setData(mime, text);
+        const event = new DragEvent('drop', { dataTransfer: transfer, bubbles: true, cancelable: true });
+        document.querySelector(selector).dispatchEvent(event);
+        return event.defaultPrevented;
+      }, [target, type, data]);
+      // A plain-text drop keeps the box's own behavior: nothing is posted, the event is not taken.
+      assert.equal(await drop('#message', 'text/plain', 'just some words'), false);
+      await chat.waitForTimeout(150);
+      assert.equal(await chat.locator('.attachment').count(), 0);
+      // A URI list posts `attach`: a file, and a folder.
+      assert.equal(await drop('#message', 'text/uri-list', `${url('notes.md')}\r\n${url('.env')}`), true);
+      await chat.locator('.attachment[data-attachment="notes.md"]').waitFor();
+      assert.equal(await chat.locator('.attachment[data-attachment=".env"] .chip-warning').textContent(), '⚠ ignored by Git, may hold secrets');
+      assert.equal(await chat.locator('.attachment[data-attachment="notes.md"] .attachment-outcome').textContent(), 'attached');
+      await drop('#message', 'application/vnd.code.uri-list', url('docs'));
+      await chat.locator('.attachment[data-attachment="docs"]').waitFor();
+      // Add… asks the host (Files… first in the scripted pick), then adds what the dialog returns.
+      openAnswers.push([fileUri(path.join(ws, 'docs/design.md'))]);
+      await chat.click('#add');
+      await chat.locator('.attachment[data-attachment="docs/design.md"]').waitFor();
+      assert.equal(quickPicks[quickPicks.length - 1][0].label, 'Files…');
+      assert.equal(await chat.locator('.attachment').count(), 4);
+      // × removes (it posts `detach`).
+      await chat.click('button[aria-label="Remove .env"]');
+      await chat.waitForFunction(() => document.querySelectorAll('.attachment').length === 3);
+      assert.equal(await chat.locator('.attachment[data-attachment=".env"]').count(), 0);
+
+      // Sent: each chip says how it went in words, the folder lists its files and opens its map.
+      replies.push({ reply: 'Here is a plan.', workflow: plan() });
+      await chat.fill('#message', 'Plan from the attached files');
+      await chat.press('#message', 'Enter');
+      await chat.locator('[data-testid="thinking"]').waitFor();
+      assert.equal(await chat.isDisabled('#add'), true, 'Add… waits while drafting');
+      assert.equal(await chat.isDisabled('button[aria-label="Remove notes.md"]'), true, '× waits while drafting');
+      await chat.locator('.card[data-card="current"]').waitFor();
+      assert.equal(await chat.isDisabled('#add'), false);
+      assert.match(prompts[prompts.length - 1].text, /^=== notes\.md \(full\) ===$/m);
+      assert.match(prompts[prompts.length - 1].text, /Map \(a file in the repository; a code step can read it\): \.repository-manager\/maps\/docs\.md/);
+      assert.equal(await chat.locator('.attachment[data-attachment="notes.md"] .attachment-outcome').textContent(), 'sent in full');
+      assert.equal(await chat.locator('.attachment[data-attachment="docs"] .attachment-outcome').textContent(), '2 files: 2 full');
+      assert.equal(await chat.textContent('.message.user .attached'), 'with notes.md, docs (2 files: 2 full), docs/design.md');
+      await chat.locator('.attachment[data-attachment="docs"] summary').click();
+      assert.deepEqual(await chat.locator('.attachment[data-attachment="docs"] li').allTextContents(), ['docs/design.md: full', 'docs/req.md: full']);
+      assert.equal(await chat.locator('.attachment[data-attachment="docs"] button:has-text("Open map")').count(), 1);
+      await snap(chat, '49-studio-chat-attachments');
+      // The row stays small: the thread above it still scrolls.
+      assert.ok((await chat.locator('#attachments').boundingBox()).height <= 900 * 0.3 + 1);
+      // A chip whose file went away stays, with the reason in words.
+      fs.rmSync(path.join(ws, 'notes.md'));
+      replies.push({ reply: 'Again.', workflow: null });
+      await chat.fill('#message', 'Once more');
+      await chat.press('#message', 'Enter');
+      await chat.waitForFunction(() => /not sent: does not exist/.test(document.querySelector('.attachment[data-attachment="notes.md"] .attachment-outcome').textContent));
+
+      // No folder open: the hint is gone.
+      const lone2 = await open({ folder: false });
+      assert.equal(await lone2.isHidden('#attach-hint'), true);
+    }
+
     // Light theme, no folder: nothing to run or save, and the page says so.
     const lone = await open({ theme: 'light', folder: false });
     assert.match(await lone.textContent('.empty'), /Open a folder to run or save a plan/);
@@ -487,7 +566,7 @@ async function main() {
     await snap(lone, '44-studio-chat-light');
 
     assert.deepEqual(errors, []);
-    console.log('Studio chat UI test passed; screenshots in ui-snapshots/40-47');
+    console.log('Studio chat UI test passed; screenshots in ui-snapshots/40-49');
   } finally {
     await browser.close();
     server.close();
