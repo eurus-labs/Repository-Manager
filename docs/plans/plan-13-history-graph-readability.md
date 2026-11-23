@@ -4,6 +4,7 @@ Status: draft
 Date: 2026-11-22
 Branch: `feat/history-graph-readability`
 Baseline: `main` at `4fe5d23e5d17283e1987a4ed31c452e0a5034ac9`
+Depends on: plan 16 (`feat/branch-origin-labels-update`), which folds `x` and `origin/x` on one commit into one label with an `origin` chip. Revise this plan on top of it before approval; the merged label takes `x`'s tone.
 Target: `resources/historyGraph.js`, `resources/webview.js` (graph rendering and history menu), `resources/dashboardHistory.js` (saved filters), `resources/webview.css`, `src/services/historyService.ts`, `src/webview/template.ts`, tests, `CHANGELOG.md`, `package.json`
 
 ## Goal
