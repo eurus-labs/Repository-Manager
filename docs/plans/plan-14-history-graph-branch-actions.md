@@ -4,6 +4,7 @@ Status: draft
 Date: 2026-11-22
 Branch: `feat/history-graph-branch-actions`
 Baseline: `main` at `4fe5d23e5d17283e1987a4ed31c452e0a5034ac9`
+Depends on: plan 16 (`feat/branch-origin-labels-update`), which folds `x` and `origin/x` on one commit into one label with an `origin` chip. Revise this plan on top of it before approval: the label menu and a drop on a merged label must offer both `x` and `origin/x` as targets.
 Target: `src/webview/template.ts` (menus), `resources/webview.js` (labels, menus, drag), `resources/webview.css`, `src/handlers/webviewMessageHandler.ts`, `src/services/historyRewriteService.ts`, `src/services/historyActionService.ts`, tests, `CHANGELOG.md`, `package.json`
 
 ## Goal
