@@ -172,8 +172,6 @@ crosses the extension host; the harness relays it directly.
 | Skipping identical snapshots leaves a new Side Bar view empty | `publishSidebar` from the host always posts; acceptance case "A recreated view" |
 | A removed focused node loses focus | The existing focus restore by `data-mirror-key` stays as a fallback |
 
-## Handoff
+## Open questions
 
-- Implement with `coder-handoff` (Sonnet, worktree), on this branch, after the user approves.
-- Validate with `.github/skills/verify-repository-manager/SKILL.md`.
-- Commit as the user's no-reply identity. Use no AI trailers.
+None.
