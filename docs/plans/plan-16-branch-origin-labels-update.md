@@ -68,11 +68,20 @@ Decisions 1–4 were made by the user on 2026-11-23 (AskUserQuestion). Decision 
    history.
 5. **The checkout steps, on the host.** `checkoutBranch` without `replaceWithRemote` becomes `checkoutAndUpdate`.
    The remote branch is always `origin/<name>`, the same name, as the Side Bar's list and "Reset to origin" already
-   assume. `name` is a branch that has, or is, `origin/<name>` (by `refs/remotes/origin/<name>` after the fetch):
-   1. **Fetch.** Run `git fetch origin <name>`, with the normal credential handling of a manual Fetch (this is a
-      click, not a background job).
-      - A failed fetch (offline, auth) does not stop the checkout. It goes on with the last fetched
-        `origin/<name>`, and the message says "Could not fetch origin; used origin/<name> as last fetched".
+   assume.
+
+   **Whether the branch is on origin is decided before any fetch.** It is when `refs/remotes/origin/<name>` exists
+   locally, or when there is no local `<name>` (a remote-only row). Otherwise it is `local-only`: checked out as
+   now, with no fetch.
+
+   For a branch on origin:
+   1. **Fetch.** Run `git fetch origin <name>`.
+      - It uses the same environment as the manual Fetch (`fetchUpdates`, `branchService.ts:352`), with
+        `execGit`'s default timeout of 30 s (`gitCommandService.ts:26`). This is a click, not a background job.
+      - A failed fetch (offline, auth, or the 30 s timeout) does not stop the checkout. It goes on with the last
+        fetched `origin/<name>`, and the message says "Could not fetch origin; used origin/<name> as last fetched".
+      - If the fetch shows that origin has deleted `<name>` (no `refs/remotes/origin/<name>` afterwards), the
+        branch is treated as `local-only` from then on.
    2. **Check out.**
       - With no local `<name>`: `git checkout -b <name> --track origin/<name>`.
       - Otherwise `git checkout <name>`, unless it is already current.
@@ -96,9 +105,14 @@ Decisions 1–4 were made by the user on 2026-11-23 (AskUserQuestion). Decision 
    - Rejected: honouring a differently named upstream (`@{upstream}`). The list and "Reset to origin" match by
      name today; a mixed rule would make the chip and the action disagree.
 6. **The webview.**
-   - `requestBranchCheckout` no longer returns early for the current branch. It posts the checkout, and after the
-     result it reloads the history as before.
-   - `pendingBranchCheckout` still prevents a second click while one runs.
+   - **The current branch.** `requestBranchCheckout` no longer returns early for it.
+     - It still reloads that branch's history at once (`setHistoryRevision('')` and `requestDashboardHistory`, as
+       `:1617–1618` do today), because that click is also how a person goes back to the branch's history.
+     - Then it posts the checkout.
+   - **After the result.** The `branchCheckoutResult` handler (`webview.js:3053`) already reloads the history and
+     the refs on success, with `preserveViewport`. It is unchanged.
+   - **A fetch in flight.** `pendingBranchCheckout` still prevents a second branch click while one runs, for at
+     most the fetch's 30 s plus the checkout.
    - "Reset to origin" (`replaceWithRemote`) is unchanged.
 7. **The merged graph label.** `renderHistoryRefs` folds `remote-branch` `origin/x` into a `head` or
    `local-branch` `x` on the same commit:
@@ -109,8 +123,9 @@ Decisions 1–4 were made by the user on 2026-11-23 (AskUserQuestion). Decision 
      - an `origin/x` with no local `x` on that commit keeps its own label as now;
      - labels for other remotes (`upstream/x`) and `origin/HEAD` are unchanged;
      - tags are unchanged.
-   - **The data is not changed.** `commit.refs` stays as the host sent it. History search and the graph model read
-     the data, not the labels, so a search for `origin/x` still finds the commit. Only the drawing folds.
+   - **The data is not changed.** `commit.refs` stays as the host sent it, and only the drawing folds. History
+     search is unaffected: it reloads the history from the host with the filter (`webview.js:3463–3470`), not by
+     reading the labels.
 8. **The Side Bar chip.**
    - A branch row whose branch has `hasRemote` or `isRemote` gets `<small class="ref-origin">origin</small>` after
      its name. A branch only local gets none.
@@ -178,8 +193,9 @@ Default (`AGENTS.md`):
   checked out and its commit:
   - `x` is behind after `upstream` pushes 2 commits not yet fetched by `local`. Result `fast-forwarded`, `x` at the
     pushed commit, message says 2 commits. This proves the fetch ran.
-  - No local `x`, and `origin/x` was pushed after `local`'s last fetch. `x` is created, tracks `origin/x`, and is
-    at the pushed commit.
+  - No local `x`. `origin/x` was known at `local`'s last fetch, then `upstream` pushed 2 more commits. `x` is
+    created, tracks `origin/x`, and is at the newest pushed commit.
+  - A branch whose `origin/x` is gone after the fetch (deleted on origin) is checked out as `local-only`.
   - `x` is ahead by 1: result `ahead`, and `x` is unchanged.
   - Diverged (1 ahead, 1 behind): result `diverged`, `x` is unchanged, and the message names both counts.
   - Behind, with an uncommitted change to a file the update touches: result `blocked`. `x` is checked out and
@@ -217,13 +233,11 @@ SSH with a passphrase) on a click.
 | Risk | Handling |
 | --- | --- |
 | A click moves a branch the person did not mean to update | Fast-forward only. Nothing is rewritten, ahead or diverged branches are left alone, and the message says what happened |
-| A fetch hangs on a credential prompt | The same credential handling as the manual Fetch; the unverified case above |
+| A fetch hangs on a credential prompt, or a slow network blocks branch clicks | The 30 s timeout counts as a failed fetch and the checkout goes on (Decision 5); the current branch's history reloads at once (Decision 6); a prompt in VS Code is the unverified case above |
 | Dirty working tree | `merge --ff-only` refuses before touching files; the `blocked` case checks the file keeps its change |
 | The checkout succeeds but the update fails, and the message hides it | Every outcome has its own `update` value and message; each one is tested |
 | A merged label hides `origin/x` from plan 14's targets | Decision 9: plan 14 is revised on top of this plan before approval |
 
-## Handoff
+## Open questions
 
-- Implement with `coder-handoff` (Sonnet, worktree), on this branch, after the user approves.
-- Validate with `.github/skills/verify-repository-manager/SKILL.md`.
-- Commit as the user's no-reply identity. Use no AI trailers.
+None.
