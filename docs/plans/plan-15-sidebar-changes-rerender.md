@@ -1,6 +1,6 @@
 # Plan 15 — Picking a file in the Side Bar's Changes no longer rebuilds the Side Bar
 
-Status: draft
+Status: approved
 Date: 2026-11-23
 Branch: `fix/sidebar-changes-rerender`
 Baseline: `main` at `4fe5d23e5d17283e1987a4ed31c452e0a5034ac9`
