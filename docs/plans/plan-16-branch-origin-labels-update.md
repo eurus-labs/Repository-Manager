@@ -1,6 +1,6 @@
 # Plan 16 — One label per branch, with `origin` when it is on origin; checking out updates from origin
 
-Status: draft
+Status: approved
 Date: 2026-11-23
 Branch: `feat/branch-origin-labels-update`
 Baseline: `main` at `4fe5d23e5d17283e1987a4ed31c452e0a5034ac9`
