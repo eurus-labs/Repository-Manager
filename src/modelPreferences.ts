@@ -51,3 +51,8 @@ export async function saveSelectedModel(state: vscode.Memento | undefined, value
   await state?.update(SELECTED_MODEL_KEY, model);
   return model;
 }
+
+/** Back to Default: the chosen model refused (VS Code keeps it for itself), so it is forgotten. */
+export async function clearSelectedModel(state: vscode.Memento | undefined): Promise<void> {
+  await state?.update(SELECTED_MODEL_KEY, undefined);
+}

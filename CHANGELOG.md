@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.8.1] - 2026-11-20
+
+### Fixed
+
+- Model menus no longer keep offering a model that VS Code reserves for itself (for example `copilot-dictation-cleanup-luna`). When such a model refuses a request with "only available to VS Code core", it is remembered (until VS Code updates) and left out of the Studio Chat's and the dashboard's Model menus. If you had chosen it, you are told, the choice is cleared, and nothing is sent to another model. If you had chosen none, the request moves on to the next usable model, including commit messages, summaries, conflict help and the review.
+- The Studio Chat no longer refuses to run a plan because the model wrote a `model` or `skills` setting on a step that does not use a model, such as `docs.requirements`. The setting had no effect, so it is dropped from the drafted plan.
+
 ## [3.8.0] - 2026-11-20
 
 ### Added

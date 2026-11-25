@@ -36,6 +36,7 @@ const lmModel = (family, name) => ({
   }
 });
 const fakeVscode = {
+  version: '1.104.0',
   Uri: { file: fileUri, joinPath: (uri, ...parts) => fileUri(path.join(uri.fsPath, ...parts)) },
   Range: class {},
   WorkspaceEdit: class { replace() {} },
@@ -69,7 +70,7 @@ Module._load = function (request, parent, isMain) {
   return originalLoad.call(this, request, parent, isMain);
 };
 const out = name => require(path.join(__dirname, '../../out/studio', name));
-const { draftPlan, planDiff, diffIsEmpty, normalizePlan, stepCatalog } = out('chatPlanner.js');
+const { draftPlan, planDiff, diffIsEmpty, normalizePlan, planProblems, stepCatalog } = out('chatPlanner.js');
 const { addDraft, addUserMessage, acceptDraft, discardDraft, editPlan, currentCard, planView, history, ChatError } = out('chatSession.js');
 const { ChatStore } = out('chatStore.js');
 const { RunStore, WorkflowEngine, workflowModels } = out('engine.js');
@@ -849,6 +850,96 @@ async function main() {
     fakeVscode.lm.selectChatModels = async selector => { if (!selector.vendor) { throw new Error('a provider failed'); } return copilot; };
     assert.deepEqual((await listModels()).map(model => model.selector), ['copilot:claude-haiku', 'copilot:gpt-4o']);
     fakeVscode.lm.selectChatModels = saved;
+  }
+
+  // ---- Models VS Code keeps for itself (plan 8): offered by vscode.lm, refused on use. A chosen model is
+  // ---- reported and leaves the menu, with no retry; an unnamed one is replaced by the next model, once each.
+  {
+    const refusing = (family, name) => ({ ...lmModel(family, name), sendRequest: async () => {
+      lmCalls.push({ family, prompt: 'refused' });
+      throw new Error(`Model ${family}-id is only available to VS Code core.`);
+    } });
+    const savedModels = availableModels.splice(0);
+    const open = async () => {
+      const values = new Map();
+      const memento = { get: key => values.get(key), update: async (key, value) => { values.set(key, value); } };
+      const context = {
+        subscriptions: [], extensionUri: fileUri(path.resolve(__dirname, '../..')),
+        storageUri: fileUri(path.join(base, `storage-core-${Math.random()}`)), globalStorageUri: fileUri(path.join(base, 'global-core')),
+        globalState: memento, workspaceState: { get() {}, update: async () => {} }
+      };
+      const posted = [];
+      const chat = new StudioChatProvider(context, { steps, run: async () => undefined }, workspace);
+      chat.resolveWebviewView({ webview: { options: {}, html: '', cspSource: 'csp', asWebviewUri: uri => uri, postMessage: async message => { posted.push(JSON.parse(JSON.stringify(message))); }, onDidReceiveMessage: () => undefined } });
+      await chat.receive({ type: 'ready' });
+      return { chat, posted, memento, last: () => posted[posted.length - 1] };
+    };
+    const errors = view => view.last().messages.filter(message => message.role === 'error').map(message => message.text);
+    try {
+      // The person chose the model: reported, marked, cleared, out of the next menu, one request.
+      availableModels.push(refusing('internal-a', 'Internal A'), lmModel('gpt-4o', 'GPT-4o'));
+      let view = await open();
+      await view.chat.receive({ type: 'setModel', selector: 'copilot:internal-a' });
+      lmCalls.length = 0;
+      await view.chat.receive({ type: 'send', text: 'Plan something' });
+      assert.deepEqual(errors(view), ['Internal A is kept by VS Code for its own use and cannot be used by extensions. It was removed from the Model menu; choose another model.']);
+      assert.equal(view.last().model, null, 'the refused choice was not cleared');
+      assert.deepEqual(view.last().models.map(model => model.selector), ['copilot:gpt-4o'], 'the refused model is still in the menu');
+      assert.equal(lmCalls.length, 1, 'a chosen model is not retried on another model');
+      assert.deepEqual(view.memento.get('repositoryManager.unusableModels'), { vscodeVersion: '1.104.0', ids: ['internal-a-id'] });
+
+      // No model named: internal-a is first and refuses; the next model answers; two requests.
+      view = await open();
+      lmCalls.length = 0;
+      lmReplies.push({ reply: 'Fine.', workflow: null });
+      await view.chat.receive({ type: 'send', text: 'Plan something' });
+      assert.deepEqual(errors(view), []);
+      assert.deepEqual(lmCalls.map(call => call.family), ['internal-a', 'gpt-4o']);
+      assert.equal(view.last().messages.filter(message => message.role === 'assistant').pop().model, 'GPT-4o');
+      assert.deepEqual(view.last().models.map(model => model.selector), ['copilot:gpt-4o']);
+      assert.equal(view.last().model, 'copilot:gpt-4o');
+
+      // Every model refuses: one request each, then the usual message; no loop.
+      availableModels.splice(0, availableModels.length, refusing('internal-a', 'Internal A'), refusing('internal-b', 'Internal B'));
+      view = await open();
+      lmCalls.length = 0;
+      await view.chat.receive({ type: 'send', text: 'Plan something' });
+      assert.deepEqual(lmCalls.map(call => call.family), ['internal-a', 'internal-b']);
+      assert.match(errors(view)[0], /No chat model is available/);
+
+      // A new VS Code version asks again.
+      const { unusable } = require(path.join(__dirname, '../../out/services/extensionModels.js'));
+      assert.equal(unusable(view.memento, '1.104.0').size, 2);
+      assert.equal(unusable(view.memento, '1.105.0').size, 0);
+    } finally {
+      availableModels.splice(0, availableModels.length, ...savedModels);
+    }
+  }
+
+  // ---- A plan's `model` and `skills` on a step that uses no model are dropped, not repaired (plan 8); the
+  // ---- validator still reports them in a file a person wrote.
+  {
+    const stray = { id: 'req', type: 'docs.requirements', model: 'copilot:gpt-4o', skills: ['github:a/b/c@' + 'a'.repeat(40)], with: {} };
+    const drafted = plan({ nodes: [...plan().nodes, stray, { id: 'odd', type: 'no.such.step', model: 'copilot:gpt-4o', skills: ['x'] }] });
+    const cleaned = normalizePlan(drafted, undefined, 'x', steps);
+    const node = id => cleaned.nodes.find(item => item.id === id);
+    assert.equal('model' in node('req') || 'skills' in node('req'), false, 'model and skills stayed on a step that uses no model');
+    assert.deepEqual(planProblems(cleaned, steps).filter(problem => /does not use a model/.test(problem.message)), []);
+    assert.equal(node('odd').model, 'copilot:gpt-4o');
+    assert.deepEqual(node('odd').skills, ['x']);
+    assert.ok(planProblems(cleaned, steps).some(problem => /Unknown step type "no\.such\.step"/.test(problem.message)));
+    const promptNode = plan({ nodes: [{ id: 'summarize', type: 'prompt', prompt: 'summarize', model: 'copilot:gpt-4o', skills: ['github:a/b/c@' + 'a'.repeat(40)], with: { input: '${inputs.text}' } }] });
+    const kept = normalizePlan(promptNode, undefined, 'x', steps).nodes[0];
+    assert.equal(kept.model, 'copilot:gpt-4o');
+    assert.equal(kept.skills.length, 1);
+    // Through the planner: the draft has no such problem and no repair turn was needed.
+    const strayOnly = plan({ nodes: [...plan().nodes, { id: 'req', type: 'docs.requirements', model: 'copilot:gpt-4o', with: {} }] });
+    const model = scripted([{ reply: 'A plan.', workflow: strayOnly }, { reply: 'again', workflow: strayOnly }]);
+    const draft = await draftPlan(model, steps, { message: 'Plan', history: [] }, never);
+    assert.deepEqual(draft.problems.filter(problem => /does not use a model/.test(problem.message)), []);
+    // A workflow file written by a person is still told.
+    const filed = validateWorkflow({ schema: 'repository-manager/workflow@1', id: 'x', version: '1', ...plan({ nodes: [...plan().nodes, stray] }) }, steps);
+    assert.ok(filed.some(problem => /"docs\.requirements" does not use a model/.test(problem.message)));
   }
 
   // ---- The manifest: the chat is in the Secondary Side Bar (right, as Copilot's), and nothing of

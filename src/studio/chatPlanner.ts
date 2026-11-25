@@ -125,7 +125,7 @@ function buildPrompt(request: PlanRequest, steps: Map<string, StepDefinition>): 
 const slug = (text: string) => text.toLowerCase().normalize('NFKD').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').replace(/^[^a-z]+/, '').slice(0, 48) || 'plan';
 
 /** Fills what the model may leave out and keeps what identifies the current plan. */
-export function normalizePlan(candidate: Record<string, unknown>, current: Workflow | undefined, message: string): Workflow {
+export function normalizePlan(candidate: Record<string, unknown>, current: Workflow | undefined, message: string, steps?: Map<string, StepDefinition>): Workflow {
   const plan = JSON.parse(JSON.stringify(candidate)) as Record<string, unknown>;
   plan.schema = WORKFLOW_FORMAT;
   if (typeof plan.title !== 'string' || !plan.title.trim()) { plan.title = current?.title ?? cut(message.trim(), 80); }
@@ -134,6 +134,12 @@ export function normalizePlan(candidate: Record<string, unknown>, current: Workf
   // Positions are the diagram's: kept for the nodes that stay, never taken from the model.
   delete plan.layout;
   const nodes = Array.isArray(plan.nodes) ? plan.nodes : [];
+  // `model` and `skills` have no effect on a step that sends nothing to a model: dropped, not repaired.
+  // An unknown type is left as it is, so validation still names it.
+  for (const node of nodes) {
+    const shape = record(node) && typeof node.type === 'string' ? steps?.get(node.type) : undefined;
+    if (record(node) && shape && !shape.usesModel) { delete node.model; delete node.skills; }
+  }
   if (current?.layout) {
     const kept = Object.fromEntries(Object.entries(current.layout).filter(([id]) => nodes.some(node => record(node) && node.id === id)));
     if (Object.keys(kept).length) { plan.layout = kept; }
@@ -213,7 +219,7 @@ export async function draftPlan(model: StudioModel, steps: Map<string, StepDefin
       problems = [{ where: 'workflow', message: '"workflow" is an object or null.' }];
       last = { reply: parsed.reply, problems, model: answer.model };
     } else {
-      const workflow = normalizePlan(parsed.workflow, request.current, request.message);
+      const workflow = normalizePlan(parsed.workflow, request.current, request.message, steps);
       // A skill the model names must be one it was offered, or one the plan had: never invented.
       const known = new Set([...(request.skills ?? []).map(skill => skill.ref), ...(request.current?.nodes ?? []).flatMap(node => node.skills ?? [])]);
       problems = planProblems(workflow, steps, known, request.scripts);

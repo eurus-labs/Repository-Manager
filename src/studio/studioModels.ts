@@ -6,7 +6,8 @@
  */
 import * as vscode from 'vscode';
 import { readSelectedModel } from '../modelPreferences';
-import { StudioModel } from './steps';
+import { isCoreOnlyError, markUnusable, ModelState, refusedChoiceMessage, usable } from '../services/extensionModels';
+import { CancelSignal, StudioModel } from './steps';
 
 export interface LmModel {
   id: string; name: string; vendor: string; family: string; version?: string; maxInputTokens: number;
@@ -32,7 +33,7 @@ export const selectorOf = (model: Pick<LmModel, 'vendor' | 'family'> & { id?: st
  * empty selector did not list Copilot's models in VS Code (reported 2026-11-13: only other vendors
  * were offered while Copilot answered), so both lists are read and merged, Copilot's first.
  */
-export async function lmModels(): Promise<LmModel[]> {
+export async function lmModels(context?: { globalState: ModelState }): Promise<LmModel[]> {
   const api = vscode as LmApi;
   if (!api.lm?.selectChatModels) { return []; }
   const read = async (selector: { vendor?: string }) => {
@@ -40,18 +41,27 @@ export async function lmModels(): Promise<LmModel[]> {
   };
   const [copilot, all] = await Promise.all([read({ vendor: 'copilot' }), read({})]);
   const seen = new Set<string>();
-  return [...copilot, ...all].filter(model => {
+  const listed = [...copilot, ...all].filter(model => {
     const key = `${model.vendor}\u0000${model.id}`;
     if (!model.id || seen.has(key)) { return false; }
     seen.add(key);
     return true;
   });
+  // Models VS Code keeps for itself (learned from their refusal) are not offered.
+  return usable(listed, context?.globalState, vscodeVersion());
 }
 
-export async function listModels(): Promise<ModelChoice[]> {
+const vscodeVersion = () => (vscode as { version?: string }).version ?? '';
+
+/** The model the person chose refused: it is marked, and the person is told; nothing is retried. */
+export class ChosenModelRefused extends Error {
+  constructor(readonly selector: string, readonly modelName: string) { super(refusedChoiceMessage(modelName)); }
+}
+
+export async function listModels(context?: { globalState: ModelState }): Promise<ModelChoice[]> {
   const seen = new Set<string>();
   const choices: ModelChoice[] = [];
-  for (const model of await lmModels()) {
+  for (const model of await lmModels(context)) {
     const selector = selectorOf(model);
     if (seen.has(selector)) { continue; }
     seen.add(selector);
@@ -80,8 +90,8 @@ export function dashboardSelector(context: vscode.ExtensionContext, models: Mode
 }
 
 /** The model a selector names, or the dashboard's model, or the first one offered. */
-export async function pickModel(context: vscode.ExtensionContext, selector: string | undefined): Promise<LmModel> {
-  const models = await lmModels();
+export async function pickModel(context: vscode.ExtensionContext, selector: string | undefined, skip?: Set<string>): Promise<LmModel> {
+  const models = (await lmModels(context)).filter(model => !skip?.has(model.id));
   if (selector) {
     const found = resolveSelector(selector, models);
     if (!found) { throw new Error(`The model "${selector}" is not available in this VS Code. Choose another model.`); }
@@ -102,25 +112,42 @@ export function studioModel(context: vscode.ExtensionContext): StudioModel {
     async complete(prompt, signal, selector) {
       const api = vscode as LmApi;
       if (!api.LanguageModelChatMessage) { throw new Error('The Studio needs VS Code\'s language model API (VS Code 1.104 or newer).'); }
-      const model = await pickModel(context, selector);
-      if (await model.countTokens(prompt) > model.maxInputTokens - 1024) {
-        throw new Error(`What would be sent does not fit ${model.name}. Choose a model with a larger context window, or send less.`);
-      }
-      const source = new vscode.CancellationTokenSource();
-      const timer = setInterval(() => { if (signal.cancelled) { source.cancel(); } }, 200);
-      try {
-        const response = await model.sendRequest([api.LanguageModelChatMessage.User(prompt)], {}, source.token);
-        let text = '';
-        for await (const fragment of response.text) {
-          if (source.token.isCancellationRequested) { throw new Error('Cancelled'); }
-          text += fragment;
-          if (text.length > MAX_REPLY_CHARS) { throw new Error('The model\'s reply is longer than expected. Try again, or choose another model.'); }
+      // A model VS Code keeps for itself refuses. One the person named is reported and not replaced; with
+      // none named, the next usable model answers (each model is asked once).
+      const refused = new Set<string>();
+      for (;;) {
+        const model = await pickModel(context, selector, refused);
+        try {
+          return await ask(model, prompt, signal);
+        } catch (error) {
+          if (!isCoreOnlyError(error)) { throw error; }
+          refused.add(model.id);
+          await markUnusable(context.globalState, vscodeVersion(), model.id);
+          if (selector) { throw new ChosenModelRefused(selector, model.name || model.family || model.id); }
         }
-        return { text, model: model.name || model.id };
-      } finally {
-        clearInterval(timer);
-        source.dispose();
       }
     }
   };
+}
+
+async function ask(model: LmModel, prompt: string, signal: CancelSignal): Promise<{ text: string; model: string }> {
+  const api = vscode as LmApi;
+  if (await model.countTokens(prompt) > model.maxInputTokens - 1024) {
+    throw new Error(`What would be sent does not fit ${model.name}. Choose a model with a larger context window, or send less.`);
+  }
+  const source = new vscode.CancellationTokenSource();
+  const timer = setInterval(() => { if (signal.cancelled) { source.cancel(); } }, 200);
+  try {
+    const response = await model.sendRequest([api.LanguageModelChatMessage!.User(prompt)], {}, source.token);
+    let text = '';
+    for await (const fragment of response.text) {
+      if (source.token.isCancellationRequested) { throw new Error('Cancelled'); }
+      text += fragment;
+      if (text.length > MAX_REPLY_CHARS) { throw new Error('The model\'s reply is longer than expected. Try again, or choose another model.'); }
+    }
+    return { text, model: model.name || model.id };
+  } finally {
+    clearInterval(timer);
+    source.dispose();
+  }
 }

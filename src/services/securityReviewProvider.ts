@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { createHash } from 'crypto';
 import { parseModelJson } from './modelJson';
+import { guardModel, ModelRules, usable } from './extensionModels';
 import { ReviewFinding } from '../types';
 import { changedTargetRanges, isLockfile, ReviewPlan, ReviewWorkUnit } from './reviewSurveyService';
 
@@ -97,16 +98,24 @@ export const PROMPT_VERSION = createHash('sha256')
   .digest('hex').slice(0, 16);
 
 export class SecurityReviewProvider {
-  constructor(private api: ReviewModelAPI = vscode as typeof vscode & ReviewModelAPI) {}
+  constructor(private api: ReviewModelAPI = vscode as typeof vscode & ReviewModelAPI, private readonly rules: ModelRules = {}) {}
 
   async selectModel(selectedModelId?: string): Promise<ReviewChatModel> {
     if (!this.api.lm?.selectChatModels || !this.api.LanguageModelChatMessage) {
       throw new Error('AI review requires VS Code 1.91 or newer and GitHub Copilot.');
     }
-    const models = await this.api.lm.selectChatModels({ vendor: 'copilot' });
+    const api = this.api.lm;
+    const state = this.rules.state?.();
+    const version = (vscode as { version?: string }).version ?? '';
+    const models = usable(await api.selectChatModels({ vendor: 'copilot' }), state, version);
     const model = selectedModelId ? models.find(item => item.id === selectedModelId) : models[0];
     if (!model) { throw new Error('Selected Copilot model is unavailable.'); }
-    return model;
+    // A model VS Code keeps for itself refuses: a chosen one is reported and forgotten, an unnamed one is replaced.
+    return guardModel(model, {
+      state, vscodeVersion: version, chosen: Boolean(selectedModelId), noneLeft: 'Selected Copilot model is unavailable.',
+      alternatives: async () => await api.selectChatModels({ vendor: 'copilot' }),
+      onChosenRefused: () => this.rules.onChosenRefused?.()
+    });
   }
 
   async analyze(plan: ReviewPlan, unit: ReviewWorkUnit, model: ReviewChatModel,

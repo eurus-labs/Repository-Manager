@@ -3,6 +3,7 @@ import { ChangeContextPacket, ChangeSummary } from '../types';
 import { validateSummary } from './changeSummaryValidation';
 import { buildSummaryBatches, combineBatchSummaries, SUMMARY_BATCH_BYTES } from './changeSummaryBatches';
 import { MAX_PATCH_BYTES } from './changeContextService';
+import { guardModel, ModelRules, usable } from './extensionModels';
 
 interface SummaryChatModel {
   id: string;
@@ -23,15 +24,39 @@ interface SummaryLanguageModelAPI {
 export interface AIProvider {
   summarize(packet: ChangeContextPacket, token: vscode.CancellationToken, progress: (status: string) => void, selectedModelId?: string): Promise<{ model: string; summary: ChangeSummary }>;
 }
+const NO_COPILOT_MODEL = 'No Copilot model available. Sign in to GitHub Copilot and try again.';
+const vscodeVersion = () => (vscode as { version?: string }).version ?? '';
+
 export class CopilotSummaryProvider implements AIProvider {
   private cache = new Map<string, ChangeSummary>();
+
+  constructor(private readonly rules: ModelRules = {}) {}
+
+  /**
+   * The selected Copilot model, or the first usable one. A model VS Code keeps for itself is not offered;
+   * if one refuses, a chosen model is reported and forgotten, and an unnamed one is replaced by the next.
+   */
+  private async pick(api: SummaryLanguageModelAPI, selectedModelId: string | undefined): Promise<SummaryChatModel> {
+    const all = await api.lm!.selectChatModels({ vendor: 'copilot' });
+    const state = this.rules.state?.();
+    const models = usable(all, state, vscodeVersion());
+    const model = selectedModelId ? models.find(candidate => candidate.id === selectedModelId) : models[0];
+    if (!model) {
+      throw new Error(selectedModelId ? 'The selected Copilot model is no longer available. Reload the model list and try again.' : NO_COPILOT_MODEL);
+    }
+    return guardModel(model, {
+      state, vscodeVersion: vscodeVersion(), chosen: Boolean(selectedModelId), noneLeft: NO_COPILOT_MODEL,
+      alternatives: async () => await api.lm!.selectChatModels({ vendor: 'copilot' }),
+      onChosenRefused: () => this.rules.onChosenRefused?.()
+    });
+  }
 
   async listModels(): Promise<{ id: string; name: string }[]> {
     const api = vscode as typeof vscode & SummaryLanguageModelAPI;
     if (!api.lm?.selectChatModels) {
       throw new Error('AI Change Summary requires VS Code 1.91 or newer.');
     }
-    const models = await api.lm.selectChatModels({ vendor: 'copilot' });
+    const models = usable(await api.lm.selectChatModels({ vendor: 'copilot' }), this.rules.state?.(), vscodeVersion());
     return models.map(model => ({ id: model.id, name: model.name || model.id }));
   }
 
@@ -41,13 +66,7 @@ export class CopilotSummaryProvider implements AIProvider {
     if (!api.lm?.selectChatModels || !api.LanguageModelChatMessage) {
       throw new Error('Copilot features require VS Code 1.91 or newer.');
     }
-    const models = await api.lm.selectChatModels({ vendor: 'copilot' });
-    const model = selectedModelId ? models.find(candidate => candidate.id === selectedModelId) : models[0];
-    if (!model) {
-      throw new Error(selectedModelId
-        ? 'The selected Copilot model is no longer available. Reload the model list and try again.'
-        : 'No Copilot model available. Sign in to GitHub Copilot and try again.');
-    }
+    const model = await this.pick(api, selectedModelId);
     if (await model.countTokens(prompt) > model.maxInputTokens - 1024) {
       throw new Error('What would be sent does not fit this model. Send less (for a commit message, select fewer files), or choose a model with a larger context window.');
     }
@@ -67,13 +86,7 @@ export class CopilotSummaryProvider implements AIProvider {
     if (!api.lm?.selectChatModels || !api.LanguageModelChatMessage) {
       throw new Error('AI Change Summary requires VS Code 1.91 or newer.');
     }
-    const models = await api.lm.selectChatModels({ vendor: 'copilot' });
-    const model = selectedModelId ? models.find(candidate => candidate.id === selectedModelId) : models[0];
-    if (!model) {
-      throw new Error(selectedModelId
-        ? 'The selected Copilot model is no longer available. Reload the model list and try again.'
-        : 'No Copilot model available. Sign in to GitHub Copilot and try again.');
-    }
+    const model = await this.pick(api, selectedModelId);
     if (token.isCancellationRequested) {
       throw new Error('Cancelled');
     }
