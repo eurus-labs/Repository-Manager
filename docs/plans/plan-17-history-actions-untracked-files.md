@@ -1,6 +1,6 @@
 # Plan 17 — History actions run with untracked files present, unless they would overwrite one
 
-Status: approved
+Status: implemented
 Date: 2026-11-24
 Branch: `fix/history-actions-untracked-files`
 Baseline: `main` at `4fe5d23e5d17283e1987a4ed31c452e0a5034ac9`
