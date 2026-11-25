@@ -957,6 +957,17 @@ async function main() {
     assert.deepEqual(await chipOf('feature/ahead'), { chip: 1, remoteOnly: 0 });
     assert.deepEqual(await chipOf('remote-only'), { chip: 1, remoteOnly: 1 });
     assert.deepEqual(await chipOf('claude/review-dashboard-layout-at-narrow-widths'), { chip: 0, remoteOnly: 0 });
+    // Every part of the current branch's row (name, origin chip, HEAD) stays on one line, as tall as another row.
+    const rowLayout = await side.evaluate(() => {
+      const box = element => { const r = element.getBoundingClientRect(); return { top: r.top, bottom: r.bottom, height: r.height }; };
+      const item = document.querySelector('#dashboardBranches .sidebar-ref-item.current');
+      const other = document.querySelector('#dashboardBranches .sidebar-ref-item[data-branch="remote-only"]');
+      return { chip: box(item.querySelector('.ref-origin')), head: box(Array.from(item.querySelectorAll('small')).find(small => small.textContent === 'HEAD')),
+        item: box(item), other: box(other), width: window.innerWidth };
+    });
+    assert.equal(rowLayout.width, 300);
+    assert.ok(rowLayout.chip.top < rowLayout.head.bottom && rowLayout.head.top < rowLayout.chip.bottom, `the origin chip and HEAD are on different lines: ${JSON.stringify(rowLayout)}`);
+    assert.ok(Math.abs(rowLayout.item.height - rowLayout.other.height) <= 1, `the current branch row is ${rowLayout.item.height}px tall, another row ${rowLayout.other.height}px`);
     await snap(side, '57-sidebar-branch-origin-chip');
     // Clicking the checked-out branch now reaches the host, to fetch and fast-forward it.
     await page.evaluate(() => { const toHost = window.__postToHost; window.__sent = []; window.__postToHost = m => { window.__sent.push(m); return toHost(m); }; });

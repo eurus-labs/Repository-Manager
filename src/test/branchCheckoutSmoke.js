@@ -139,16 +139,24 @@ async function main() {
     assert.equal(git(repos.local, 'rev-parse', 'x'), xBefore);
     assert.equal(readFileSync(path.join(repos.local, 'f.txt'), 'utf8'), 'dirty\n');
 
-    // The fetch fails (origin URL points nowhere): the checkout runs against the last fetched origin/x.
+    // The fetch fails (origin URL points nowhere): x is behind its last fetched origin/x and still fast-forwards to it.
     repos = setup();
     git(repos.local, 'checkout', '-q', 'x');
     git(repos.local, 'checkout', '-q', 'main');
+    pushed = pushOnX(repos, 'f.txt', '2\n', 'two');
+    git(repos.local, 'fetch', '-q', 'origin');
+    const lastFetched = git(repos.local, 'rev-parse', 'origin/x');
+    assert.equal(lastFetched, pushed);
+    pushOnX(repos, 'f.txt', '3\n', 'three'); // never fetched by local
     git(repos.local, 'remote', 'set-url', 'origin', path.join(repos.base, 'missing.git'));
+    assert.notEqual(git(repos.local, 'rev-parse', 'x'), lastFetched);
     result = await checkout(repos.local, 'x');
     assert.equal(result.success, true, result.message);
-    assert.equal(outcome(result), 'up-to-date');
+    assert.equal(outcome(result), 'fast-forwarded');
     assert.match(result.message, /Could not fetch origin; used origin\/x as last fetched/);
+    assert.match(result.message, /Updated x by 1 commit from origin/);
     assert.equal(currentBranch(repos.local), 'x');
+    assert.equal(git(repos.local, 'rev-parse', 'x'), lastFetched);
 
     // A local-only branch: checked out without any fetch.
     repos = setup();

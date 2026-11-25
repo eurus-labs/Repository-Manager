@@ -587,7 +587,10 @@ select {
 
 .sidebar-ref-item {
   display: grid;
-  grid-template-columns: 17px minmax(0, 1fr) auto;
+  grid-template-columns: 17px minmax(0, 1fr);
+  /* Chips after the name (origin, HEAD) take their own columns on the same row. */
+  grid-auto-flow: column;
+  grid-auto-columns: auto;
   align-items: center;
   gap: 5px;
   min-height: 25px;
