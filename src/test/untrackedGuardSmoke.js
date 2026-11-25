@@ -172,6 +172,35 @@ async function main() {
       }
     }
 
+    // An untracked file inside a directory whose name the action writes as a file is also in the way:
+    // reset --hard would delete the directory and the file with it.
+    for (const [name, scenario] of Object.entries(scenarios)) {
+      const { dir, run } = scenario.build();
+      const inner = `${scenario.clash}/precious.txt`;
+      mkdirSync(path.join(dir, scenario.clash), { recursive: true });
+      writeFileSync(path.join(dir, inner), 'precious\n');
+      const before = head(dir);
+      const result = await run();
+      assert.equal(result.success, false, `${name} with an untracked file below a written file`);
+      assert.ok(result.message.includes(`overwritten by ${scenario.action}: ${inner}.`), `${name}: ${result.message}`);
+      assert.equal(head(dir), before, name);
+      assert.equal(readFileSync(path.join(dir, inner), 'utf8'), 'precious\n', name);
+      assert.equal(existsSync(path.join(dir, '.git', 'rebase-merge')) || existsSync(path.join(dir, '.git', 'rebase-apply')), false, name);
+      await noPending(dir);
+    }
+
+    // The ancestor is a directory in the target tree, not a file: an untracked sibling is fine.
+    {
+      const dir = init();
+      mkdirSync(path.join(dir, 'src'));
+      const target = commit(dir, { 'src/other.ts': '1\n' }, 'add other');
+      commit(dir, { 'src/other.ts': '2\n' }, 'edit other');
+      writeFileSync(path.join(dir, 'src', 'new.txt'), 'mine\n');
+      const result = await rewrite(dir, target, 'reset', 'main', 'hard');
+      assert.equal(result.success, true, result.message);
+      assert.equal(readFileSync(path.join(dir, 'src', 'new.txt'), 'utf8'), 'mine\n');
+    }
+
     // Soft and mixed resets do not touch the working tree, so a colliding file is no problem.
     for (const mode of ['soft', 'mixed']) {
       const { dir } = scenarios['reset-hard'].build();
