@@ -119,7 +119,7 @@ export function registerStudio(context: vscode.ExtensionContext, workspaceRoot: 
   const replacements = async (workflow: Workflow): Promise<Record<string, string> | undefined> => {
     const named = workflowModels(workflow);
     if (!named.length) { return {}; }
-    const available = await listModels();
+    const available = await listModels(context);
     const chosen: Record<string, string> = {};
     for (const selector of named) {
       if (resolveSelector(selector, available)) { continue; }

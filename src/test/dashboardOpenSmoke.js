@@ -167,6 +167,30 @@ async function main() {
     await waitFor(() => commands.some(command => command.startsWith('fetch')), 'the fetch after the last request', 2000);
     RepositoryManagerPanel.currentPanel.dispose();
 
+    // The model the person chose refuses (VS Code keeps it for itself): the summary ends with that message, and
+    // the menu is refreshed after it, so the page does not cancel the summary for the vanished choice first.
+    {
+      const refusing = { id: 'internal-a', name: 'Internal A', version: '1', maxInputTokens: 32000,
+        async countTokens() { return 1; }, async sendRequest() { throw new Error('Model internal-a is only available to VS Code core.'); } };
+      fakeVscode.lm.selectChatModels = async () => [refusing];
+      settings['copilot.askBeforeSending'] = 'never';
+      const chosen = memento();
+      await chosen.update('repositoryManager.selectedModel', { id: 'internal-a', name: 'Internal A' });
+      RepositoryManagerPanel.globalState = chosen;
+      RepositoryManagerPanel.createOrShow(extension, workspace, chosen);
+      posted.length = 0;
+      await panel.listeners.message({ type: 'summarizeChanges', payload: { repositoryPath: '.', targetSha: git(workspace, 'rev-parse', 'HEAD'), baseSha: null, requestId: 7, modelId: 'internal-a' } });
+      await waitFor(() => posted.some(message => message.type === 'summaryModelsLoaded'), 'the refreshed model menu');
+      const kinds = posted.map(message => message.type);
+      const error = posted.find(message => message.type === 'changeSummaryError');
+      assert.match(error.payload.message, /^Internal A is kept by VS Code for its own use/);
+      assert.ok(kinds.indexOf('changeSummaryError') < kinds.indexOf('summaryModelsLoaded'), `the menu was refreshed before the error: ${kinds.join(', ')}`);
+      assert.equal(chosen.get('repositoryManager.selectedModel'), undefined, 'the refused choice was kept');
+      RepositoryManagerPanel.currentPanel.dispose();
+      RepositoryManagerPanel.globalState = undefined;
+      fakeVscode.lm.selectChatModels = async () => [];
+    }
+
     // A folder that is not a repository, with nothing saved: the page waits for the list.
     const plain = path.join(base, 'plain');
     mkdirSync(plain);

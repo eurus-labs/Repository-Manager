@@ -12,6 +12,7 @@ import * as path from 'path';
 import { parseModelJson } from '../services/modelJson';
 import { git } from '../agent/repositoryScripts';
 import type { CancelSignal } from './steps';
+import { ChosenModelRefused } from '../services/extensionModels';
 
 export const MAPS_DIR = '.repository-manager/maps';
 /** A file the Studio reads whole: larger ones are not read (a folder lists them, a chip refuses them). */
@@ -491,7 +492,7 @@ export async function updateEntries(existing: MapEntry[], files: ListedFile[], m
         }
       }
     } catch (error) {
-      if (deps.signal.cancelled) { throw error; }
+      if (deps.signal.cancelled || error instanceof ChosenModelRefused) { throw error; }
       // The outline stands, marked as one; the next send asks again.
     }
   }

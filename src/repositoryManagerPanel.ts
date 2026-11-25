@@ -17,6 +17,7 @@ import { GitCommandService } from './services/gitCommandService';
 import { ChangeContextService, MAX_PATCH_BYTES } from './services/changeContextService';
 import { snapshotLocalChanges } from './services/localChangesSnapshot';
 import { CopilotSummaryProvider } from './services/changeSummaryService';
+import { ModelRules } from './services/extensionModels';
 import { SecurityReviewService } from './services/securityReviewService';
 import { SecurityReviewProvider } from './services/securityReviewProvider';
 import { ReviewController, ReviewRunner } from './reviewController';
@@ -24,7 +25,7 @@ import { ReviewConsentStore } from './reviewConsent';
 import { ReviewHistoryStore } from './reviewHistory';
 import { ReviewUnitCache } from './reviewUnitCache';
 import { ReviewSkillStore } from './reviewSkillStore';
-import { readPinnedModels, readSelectedModel, savePinnedModels, saveSelectedModel } from './modelPreferences';
+import { clearSelectedModel, readPinnedModels, readSelectedModel, savePinnedModels, saveSelectedModel } from './modelPreferences';
 import { ConflictExplainerHost } from './services/conflictExplanation';
 import { RepositoryManagerLauncher } from './repositoryManagerLauncher';
 import { CommitMessageController } from './commitMessageController';
@@ -73,7 +74,18 @@ export class RepositoryManagerPanel {
   private _prManager: PRManager;
   private _disposables: vscode.Disposable[] = [];
   private _workspaceRoot: string;
-  private readonly _summaryProvider = new CopilotSummaryProvider();
+  /** A model VS Code keeps for itself is learned from its refusal; a chosen one is forgotten (back to Default). */
+  private readonly _modelRules: ModelRules = {
+    state: () => RepositoryManagerPanel.globalState,
+    onChosenRefused: async () => {
+      await clearSelectedModel(RepositoryManagerPanel.globalState);
+      // The page drops a summary when its chosen model leaves the menu, and would then ignore the refusal:
+      // while a summary runs, its error goes first and the menu follows (see _summarizeChanges).
+      if (this._summaryToken) { this._modelsStale = true; } else { await this._sendSummaryModels(); }
+    }
+  };
+  private _modelsStale = false;
+  private readonly _summaryProvider = new CopilotSummaryProvider(this._modelRules);
   private readonly _reviews: ReviewController;
   private readonly _commitMessages: CommitMessageController;
   /** Routes review messages between this dashboard, the Repository Review tab and the controller. */
@@ -184,7 +196,7 @@ export class RepositoryManagerPanel {
       alwaysConfirm: consentFor.alwaysConfirm,
       isConsentRemembered: consentFor.isConsentRemembered,
       rememberConsent: root => consent.allow(root),
-      createRunner: root => new SecurityReviewService(new GitCommandService(root), undefined, unitCache, () => skills.snapshot()) as unknown as ReviewRunner,
+      createRunner: root => new SecurityReviewService(new GitCommandService(root), new SecurityReviewProvider(undefined, this._modelRules), unitCache, () => skills.snapshot()) as unknown as ReviewRunner,
       createCancellation: () => new vscode.CancellationTokenSource(),
       copyText: text => Promise.resolve(vscode.env.clipboard.writeText(text)),
       saveText: async (fileName, text) => {
@@ -208,7 +220,7 @@ export class RepositoryManagerPanel {
         void (isError ? vscode.window.showErrorMessage(message) : vscode.window.showInformationMessage(message));
       },
       createFixModel: modelId => {
-        const provider = new SecurityReviewProvider();
+        const provider = new SecurityReviewProvider(undefined, this._modelRules);
         return { request: (instructions, input, token, onText) =>
           provider.requestJson(instructions, input, modelId, token as vscode.CancellationToken, undefined, onText) };
       },
@@ -621,15 +633,7 @@ export class RepositoryManagerPanel {
         return;
       }
       if (message.type === 'loadSummaryModels') {
-        try {
-          const models = await this._summaryProvider.listModels();
-          const pinned = readPinnedModels(RepositoryManagerPanel.globalState);
-          await this._panel.webview.postMessage({ type: 'summaryModelsLoaded', payload: { models, pinned } });
-        } catch (error) {
-          await this._panel.webview.postMessage({ type: 'summaryModelsError', payload: {
-            message: error instanceof Error ? error.message : 'Unable to load Copilot models.'
-          } });
-        }
+        await this._sendSummaryModels();
         return;
       }
       // The repository list only (switching repository): no result, so nothing else reloads.
@@ -762,6 +766,19 @@ export class RepositoryManagerPanel {
     } });
   }
 
+  /** Sends the dashboard's Model menu its list (without models VS Code keeps for itself) and the pins. */
+  private async _sendSummaryModels(): Promise<void> {
+    try {
+      const models = await this._summaryProvider.listModels();
+      const pinned = readPinnedModels(RepositoryManagerPanel.globalState);
+      await this._panel.webview.postMessage({ type: 'summaryModelsLoaded', payload: { models, pinned } });
+    } catch (error) {
+      await this._panel.webview.postMessage({ type: 'summaryModelsError', payload: {
+        message: error instanceof Error ? error.message : 'Unable to load Copilot models.'
+      } });
+    }
+  }
+
   private async _summarizeChanges(payload: unknown): Promise<void> {
     if (!payload || typeof payload !== 'object') {
       return;
@@ -835,6 +852,10 @@ export class RepositoryManagerPanel {
         this._summaryToken = undefined;
       }
       controller.dispose();
+      if (this._modelsStale) {
+        this._modelsStale = false;
+        await this._sendSummaryModels();
+      }
     }
   }
 }

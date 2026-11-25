@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Picking a changed file in the Side Bar no longer redraws the whole Side Bar. Only the rows whose state changed are updated, so hover and keyboard focus stay put, and a status refresh that changes nothing sends no update at all.
 - History actions (rebase, drop, reset, cherry-pick, revert and merge) no longer refuse because of untracked files. Only staged or unstaged changes to tracked files block them, as before. An action is refused, with the files listed, only when it would write to the path of an untracked file, which Git would otherwise lose (`reset --hard`) or stop a rebase half-way over. The confirmation text now says that untracked files stay as they are.
+- Model menus no longer keep offering a model that VS Code reserves for itself (for example `copilot-dictation-cleanup-luna`). When such a model refuses a request with "only available to VS Code core", it is remembered (until VS Code updates) and left out of the Studio Chat's and the dashboard's Model menus. If you had chosen it, you are told, the choice is cleared, and nothing is sent to another model. If you had chosen none, the request moves on to the next usable model, including commit messages, summaries, conflict help and the review.
+- The Studio Chat no longer refuses to run a plan because the model wrote a `model` or `skills` setting on a step that does not use a model, such as `docs.requirements`. The setting had no effect, so it is dropped from the drafted plan.
 
 ## [3.8.0] - 2026-11-20
 

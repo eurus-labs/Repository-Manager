@@ -18,7 +18,7 @@ import { RunLogEntry, RunState } from './engine';
 import { activityLine, runTimeline } from './runsReport';
 import { CancelSignal, StepDefinition, StudioModel } from './steps';
 import { studioSteps } from './registry';
-import { dashboardSelector, listModels, ModelChoice, onModelsChanged, studioModel } from './studioModels';
+import { ChosenModelRefused, dashboardSelector, listModels, ModelChoice, onModelsChanged, studioModel } from './studioModels';
 import { parseSkillSource, StudioSkills, studioSkills } from './githubSkills';
 import { SkillSummary } from './skills';
 import { SkillScriptFiles, scriptsNote } from './skillScripts';
@@ -81,6 +81,8 @@ export class StudioChatProvider implements vscode.WebviewViewProvider {
   private conversation?: Conversation;
   private models: ModelChoice[] = [];
   private modelsLoaded = false;
+  /** The conversation whose model the chat filled in (not chosen): a refusal moves on instead of stopping. */
+  private defaultedFor: string | undefined;
   private busy: 'drafting' | 'running' | undefined;
   private cancelled = false;
   private notice = '';
@@ -136,16 +138,16 @@ export class StudioChatProvider implements vscode.WebviewViewProvider {
 
   /** The models VS Code offers now; the drafting model is set once there is one. */
   private async refreshModels(): Promise<void> {
-    this.models = await listModels().catch(() => [] as ModelChoice[]);
+    this.models = await listModels(this.context).catch(() => [] as ModelChoice[]);
     this.modelsLoaded = true;
-    if (this.conversation && !this.conversation.model) { this.conversation.model = this.defaultSelector(); }
+    if (this.conversation && !this.conversation.model) { this.conversation.model = this.defaultSelector(); this.defaultedFor = this.conversation.id; }
     this.post();
   }
 
   async newChat(): Promise<void> {
     if (this.busy) { this.say('Wait for the current reply or run to finish, or stop it.'); return; }
     this.conversation = this.store.create();
-    this.conversation.model = this.conversation.model ?? this.defaultSelector();
+    if (!this.conversation.model) { this.conversation.model = this.defaultSelector(); this.defaultedFor = this.conversation.id; }
     await this.context.workspaceState.update(CURRENT_KEY, undefined);
     this.post();
   }
@@ -213,7 +215,7 @@ export class StudioChatProvider implements vscode.WebviewViewProvider {
       this.conversation = (id && await this.store.load(id)) || this.store.create();
       await this.syncFromFile();
     }
-    if (!this.conversation.model) { this.conversation.model = this.defaultSelector(); }
+    if (!this.conversation.model) { this.conversation.model = this.defaultSelector(); this.defaultedFor = this.conversation.id; }
     return this.conversation;
   }
 
@@ -221,7 +223,7 @@ export class StudioChatProvider implements vscode.WebviewViewProvider {
     try {
       switch (message.type) {
         case 'ready':
-          this.models = await listModels().catch(() => []);
+          this.models = await listModels(this.context).catch(() => []);
           this.modelsLoaded = true;
           await this.cachedSkills();
           await this.ensureConversation();
@@ -237,6 +239,7 @@ export class StudioChatProvider implements vscode.WebviewViewProvider {
         case 'setModel': {
           const conversation = await this.ensureConversation();
           conversation.model = message.selector || undefined;
+          this.defaultedFor = undefined;
           await this.saveConversation();
           this.post();
           return;
@@ -301,36 +304,50 @@ export class StudioChatProvider implements vscode.WebviewViewProvider {
       const skills = await this.cachedSkills();
       const scripts = this.root ? Object.keys(readScripts(this.root)) : undefined;
       const model = studioModel(this.context);
-      const attachments = await this.readAttachments(conversation, userMessage, model, signal);
-      const draft = await draftPlan(model, this.steps, { message: text, current: conversation.plan, history: earlier, model: conversation.model, skills, scripts, scriptsOff: this.scriptMode === 'off', ...(attachments ? { attachments } : {}) }, signal);
+      // A model the chat filled in is not a choice: when it refuses, the next usable model answers.
+      const selector = this.defaultedFor === conversation.id ? undefined : conversation.model;
+      const attachments = await this.readAttachments(conversation, userMessage, model, signal, selector);
+      const draft = await draftPlan(model, this.steps, { message: text, current: conversation.plan, history: earlier, model: selector, skills, scripts, scriptsOff: this.scriptMode === 'off', ...(attachments ? { attachments } : {}) }, signal);
       addDraft(conversation, draft);
       if (currentCard(conversation)?.draft?.workflow === draft.workflow) { await this.writeFile(); }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      // The model the person chose was refused and is marked: it leaves the menu, and nothing is retried.
+      if (error instanceof ChosenModelRefused && conversation.model === error.selector) { conversation.model = undefined; }
       conversation.messages.push(newMessage({ role: 'error', text: message === 'Cancelled' ? 'Stopped.' : message }));
     } finally {
       this.busy = undefined;
       this.progress = '';
+      await this.dropUnusableModels(conversation);
       await this.saveConversation();
       this.post();
     }
+  }
+
+  /** A model refused during this send leaves the menu; a model the chat filled in is replaced. */
+  private async dropUnusableModels(conversation: Conversation): Promise<void> {
+    const listed = await listModels(this.context).catch(() => undefined);
+    if (!listed) { return; }
+    this.models = listed;
+    const offered = (selector: string | undefined) => listed.some(model => model.selector === selector);
+    if (conversation.model && this.defaultedFor === conversation.id && !offered(conversation.model)) { conversation.model = this.defaultSelector(); }
   }
 
   /**
    * What is attached, read again at this send (what the editor shows), with the folder maps brought up to
    * date first. Records on the message what went with it: paths, counts and outcomes, never file text.
    */
-  private async readAttachments(conversation: Conversation, message: ChatMessage, model: StudioModel, signal: CancelSignal): Promise<string | undefined> {
+  private async readAttachments(conversation: Conversation, message: ChatMessage, model: StudioModel, signal: CancelSignal, selector: string | undefined): Promise<string | undefined> {
     const chips = conversation.attachments ?? [];
     if (!chips.length || !this.root) { return undefined; }
     const root = this.root;
-    const limit = await model.inputLimit?.(conversation.model).catch(() => undefined);
+    const limit = await model.inputLimit?.(selector).catch(() => undefined);
     const prepared = await prepareAttachments(chips, {
       root,
       openText: absolute => this.documentAt(absolute)?.getText(),
       isDirty: absolute => Boolean(this.documentAt(absolute)?.isDirty),
       ignored: relative => gitIgnored(root, relative),
-      complete: async prompt => (await model.complete(prompt, signal, conversation.model)).text,
+      complete: async prompt => (await model.complete(prompt, signal, selector)).text,
       signal, inputLimit: limit,
       progress: text => { this.progress = text; this.post(); }
     });

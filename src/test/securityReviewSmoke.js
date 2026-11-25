@@ -118,6 +118,18 @@ async function main() {
     assert.equal(result.coverage.analyzed, 2);
     assert.equal(result.findings.length, 2);
     assert.ok(result.findings.every(item => item.status === 'verified' && item.evidence[0].startLine === 2));
+    // An unnamed model VS Code keeps for itself refuses: another answers, and the result names that one.
+    {
+      const values = new Map();
+      const rules = { state: () => ({ get: key => values.get(key), update: async (key, value) => { values.set(key, value); } }) };
+      const internal = { ...model, id: 'internal', name: 'Internal', async sendRequest() { throw new Error('Model internal is only available to VS Code core.'); } };
+      const good = { ...model, id: 'good', name: 'Good' };
+      const guarded = new SecurityReviewService(new GitCommandService(repo), new SecurityReviewProvider({ lm: { selectChatModels: async () => [internal, good] },
+        LanguageModelChatMessage: { User: value => value } }, rules));
+      const fallback = await guarded.review(request, token, () => {});
+      assert.equal(fallback.modelId, 'good:1', 'the review names the model that was asked first');
+      assert.equal(fallback.modelName, 'Good');
+    }
     assert.equal(result.policyResults.find(item => item.ruleId === 'TEAM-01').status, 'violation');
     assert.equal(result.policyResults.find(item => item.ruleId === 'TEAM-MANUAL').status, 'insufficient_evidence');
 
