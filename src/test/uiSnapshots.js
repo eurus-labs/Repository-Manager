@@ -133,6 +133,16 @@ function createFixture() {
   lines[35] = 'line 36 changed';
   lines.splice(20, 0, 'inserted line');
   commitFile(parent, 'src/app.txt', lines.join('\n') + '\n', 'feat: update app in two places');
+  // An origin for the parent: main and feature/dashboard are on it at the same commits as here,
+  // feature/ahead is one commit ahead of its origin copy, remote-only has no local branch, and
+  // the claude/ branch exists only here.
+  const remote = path.join(base, 'origins', 'workspace.git');
+  git(base, 'init', '-q', '--bare', '-b', 'main', remote);
+  git(parent, 'remote', 'add', 'origin', remote);
+  git(parent, 'push', '-q', 'origin', 'main', 'feature/dashboard');
+  git(parent, 'push', '-q', 'origin', 'main~1:refs/heads/remote-only', 'main~1:refs/heads/feature/ahead');
+  git(parent, 'fetch', '-q', 'origin');
+  git(parent, 'branch', 'feature/ahead', 'main');
   // lib-a follows the parent branch at the recorded commit; lib-b stays on main,
   // moves past the recorded commit, and has local edits.
   git(path.join(parent, 'lib-a'), 'checkout', '-q', '-b', 'feature/dashboard');
@@ -937,8 +947,56 @@ async function main() {
     assert.deepEqual(folders, [['claude', 'true'], ['feature', 'true']]);
     const current = side.locator('#dashboardBranches .sidebar-ref-item.current');
     assert.equal(await current.getAttribute('data-branch'), 'feature/dashboard');
-    assert.match(await current.textContent(), /^⑂dashboardHEAD$/);
-    assert.equal(await side.locator('#dashboardBranches .sidebar-ref-row.branch-depth-1').count(), 2);
+    assert.match(await current.textContent(), /^⑂dashboardoriginHEAD$/);
+    // Where a branch lives: on origin (chip), only on origin (chip and muted), only here (neither).
+    const chipOf = async branch => ({
+      chip: await side.locator(`#dashboardBranches .sidebar-ref-item[data-branch="${branch}"] .ref-origin`).count(),
+      remoteOnly: await side.locator(`#dashboardBranches .sidebar-ref-item.remote-only[data-branch="${branch}"]`).count()
+    });
+    assert.deepEqual(await chipOf('main'), { chip: 1, remoteOnly: 0 });
+    assert.deepEqual(await chipOf('feature/ahead'), { chip: 1, remoteOnly: 0 });
+    assert.deepEqual(await chipOf('remote-only'), { chip: 1, remoteOnly: 1 });
+    assert.deepEqual(await chipOf('claude/review-dashboard-layout-at-narrow-widths'), { chip: 0, remoteOnly: 0 });
+    await snap(side, '57-sidebar-branch-origin-chip');
+    // Clicking the checked-out branch now reaches the host, to fetch and fast-forward it.
+    await page.evaluate(() => { const toHost = window.__postToHost; window.__sent = []; window.__postToHost = m => { window.__sent.push(m); return toHost(m); }; });
+    await current.click();
+    await page.waitForFunction(() => window.__sent.some(m => m.type === 'checkoutBranch'));
+    assert.equal(await page.evaluate(() => window.__sent.find(m => m.type === 'checkoutBranch').payload.branch), 'feature/dashboard');
+    await page.waitForFunction(() => !document.querySelector('.checkout-pending'));
+    // The graph draws main and origin/main at one commit as a single label with an origin chip.
+    const labelsAt = async subject => (await page.locator('.history-row', { hasText: subject }).first().locator('.history-ref').allTextContents());
+    assert.deepEqual(await labelsAt('add linked repositories'), ['1.0.0', 'mainorigin', 'feature/ahead', 'claude/review-dashboard-layout-at-narrow-widths']);
+    assert.equal(await page.locator('.history-ref', { hasText: /^origin\/main$/ }).count(), 0, 'origin/main is drawn beside main');
+    // Local ahead of origin keeps two labels at two commits; a branch only here has no chip.
+    assert.deepEqual(await labelsAt('add app'), ['origin/remote-only', 'origin/feature/ahead']);
+    assert.equal(await page.locator('.history-row .history-ref[data-branch="feature/ahead"] .ref-origin').count(), 0);
+    assert.equal(await page.locator('.history-ref[data-branch="claude/review-dashboard-layout-at-narrow-widths"] .ref-origin').count(), 0);
+    // Double-clicking the merged label checks out the local branch.
+    // The host is not asked here: the message is caught and the checkout reported as cancelled.
+    await page.evaluate(() => {
+      const toHost = window.__postToHost;
+      window.__sent.length = 0;
+      window.__postToHost = m => m.type === 'checkoutBranch' ? window.__sent.push(m) : toHost(m);
+      window.__restoreHost = () => { window.__postToHost = toHost; };
+    });
+    await page.locator('.history-ref[data-branch="main"]').dblclick();
+    await page.waitForFunction(() => window.__sent.some(m => m.type === 'checkoutBranch'));
+    const askedCheckout = await page.evaluate(() => window.__sent.find(m => m.type === 'checkoutBranch').payload);
+    assert.equal(askedCheckout.branch, 'main');
+    await page.evaluate(payload => {
+      window.__restoreHost();
+      window.dispatchEvent(new MessageEvent('message', { data: { type: 'branchCheckoutResult', payload: { repositoryPath: payload.submodule, branch: payload.branch, success: false, cancelled: true, message: '' } } }));
+    }, askedCheckout);
+    await page.waitForFunction(() => !document.querySelector('.checkout-pending'));
+    // The history search still finds the commit through the ref name the label folded away.
+    await page.fill('#dashboardSearch', 'origin/main');
+    await page.waitForFunction(() => document.querySelectorAll('.history-row').length === 1);
+    assert.match(await page.locator('.history-row').first().textContent(), /add linked repositories/);
+    await page.fill('#dashboardSearch', '');
+    await page.locator('.history-row', { hasText: 'update app in two places' }).first().waitFor();
+    await snap(page, '56-history-origin-labels');
+    assert.equal(await side.locator('#dashboardBranches .sidebar-ref-row.branch-depth-1').count(), 3);
     const claudeLeaf = '#dashboardBranches .sidebar-ref-item[data-branch="claude/review-dashboard-layout-at-narrow-widths"]';
     // A click in the Side Bar runs in the dashboard, which sends the Side Bar its new copy.
     await side.click('[data-action="toggleBranchFolder"][data-folder="claude"]');
@@ -1025,7 +1083,7 @@ async function main() {
     await page.locator('.history-row', { hasText: 'add linked repositories' }).click({ button: 'right' });
     await page.locator('#historyContextMenu').waitFor();
     const branchItems = () => page.locator('#historyContextBranches [data-action="contextDeleteBranch"]').allTextContents();
-    assert.deepEqual((await branchItems()).sort(), ["Delete Branch 'claude/review-dashboard-layout-at-narrow-widths'…", "Delete Branch 'main'…"]);
+    assert.deepEqual((await branchItems()).sort(), ["Delete Branch 'claude/review-dashboard-layout-at-narrow-widths'…", "Delete Branch 'feature/ahead'…", "Delete Branch 'main'…"]);
     await snap(page, '05-context-menu');
     // Confirmed, it runs the real handler: the branch is gone from Git and from the Side Bar.
     const askedDelete = fakeVscode.window.showWarningMessage;
@@ -2366,6 +2424,19 @@ async function main() {
       if (name !== 'body') assert.ok(value >= 4.5, `${name} text has contrast ${value} in a light theme`);
     }
     await snap(light, '14-light-theme');
+    // The origin chip stays readable on a branch label in the light theme.
+    assert.ok(await light.locator('.history-ref .ref-origin').count() > 0, 'no origin chip in the light theme');
+    const chipContrast = await light.evaluate(() => {
+      const rgb = value => (value.match(/\d+(\.\d+)?/g) || []).slice(0, 3).map(Number);
+      const luminance = ([r, g, b]) => [r, g, b].map(c => { c /= 255; return c <= .03928 ? c / 12.92 : ((c + .055) / 1.055) ** 2.4; })
+        .reduce((sum, c, i) => sum + c * [.2126, .7152, .0722][i], 0);
+      const chip = document.querySelector('.history-ref .ref-origin');
+      const style = getComputedStyle(chip);
+      const [x, y] = [luminance(rgb(style.color)), luminance(rgb(style.backgroundColor))].sort((m, n) => n - m);
+      return +((x + .05) / (y + .05)).toFixed(2);
+    });
+    assert.ok(chipContrast >= 3, `the origin chip has contrast ${chipContrast} in a light theme`);
+    await snap(light, '56-history-origin-labels-light');
     // The Side Bar takes the light theme too, and its text stays readable.
     const sideContrast = await light.sidebar.evaluate(() => {
       const rgb = value => (value.match(/\d+(\.\d+)?/g) || []).slice(0, 3).map(Number);
@@ -2539,7 +2610,7 @@ async function main() {
         await snap(narrow, `${name}-compare`);
         await narrow.click('[data-action="clearCommitComparison"]');
       }
-      assert.ok(layout.tallestRow <= 80, `${width}px: a history row is ${layout.tallestRow}px tall`);
+      assert.ok(layout.tallestRow <= 80,`${width}px: a history row is ${layout.tallestRow}px tall`);
       assert.ok(layout.messageWidth >= 150, `${width}px: the message column is only ${layout.messageWidth}px`);
       assert.equal(layout.pageOverflow, 0, `${width}px: the page scrolls horizontally`);
       await snap(narrow, name);

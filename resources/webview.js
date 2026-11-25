@@ -1593,11 +1593,22 @@
   }
 
   function renderHistoryRefs(refs, interactive) {
-    return (refs || []).map(ref => {
+    const list = refs || [];
+    // origin/x at the commit where x is also drawn reads as one label with an origin chip.
+    const isLocal = ref => ref.kind === 'head' || ref.kind === 'local-branch';
+    const localNames = new Set(list.filter(isLocal).map(ref => ref.name));
+    const mergedRemote = ref => ref.kind === 'remote-branch' && ref.name.startsWith('origin/') && localNames.has(ref.name.slice('origin/'.length));
+    const mergedNames = new Set(list.filter(mergedRemote).map(ref => ref.name.slice('origin/'.length)));
+    return list.filter(ref => !mergedRemote(ref)).map(ref => {
       const className = `history-ref ref-${escapeHtml(ref.kind)}`;
       const branch = interactive ? checkoutBranchFromRef(ref) : '';
-      if (!branch) return `<span class="${className}" title="${escapeHtml(ref.name)}">${escapeHtml(ref.name)}</span>`;
-      return `<button class="${className}" type="button" data-branch="${escapeHtml(branch)}" title="Double-click to checkout ${escapeHtml(branch)}">${escapeHtml(ref.name)}</button>`;
+      const merged = isLocal(ref) && mergedNames.has(ref.name);
+      const chip = merged ? '<span class="ref-origin">origin</span>' : '';
+      if (!branch) return `<span class="${className}" title="${escapeHtml(ref.name)}">${escapeHtml(ref.name)}${chip}</span>`;
+      const title = merged
+        ? `${ref.name} and origin/${ref.name} are at this commit. Double-click to check out ${ref.name} and update it from origin`
+        : `Double-click to checkout ${branch}`;
+      return `<button class="${className}" type="button" data-branch="${escapeHtml(branch)}" title="${escapeHtml(title)}">${escapeHtml(ref.name)}${chip}</button>`;
     }).join('');
   }
 
@@ -1614,9 +1625,9 @@
     if (!branch || pendingBranchCheckout) return;
     const current = getRepository(activeDashboardRepository);
     if (current && current.currentBranch === branch && !replaceWithRemote) {
+      // Show this branch's history at once; the checkout below fetches and fast-forwards it.
       setHistoryRevision('');
       requestDashboardHistory(0, false);
-      return;
     }
     pendingBranchCheckout = { repositoryPath: activeDashboardRepository, branch, replaceWithRemote };
     setBranchCheckoutPending(true);
@@ -2496,7 +2507,9 @@
         const menuContext = !branch.isRemote ? ` data-vscode-context="${escapeHtml(JSON.stringify({
           webviewSection: branch.isCurrent ? 'currentBranch' : 'localBranch', repository: activeDashboardRepository,
           branch: branch.name, hasRemote: Boolean(branch.hasRemote), preventDefaultContextMenuItems: true }))}"` : '';
-        return `<div class="sidebar-ref-row branch-depth-${Math.min(depth, 6)}${deleteBranch ? ' has-delete' : ''}"${menuContext}><button class="sidebar-ref-item${branch.isCurrent ? ' current' : ''}" type="button" data-action="selectDashboardBranch" data-branch="${escapeHtml(branch.name)}" title="${escapeHtml(branch.name)}" aria-pressed="${branch.isCurrent ? 'true' : 'false'}"><span>⑂</span><span>${escapeHtml(leaf)}</span>${branch.isCurrent ? '<small>HEAD</small>' : ''}</button>${branchActions}</div>`;
+        const originChip = branch.hasRemote || branch.isRemote ? '<small class="ref-origin">origin</small>' : '';
+        const rowTitle = branch.isRemote ? `${branch.name} is only on origin. Click to create it here and check it out` : branch.name;
+        return `<div class="sidebar-ref-row branch-depth-${Math.min(depth, 6)}${deleteBranch ? ' has-delete' : ''}"${menuContext}><button class="sidebar-ref-item${branch.isCurrent ? ' current' : ''}${branch.isRemote ? ' remote-only' : ''}" type="button" data-action="selectDashboardBranch" data-branch="${escapeHtml(branch.name)}" title="${escapeHtml(rowTitle)}" aria-pressed="${branch.isCurrent ? 'true' : 'false'}"><span>⑂</span><span>${escapeHtml(leaf)}</span>${originChip}${branch.isCurrent ? '<small>HEAD</small>' : ''}</button>${branchActions}</div>`;
       };
       branchList.innerHTML = renderBranchTree(buildBranchTree(branches), 0, renderBranch) || '<span class="sidebar-placeholder">No branches</span>';
     }

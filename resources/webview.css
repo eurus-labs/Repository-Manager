@@ -1013,6 +1013,8 @@ select {
   --info: var(--vscode-charts-blue, #8ba7f0);
   /* Status text: readable on the theme's background (the pastel shades suit dark themes only). */
   --tone-ok: var(--vscode-testing-iconPassed, #7fe3cb);
+  /* "On origin": the origin/x graph label and the origin chip share it. */
+  --ref-origin: var(--tone-ok);
   --tone-warn: var(--vscode-editorWarning-foreground, #f0c07a);
   --tone-error: var(--vscode-errorForeground, #f4a8ad);
   --tone-info: var(--vscode-textLink-foreground, #a9c8f5);
@@ -1802,7 +1804,20 @@ body.vscode-high-contrast .graph-node-control[data-marker="T"] .graph-node-hit {
 }
 
 .history-ref.ref-tag { color: var(--vscode-charts-purple, #c5b5ff); background: rgba(164, 139, 240, .14); }
-.history-ref.ref-remote-branch { color: var(--tone-ok); background: rgba(60, 199, 166, .10); }
+
+/* The chip sits on a branch label of any colour, so it brings its own background. */
+.history-ref .ref-origin {
+  margin-left: 4px;
+  padding: 0 4px;
+  border-radius: 4px;
+  color: var(--ref-origin);
+  background: var(--bg-sunken);
+  font-weight: 500;
+}
+
+.sidebar-ref-item small.ref-origin { color: var(--ref-origin); }
+.sidebar-ref-item.remote-only > span:nth-child(2) { opacity: 0.65; }
+.history-ref.ref-remote-branch { color: var(--ref-origin); background: rgba(60, 199, 166, .10); }
 .history-ref.ref-local-branch { color: var(--tone-info); background: rgba(139, 167, 240, .12); }
 
 

@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.9.0] - 2026-11-25
+
+### Changed
+
+- The history graph draws a branch and its copy on origin as one label when both are at the same commit: `main` with an `origin` chip instead of `main` and `origin/main`. When the two are at different commits, both labels stay. Side Bar branch rows show an `origin` chip for a branch that is on origin, and a branch that is only on origin is muted and says so on hover; a branch that exists only on this machine has no chip.
+
+### Fixed
+
+- Checking out a branch that is on origin now brings its new commits. Clicking it fetches it from origin, checks it out, and fast-forwards it, including when it is already checked out; a branch that exists only on origin is created from the freshly fetched copy. Nothing is merged or rewritten: a branch that is ahead of origin, has diverged from it, or has local changes in the way is left as it is, and the message says why. If origin cannot be reached, the checkout goes on with the last fetched copy and says so.
+
 ## [3.8.1] - 2026-11-25
 
 ### Fixed
