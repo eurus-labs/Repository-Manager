@@ -1,6 +1,6 @@
 const assert = require('node:assert/strict');
 const { execFileSync } = require('node:child_process');
-const { mkdtempSync, rmSync, writeFileSync } = require('node:fs');
+const { mkdtempSync, readFileSync, rmSync, writeFileSync } = require('node:fs');
 const { tmpdir } = require('node:os');
 const path = require('node:path');
 const Module = require('node:module');
@@ -8,8 +8,11 @@ const Module = require('node:module');
 const root = mkdtempSync(path.join(tmpdir(), 'repository-manager-handler-'));
 const run = (...args) => execFileSync('git', args, { cwd: root, encoding: 'utf8' }).trim();
 let warnings = 0;
+let override;
+let errors = [];
 const fakeVscode = { window: {
   async showWarningMessage(message, options) {
+    if (override) { return override(message, options); }
     warnings++;
     if (warnings === 1) {
       // Git's simulation names the conflict before anything changes.
@@ -22,7 +25,7 @@ const fakeVscode = { window: {
     run('cherry-pick', '--continue');
     return undefined;
   },
-  showInformationMessage() {}, showErrorMessage() {}
+  showInformationMessage() {}, showErrorMessage(message) { errors.push(message); }
 } };
 const originalLoad = Module._load;
 Module._load = function (request, parent, isMain) {
@@ -68,6 +71,32 @@ async function main() {
     assert.equal(refreshed, 1);
     assert.equal(await service.pendingOperation('.'), undefined);
     assert.notEqual(run('rev-parse', 'HEAD'), base);
+
+    // An untracked file at a path the action writes is refused before any confirm modal.
+    run('switch', '-q', '-c', 'side', base);
+    writeFileSync(path.join(root, 'side.txt'), 'side\n');
+    run('add', 'side.txt');
+    run('commit', '-qm', 'side commit');
+    const side = run('rev-parse', 'HEAD');
+    run('switch', '-q', 'target');
+    const targetHead = run('rev-parse', 'HEAD');
+    const details = [];
+    override = (message, options) => { details.push(options.detail); return 'Cherry pick'; };
+    writeFileSync(path.join(root, 'side.txt'), 'mine\n');
+    await handleApplyHistoryCommit(ctx, { repositoryPath: '.', commit: side, operation: 'cherry-pick' });
+    assert.equal(details.length, 0, 'no confirm modal for a refused action');
+    assert.equal(errors.length, 1);
+    assert.match(errors[0], /These untracked files would be overwritten by cherry-pick: side\.txt\./);
+    assert.equal(run('rev-parse', 'HEAD'), targetHead);
+    rmSync(path.join(root, 'side.txt'));
+
+    // An unrelated untracked file does not block, and the confirm text says so.
+    writeFileSync(path.join(root, 'notes.local'), 'mine\n');
+    await handleApplyHistoryCommit(ctx, { repositoryPath: '.', commit: side, operation: 'cherry-pick' });
+    assert.equal(details.length, 1);
+    assert.match(details[0], /Changes to tracked files must be committed or stashed first; untracked files stay as they are\. Conflicts can be resolved in Source Control\./);
+    assert.notEqual(run('rev-parse', 'HEAD'), targetHead);
+    assert.equal(readFileSync(path.join(root, 'notes.local'), 'utf8'), 'mine\n');
     console.log('History action handler smoke passed');
   } finally {
     rmSync(root, { recursive: true, force: true });

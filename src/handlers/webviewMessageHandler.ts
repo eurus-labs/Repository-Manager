@@ -8,8 +8,8 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { HistoryQuery } from '../types';
 import { GitCommandService } from '../services/gitCommandService';
-import { HistoryAction } from '../services/historyActionService';
-import { HistoryRewriteAction, ResetMode } from '../services/historyRewriteService';
+import { HistoryAction, HistoryActionService } from '../services/historyActionService';
+import { HistoryRewriteAction, HistoryRewriteService, ResetMode } from '../services/historyRewriteService';
 import { ConflictPrediction, ConflictPredictionService, PredictedOperation } from '../services/conflictPredictionService';
 import { confirmSending, describeSides, explainPredictedConflicts, formatConflictExplanation } from '../services/conflictExplanation';
 import { buildUndoPrompt, collectUndoContext, describeUndoPlan, parseUndoPlan, UndoPlan } from '../services/naturalUndo';
@@ -942,11 +942,18 @@ export async function handleApplyHistoryCommit(ctx: MessageHandlerContext, paylo
     }
     mainline = picked.index;
   }
+  try {
+    await new HistoryActionService(new GitCommandService(ctx.workspaceRoot))
+      .assertRunnable(payload.repositoryPath, sha, payload.operation, parents, mainline);
+  } catch (error) {
+    showResult(false, error instanceof Error ? error.message : String(error));
+    return;
+  }
   const label = payload.operation === 'cherry-pick' ? 'Cherry pick' : payload.operation === 'revert' ? 'Revert' : 'Merge';
   const predicted = await predictConflicts(ctx, payload.repositoryPath, payload.operation, sha, mainline);
   const approved = await confirmHistoryAction(ctx, payload.repositoryPath,
     `${label} ${sha.slice(0, 12)} ${payload.operation === 'merge' ? 'into' : 'on'} ${branch} in ${payload.repositoryPath}?`,
-    `${predicted.text}\nThe working tree must be clean. Conflicts can be resolved in Source Control.`, label, predicted.prediction);
+    `${predicted.text}\nChanges to tracked files must be committed or stashed first; untracked files stay as they are. Conflicts can be resolved in Source Control.`, label, predicted.prediction);
   if (!approved) {
     return;
   }
@@ -1000,13 +1007,15 @@ export async function handleRewriteHistoryCommit(ctx: MessageHandlerContext, pay
       }
       mode = selection.value;
     }
+    await new HistoryRewriteService(new GitCommandService(ctx.workspaceRoot))
+      .assertRunnable(payload.repositoryPath, preview.target, payload.action, preview.head, mode);
     const label = payload.action === 'rebase' ? 'Rebase' : payload.action === 'drop' ? 'Drop commit' : `Reset (${mode})`;
     const shown = preview.affected.map(item => `${item.hash.slice(0, 12)} ${item.subject}`).join('\n');
     const more = preview.affectedCount > preview.affected.length ? `\n… and ${preview.affectedCount - preview.affected.length} more` : '';
     const detail = `Repository: ${payload.repositoryPath}\nCurrent branch: ${preview.branch}\n` +
       `HEAD: ${preview.head}\nSelected: ${preview.target} ${preview.targetSubject}\n` +
       `${payload.action === 'drop' ? 'Commits replayed after dropping the selected commit' : 'Commits affected'} (${preview.affectedCount}):` +
-      `\n${shown || '(none)'}${more}\nWorking tree must be clean. ` +
+      `\n${shown || '(none)'}${more}\nChanges to tracked files must be committed or stashed first; untracked files stay as they are. ` +
       `${payload.action === 'drop' || mode === 'hard' ? 'A local backup branch will be created.' : 'Commits may receive new hashes.'}`;
     // Reset never conflicts: nothing to predict.
     const predicted = payload.action === 'reset' ? undefined : await predictConflicts(ctx, payload.repositoryPath, payload.action, preview.target);

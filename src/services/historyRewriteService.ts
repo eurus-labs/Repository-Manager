@@ -1,6 +1,7 @@
 import { CommandResult } from '../types';
 import { GitCommandService } from './gitCommandService';
 import { HistoryActionService } from './historyActionService';
+import { TreeWrites, assertNoCollisions, trackedChanges, trackedChangesMessage } from './untrackedGuard';
 
 export type HistoryRewriteAction = 'rebase' | 'reset' | 'drop';
 export type ResetMode = 'soft' | 'mixed' | 'hard';
@@ -95,9 +96,7 @@ export class HistoryRewriteService {
       if (await this.historyActions.pendingOperation(repositoryPath)) {
         throw new Error('Finish or abort the current Git operation first.');
       }
-      if (await this.git.execGitRaw(['status', '--porcelain=v1', '-z', '--untracked-files=all'], cwd, 10000)) {
-        throw new Error('Commit, stash, or discard working tree changes before rewriting history.');
-      }
+      await this.assertRunnable(repositoryPath, target, action, expectedHead, mode);
       // Recheck immediately before making a backup or changing the current branch.
       if (await this.git.execGit(['symbolic-ref', '--quiet', '--short', 'HEAD'], cwd, 5000) !== expectedBranch ||
           await this.git.resolveRevision(repositoryPath, 'HEAD') !== expectedHead) {
@@ -123,6 +122,28 @@ export class HistoryRewriteService {
           `${pending === 'rebase' ? ' Resolve conflicts, stage files, then continue or abort the rebase.' : ''}` +
           `${backup ? ` Backup: ${backup}.` : ''}` };
     }
+  }
+
+  /**
+   * Refuses when tracked files have changes, or when an untracked file is at a path the action would
+   * write (Git would lose it in `reset --hard`, or stop a rebase half-way). Other untracked files stay.
+   */
+  async assertRunnable(repositoryPath: string, target: string, action: HistoryRewriteAction, head: string, mode?: ResetMode): Promise<void> {
+    const cwd = this.git.resolveRepositoryPath(repositoryPath);
+    if (await trackedChanges(this.git, cwd)) {
+      throw new Error(trackedChangesMessage('rewriting history'));
+    }
+    let writes: TreeWrites;
+    if (action === 'reset') {
+      // Soft and mixed resets do not touch the working tree.
+      writes = mode === 'hard' ? { trees: [target], ranges: [] } : { trees: [], ranges: [] };
+    } else if (action === 'drop') {
+      writes = { trees: [`${target}^`], ranges: head === target ? [] : [`${target}..${head}`] };
+    } else {
+      const base = await this.git.execGit(['merge-base', target, head], cwd, 5000);
+      writes = { trees: [target], ranges: [`${base}..${head}`] };
+    }
+    await assertNoCollisions(this.git, cwd, action, writes);
   }
 
   async resolveRebase(repositoryPath: string, command: 'continue' | 'abort'): Promise<CommandResult> {
