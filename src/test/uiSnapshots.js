@@ -142,6 +142,11 @@ function createFixture() {
   git(parent, 'push', '-q', 'origin', 'main', 'feature/dashboard');
   git(parent, 'push', '-q', 'origin', 'main~1:refs/heads/remote-only', 'main~1:refs/heads/feature/ahead');
   git(parent, 'fetch', '-q', 'origin');
+  // Git 2.48+ also creates origin/HEAD on this fetch and older Git does not: remove it so the
+  // labels, the default branch and the row heights below are the same on every Git version.
+  git(parent, 'remote', 'set-head', 'origin', '-d');
+  // Later fetches (the Fetch button, a branch checkout) must not bring it back.
+  git(parent, 'config', 'remote.origin.followRemoteHEAD', 'never');
   git(parent, 'branch', 'feature/ahead', 'main');
   // lib-a follows the parent branch at the recorded commit; lib-b stays on main,
   // moves past the recorded commit, and has local edits.
