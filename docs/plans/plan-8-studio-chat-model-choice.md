@@ -1,6 +1,6 @@
 # Plan 8 — Model menus offer only models an extension can use; a stray model setting does not block a plan
 
-Status: approved
+Status: implemented
 Date: 2026-11-20
 Branch: `fix/studio-chat-model-choice`
 Baseline: `main` at `4fe5d23e5d17283e1987a4ed31c452e0a5034ac9`
