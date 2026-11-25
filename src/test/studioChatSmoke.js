@@ -288,7 +288,9 @@ async function main() {
     assert.ok(commands.has('repositoryManager.studio.newChat') && commands.has('repositoryManager.studio.chatHistory'));
     let receive;
     viewProvider.resolveWebviewView({ webview: { options: {}, html: '', cspSource: 'csp', asWebviewUri: uri => uri, postMessage: async message => { posted.push(message); },
-      onDidReceiveMessage: listener => { receive = listener; } } });
+      onDidReceiveMessage: () => undefined } });
+    // The provider does not await its handlers; the test does, so a slow disk cannot outrun it.
+    receive = message => viewProvider.receive(message);
     const last = () => posted[posted.length - 1];
     const settle = () => new Promise(resolve => setTimeout(resolve, 20));
     await receive({ type: 'ready' }); await settle();
