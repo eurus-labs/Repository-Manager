@@ -19,6 +19,23 @@ const root = path.resolve(__dirname, '../..');
 // The extension's real message handlers run against a minimal fake `vscode` module.
 // Commands run (the diff editor opening a changed file) are recorded in `executed`.
 const executed = [];
+// Side Bar roots that differ from what innerHTML would give for a snapshot (must stay empty).
+const sidebarMismatches = [];
+// Waits until the Side Bar page has rendered the snapshot, then compares its DOM with innerHTML's.
+const deliverSnapshot = (sidebar, message) => sidebar.evaluate(data => new Promise(resolve => {
+  const check = event => {
+    if (!event.data || event.data.type !== 'sidebarSnapshot' || event.data.payload.html !== data.payload.html) return;
+    window.removeEventListener('message', check);
+    const expected = document.createElement('template');
+    expected.innerHTML = data.payload.html;
+    const root = document.getElementById('sidebarRoot');
+    // The mirrored block has no form controls or details (their live state is not an attribute).
+    const controls = root.querySelector('input, select, textarea, details') !== null;
+    resolve(root.innerHTML === expected.innerHTML && !controls ? '' : data.payload.html);
+  };
+  window.addEventListener('message', check);
+  window.postMessage(data, '*');
+}), message).then(mismatch => { if (mismatch) sidebarMismatches.push(mismatch); }).catch(() => undefined);
 const fakeVscode = {
   window: { showInformationMessage() {}, showWarningMessage() {}, showErrorMessage() {} },
   workspace: { getConfiguration: () => ({ get: (_key, fallback) => fallback }) },
@@ -239,7 +256,8 @@ function startServer(workspace, otherFolder) {
         // Same as RepositoryManagerPanel: the copy goes to the Side Bar view.
         page.sidebarHtml = message.payload.html;
         page.sidebarChanges = message.payload.changes;
-        if (page.sidebar) await page.sidebar.evaluate(data => window.postMessage(data, '*'), message).catch(() => undefined);
+        page.sidebarSnapshots = (page.sidebarSnapshots || 0) + 1;
+        if (page.sidebar) await deliverSnapshot(page.sidebar, message);
       } else if (bridge.fromDashboard(message)) {
         // A review message for the review tab.
       } else if (message.type === 'getReviewQuality') {
@@ -360,7 +378,7 @@ async function main() {
     const toDashboard = message => page.evaluate(data => window.postMessage(data, '*'), message).catch(() => undefined);
     await sidebar.exposeFunction('__postToHost', async message => {
       if (message.type === 'sidebarReady') {
-        if (page.sidebarHtml !== undefined) await sidebar.evaluate(html => window.postMessage({ type: 'sidebarSnapshot', payload: { html } }, '*'), page.sidebarHtml);
+        if (page.sidebarHtml !== undefined) await deliverSnapshot(sidebar, { type: 'sidebarSnapshot', payload: { html: page.sidebarHtml, changes: page.sidebarChanges } });
         await toDashboard({ type: 'publishSidebar' });
       } else if (message.type === 'sidebarAction') {
         await toDashboard({ type: 'sidebarAction', payload: message.payload });
@@ -523,6 +541,117 @@ async function main() {
     assert.equal(await page.textContent('#diffFileName'), 'live-new.txt');
     await side.waitForFunction(() => document.querySelector('#dashboardChanges .sidebar-change-row.shown [data-path="live-new.txt"]'));
     assert.equal(await side.locator('#dashboardChanges .sidebar-change-row.shown').count(), 1);
+    // Picking a file changes only the row's state in the Side Bar: no node is replaced, and focus stays.
+    const markNodes = () => side.evaluate(() => { document.getElementById('sidebarRoot').querySelectorAll('*').forEach(node => { node.__old = true; }); });
+    const newNodes = () => side.evaluate(() => Array.from(document.getElementById('sidebarRoot').querySelectorAll('*')).filter(node => !node.__old).length);
+    for (const [from, to] of [['live-new.txt', 'src/app.txt'], ['src/app.txt', 'live-new.txt']]) {
+      await markNodes();
+      await side.locator(`#dashboardChanges .sidebar-change-item[data-path="${to}"]`).evaluate(node => { node.__clicked = true; });
+      await side.click(`#dashboardChanges .sidebar-change-item[data-path="${to}"]`);
+      await page.waitForFunction(name => document.getElementById('diffFileName').textContent === name, to);
+      await side.waitForFunction(name => document.querySelector(`#dashboardChanges .sidebar-change-row.shown [data-path="${name}"]`), to);
+      assert.equal(await newNodes(), 0, 'a click replaced Side Bar nodes');
+      assert.equal(await side.getAttribute(`#dashboardChanges .sidebar-change-item[data-path="${to}"]`, 'aria-current'), 'true');
+      assert.equal(await side.locator(`#dashboardChanges .sidebar-change-item[data-path="${from}"]`).getAttribute('aria-current'), null);
+      assert.equal(await side.locator(`#dashboardChanges .sidebar-change-row.shown [data-path="${from}"]`).count(), 0);
+      assert.equal(await side.evaluate(() => document.activeElement.__clicked === true), true, 'focus left the clicked row');
+    }
+    // A status refresh with the same changes sends no snapshot and replaces nothing.
+    {
+      for (let i = 0; i < 100 && !isHostIdle(); i++) await page.waitForTimeout(20);
+      await page.waitForTimeout(200);
+      await markNodes();
+      // The dashboard's own hidden list is rebuilt by the refresh; wait for that to prove it landed.
+      await page.evaluate(() => document.querySelectorAll('#dashboardChanges *').forEach(node => { node.__old = true; }));
+      const before = page.sidebarSnapshots;
+      await page.evaluate(() => window.dispatchEvent(new MessageEvent('message', { data: { type: 'updateSubmodules', payload: { submodules: window.__initialRepositories } } })));
+      await page.waitForFunction(() => Array.from(document.querySelectorAll('#dashboardChanges *')).some(node => !node.__old), undefined, { timeout: 10000 });
+      for (let i = 0; i < 100 && !isHostIdle(); i++) await page.waitForTimeout(20);
+      await page.waitForTimeout(200);
+      assert.equal(page.sidebarSnapshots, before, 'an identical refresh sent a snapshot');
+      assert.equal(await newNodes(), 0, 'an identical refresh replaced Side Bar nodes');
+    }
+    // A recreated Side Bar view (sidebarReady) still gets a full snapshot, and so does one that
+    // follows the dashboard being closed.
+    {
+      await side.evaluate(() => { document.getElementById('sidebarRoot').innerHTML = ''; });
+      const postsBefore = page.sidebarSnapshots;
+      await side.evaluate(() => window.__postToHost({ type: 'sidebarReady' }));
+      for (let i = 0; i < 100 && page.sidebarSnapshots === postsBefore; i++) await page.waitForTimeout(20);
+      assert.equal(page.sidebarSnapshots, postsBefore + 1, 'sidebarReady did not make the dashboard post a snapshot');
+      await side.waitForFunction(() => document.querySelectorAll('#dashboardChanges .sidebar-change-item').length === 3);
+      await page.waitForTimeout(200);
+      assert.equal(await side.evaluate(() => document.getElementById('sidebarRoot').innerHTML), await side.evaluate(h => { const t = document.createElement('template'); t.innerHTML = h; return t.innerHTML; }, page.sidebarHtml));
+      await side.evaluate(() => window.postMessage({ type: 'sidebarClosed' }, '*'));
+      await side.locator('.sidebar-closed').waitFor();
+      await deliverSnapshot(side, { type: 'sidebarSnapshot', payload: { html: page.sidebarHtml, changes: page.sidebarChanges } });
+      assert.equal(await side.locator('.sidebar-closed').count(), 0);
+      assert.equal(await side.locator('#dashboardChanges .sidebar-change-item').count(), 3);
+    }
+    // Seeded shuffle: 60 snapshots that reorder, insert, remove and edit keyed and unkeyed rows (two
+    // rows share a key in some) must each give the DOM that innerHTML gives.
+    {
+      const html = page.sidebarHtml;
+      const mismatches = await side.evaluate(async base => {
+        let seed = 12345;
+        const rand = n => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed % n; };
+        const root = document.getElementById('sidebarRoot');
+        const bad = [];
+        const apply = async html => {
+          window.postMessage({ type: 'sidebarSnapshot', payload: { html } }, '*');
+          await new Promise(resolve => setTimeout(resolve, 0));
+          const t = document.createElement('template');
+          t.innerHTML = html;
+          if (root.innerHTML !== t.innerHTML) bad.push(html);
+        };
+        const row = (key, text, extra) => {
+          const attrs = ['type="button"', `data-mirror-key="${key}"`, `class="r${rand(3)}"`];
+          if (rand(2)) attrs.push('aria-current="true"');
+          if (extra) attrs.push(extra.trim());
+          for (let i = attrs.length - 1; i > 0; i--) { const j = rand(i + 1); [attrs[i], attrs[j]] = [attrs[j], attrs[i]]; }
+          const inner = rand(3) === 0 ? `<span id="i${key}">${text}<b>${rand(3)}</b></span>` : text;
+          return `<button ${attrs.join(' ')}>${inner}</button>`;
+        };
+        const unkeyed = () => `<span class="u${rand(3)}"${rand(2) ? ' title="t"' : ''}>${'x'.repeat(rand(4))}</span>`;
+        for (let n = 0; n < 60; n++) {
+          const parts = [];
+          const keys = Array.from({ length: 12 }, (_, i) => `k${i}`).filter(() => rand(3));
+          for (let i = keys.length - 1; i > 0; i--) { const j = rand(i + 1); [keys[i], keys[j]] = [keys[j], keys[i]]; }
+          keys.forEach(key => { parts.push(row(key, 'row ' + rand(5), rand(2) ? ' data-x="' + rand(4) + '"' : '')); if (rand(3) === 0) parts.push(unkeyed()); });
+          if (n % 7 === 3 && keys.length > 1) parts.push(row(keys[0], 'dup', ''));
+          if (rand(2)) parts.push('<!-- c' + rand(3) + ' -->');
+          await apply(`<section id="s${rand(2)}" class="sidebar-section">${parts.join('\n')}</section><div>${unkeyed()}${unkeyed()}</div>`);
+        }
+        await apply(base);
+        return bad.length;
+      }, html);
+      assert.equal(mismatches, 0, 'the patcher differs from innerHTML in the shuffle');
+    }
+    // Messages from another origin are ignored, and a hostile snapshot from this origin is neutralized.
+    {
+      const before = await side.evaluate(() => document.getElementById('sidebarRoot').innerHTML);
+      await side.evaluate(() => {
+        const send = data => window.dispatchEvent(new MessageEvent('message', { data, origin: 'https://evil.example' }));
+        send({ type: 'sidebarSnapshot', payload: { html: '<p id="evil">x</p>' } });
+        send({ type: 'sidebarClosed' });
+      });
+      await side.waitForTimeout(100);
+      assert.equal(await side.locator('#evil').count(), 0, 'a foreign-origin snapshot was rendered');
+      assert.equal(await side.evaluate(() => document.getElementById('sidebarRoot').innerHTML), before, 'a foreign-origin message changed the Side Bar');
+      const hostile = await side.evaluate(async () => {
+        const html = '<img src="x" onerror="window.__pwned=1"><script>window.__pwned=2<\/script><a href=" JavaScript:window.__pwned=3">a</a><a href="java&#9;script:window.__pwned=4">b</a><a href="java&#10;script:window.__pwned=5">c</a>' +
+          '<iframe srcdoc="<script>parent.__pwned=4<\/script>"></iframe><form action="data:text/html,x"><button formaction="vbscript:x">b</button></form>';
+        window.postMessage({ type: 'sidebarSnapshot', payload: { html } }, '*');
+        await new Promise(resolve => setTimeout(resolve, 300));
+        const root = document.getElementById('sidebarRoot');
+        return { pwned: window.__pwned, blocked: root.querySelectorAll('script, iframe, form').length,
+          onerror: root.querySelectorAll('[onerror]').length, js: root.querySelectorAll('[href], [formaction]').length,
+          anchor: root.querySelectorAll('a').length === 3 };
+      });
+      assert.deepEqual(hostile, { pwned: undefined, blocked: 0, onerror: 0, js: 0, anchor: true });
+      await deliverSnapshot(side, { type: 'sidebarSnapshot', payload: { html: page.sidebarHtml, changes: page.sidebarChanges } });
+      assert.equal(await side.locator('#dashboardChanges .sidebar-change-item').count(), 3);
+    }
     assert.deepEqual(executed.filter(([command]) => command === 'vscode.diff' || command === 'vscode.open'), [], 'a click opened an editor tab');
     const diffBox = await page.locator('#commitContent .diff-panel').boundingBox();
     const contentBox = await page.locator('#commitContent').boundingBox();
@@ -2418,6 +2547,7 @@ async function main() {
     }
 
     assert.deepEqual(pageErrors, []);
+    assert.equal(sidebarMismatches.length, 0, 'the Side Bar DOM differs from the snapshot it was given');
     console.log(`UI snapshots written to ${path.relative(process.cwd(), outputDir)}`);
   } finally {
     await browser.close();

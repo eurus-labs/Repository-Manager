@@ -1,6 +1,6 @@
 const assert = require('node:assert/strict');
 const { execFileSync } = require('node:child_process');
-const { mkdtempSync, rmSync, writeFileSync } = require('node:fs');
+const { mkdtempSync, readFileSync, rmSync, writeFileSync } = require('node:fs');
 const { tmpdir } = require('node:os');
 const path = require('node:path');
 const Module = require('node:module');
@@ -74,6 +74,35 @@ async function main() {
     await handleResolveHistoryRebase(ctx, { repositoryPath: '.', command: 'continue' });
     assert.equal(reloads, 2, 'a continue that advances HEAD must reload history even if it stops again');
     assert.equal(refreshes, 2);
+
+    // A colliding untracked file is refused before any confirm modal; an unrelated one is not.
+    const added = (() => {
+      writeFileSync(path.join(root, 'clash.txt'), 'tracked\n');
+      run('add', '.');
+      run('commit', '-qm', 'add clash');
+      const sha = run('rev-parse', 'HEAD');
+      run('rm', '-q', 'clash.txt');
+      run('commit', '-qm', 'remove clash');
+      return sha;
+    })();
+    const headBeforeRefusal = run('rev-parse', 'HEAD');
+    const shown = [];
+    const refusals = [];
+    fakeVscode.window.showErrorMessage = message => refusals.push(message);
+    fakeVscode.window.showWarningMessage = async (message, options, button) => { shown.push(options.detail); return button; };
+    writeFileSync(path.join(root, 'clash.txt'), 'mine\n');
+    await handleRewriteHistoryCommit(ctx, { repositoryPath: '.', commit: added, action: 'reset', mode: 'hard' });
+    assert.equal(shown.length, 0, 'no confirm modal for a refused action');
+    assert.match(refusals[0], /These untracked files would be overwritten by reset: clash\.txt\./);
+    assert.equal(run('rev-parse', 'HEAD'), headBeforeRefusal);
+    assert.equal(readFileSync(path.join(root, 'clash.txt'), 'utf8'), 'mine\n');
+    rmSync(path.join(root, 'clash.txt'));
+    writeFileSync(path.join(root, 'notes.local'), 'mine\n');
+    await handleRewriteHistoryCommit(ctx, { repositoryPath: '.', commit: added, action: 'reset', mode: 'mixed' });
+    assert.equal(shown.length, 1);
+    assert.match(shown[0], /Changes to tracked files must be committed or stashed first; untracked files stay as they are\./);
+    assert.equal(run('rev-parse', 'HEAD'), added);
+    assert.equal(readFileSync(path.join(root, 'notes.local'), 'utf8'), 'mine\n');
     console.log('History rewrite handler smoke passed');
   } finally {
     rmSync(root, { recursive: true, force: true });
