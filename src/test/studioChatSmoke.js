@@ -911,6 +911,32 @@ async function main() {
       const { unusable } = require(path.join(__dirname, '../../out/services/extensionModels.js'));
       assert.equal(unusable(view.memento, '1.104.0').size, 2);
       assert.equal(unusable(view.memento, '1.105.0').size, 0);
+
+      // A reopened chat keeps the person's choice: a default filled in for another chat does not replace it.
+      availableModels.splice(0, availableModels.length, lmModel('gpt-4o', 'GPT-4o'), lmModel('claude-x', 'Claude X'));
+      view = await open();
+      await view.chat.receive({ type: 'setModel', selector: 'copilot:claude-x' });
+      lmReplies.push({ reply: 'A.', workflow: null });
+      lmCalls.length = 0;
+      await view.chat.receive({ type: 'send', text: 'Chat A' });
+      const chatA = view.chat.conversation.id;
+      await view.chat.newChat();
+      lmReplies.push({ reply: 'B.', workflow: null });
+      await view.chat.receive({ type: 'send', text: 'Chat B' });
+      answers.quickPick.push(entry => entry.item.id === chatA);
+      await view.chat.pickChat();
+      assert.equal(view.last().model, 'copilot:claude-x');
+      lmReplies.push({ reply: 'A again.', workflow: null });
+      lmCalls.length = 0;
+      await view.chat.receive({ type: 'send', text: 'Chat A again' });
+      assert.deepEqual(lmCalls.map(call => call.family), ['claude-x'], 'a reopened chat did not use the model the person chose');
+      // ... and when that chosen model refuses: the message, the choice cleared, no retry.
+      availableModels.splice(0, availableModels.length, lmModel('gpt-4o', 'GPT-4o'), refusing('claude-x', 'Claude X'));
+      lmCalls.length = 0;
+      await view.chat.receive({ type: 'send', text: 'Chat A once more' });
+      assert.deepEqual(lmCalls.map(call => call.family), ['claude-x']);
+      assert.match(errors(view).pop(), /^Claude X is kept by VS Code for its own use/);
+      assert.equal(view.last().model, null);
     } finally {
       availableModels.splice(0, availableModels.length, ...savedModels);
     }

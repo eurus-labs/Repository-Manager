@@ -81,8 +81,8 @@ export class StudioChatProvider implements vscode.WebviewViewProvider {
   private conversation?: Conversation;
   private models: ModelChoice[] = [];
   private modelsLoaded = false;
-  /** The model in the menu was filled in by the chat, not chosen: a refusal moves on instead of stopping. */
-  private modelDefaulted = false;
+  /** The conversation whose model the chat filled in (not chosen): a refusal moves on instead of stopping. */
+  private defaultedFor: string | undefined;
   private busy: 'drafting' | 'running' | undefined;
   private cancelled = false;
   private notice = '';
@@ -140,14 +140,14 @@ export class StudioChatProvider implements vscode.WebviewViewProvider {
   private async refreshModels(): Promise<void> {
     this.models = await listModels(this.context).catch(() => [] as ModelChoice[]);
     this.modelsLoaded = true;
-    if (this.conversation && !this.conversation.model) { this.conversation.model = this.defaultSelector(); this.modelDefaulted = true; }
+    if (this.conversation && !this.conversation.model) { this.conversation.model = this.defaultSelector(); this.defaultedFor = this.conversation.id; }
     this.post();
   }
 
   async newChat(): Promise<void> {
     if (this.busy) { this.say('Wait for the current reply or run to finish, or stop it.'); return; }
     this.conversation = this.store.create();
-    if (!this.conversation.model) { this.conversation.model = this.defaultSelector(); this.modelDefaulted = true; }
+    if (!this.conversation.model) { this.conversation.model = this.defaultSelector(); this.defaultedFor = this.conversation.id; }
     await this.context.workspaceState.update(CURRENT_KEY, undefined);
     this.post();
   }
@@ -215,7 +215,7 @@ export class StudioChatProvider implements vscode.WebviewViewProvider {
       this.conversation = (id && await this.store.load(id)) || this.store.create();
       await this.syncFromFile();
     }
-    if (!this.conversation.model) { this.conversation.model = this.defaultSelector(); this.modelDefaulted = true; }
+    if (!this.conversation.model) { this.conversation.model = this.defaultSelector(); this.defaultedFor = this.conversation.id; }
     return this.conversation;
   }
 
@@ -239,7 +239,7 @@ export class StudioChatProvider implements vscode.WebviewViewProvider {
         case 'setModel': {
           const conversation = await this.ensureConversation();
           conversation.model = message.selector || undefined;
-          this.modelDefaulted = false;
+          this.defaultedFor = undefined;
           await this.saveConversation();
           this.post();
           return;
@@ -305,7 +305,7 @@ export class StudioChatProvider implements vscode.WebviewViewProvider {
       const scripts = this.root ? Object.keys(readScripts(this.root)) : undefined;
       const model = studioModel(this.context);
       // A model the chat filled in is not a choice: when it refuses, the next usable model answers.
-      const selector = this.modelDefaulted ? undefined : conversation.model;
+      const selector = this.defaultedFor === conversation.id ? undefined : conversation.model;
       const attachments = await this.readAttachments(conversation, userMessage, model, signal, selector);
       const draft = await draftPlan(model, this.steps, { message: text, current: conversation.plan, history: earlier, model: selector, skills, scripts, scriptsOff: this.scriptMode === 'off', ...(attachments ? { attachments } : {}) }, signal);
       addDraft(conversation, draft);
@@ -330,7 +330,7 @@ export class StudioChatProvider implements vscode.WebviewViewProvider {
     if (!listed) { return; }
     this.models = listed;
     const offered = (selector: string | undefined) => listed.some(model => model.selector === selector);
-    if (conversation.model && this.modelDefaulted && !offered(conversation.model)) { conversation.model = this.defaultSelector(); }
+    if (conversation.model && this.defaultedFor === conversation.id && !offered(conversation.model)) { conversation.model = this.defaultSelector(); }
   }
 
   /**
