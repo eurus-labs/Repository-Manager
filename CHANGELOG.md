@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.8.1] - 2026-11-25
+
+### Fixed
+
+- Picking a changed file in the Side Bar no longer redraws the whole Side Bar. Only the rows whose state changed are updated, so hover and keyboard focus stay put, and a status refresh that changes nothing sends no update at all.
+
 ## [3.8.0] - 2026-11-20
 
 ### Added
