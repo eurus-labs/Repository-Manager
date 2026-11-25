@@ -2773,7 +2773,21 @@
   const mirrorKey = element => JSON.stringify(Object.keys(element.dataset).filter(name => name !== 'mirrorKey').sort()
     .map(name => [name, element.dataset[name]]));
   let sidebarPublishPending = false;
-  function publishSidebar() {
+  let lastSidebarSignature;
+  let lastSidebarChanges;
+  // The list as the Side Bar would show it. A rebuilt row can carry the same attributes in another
+  // order (the key is added after the others), which is not a change, so they are sorted here.
+  function sidebarSignature() {
+    const copy = dashboardSidebar.cloneNode(true);
+    copy.querySelectorAll('*').forEach(element => {
+      const attributes = Array.from(element.attributes).sort((a, b) => (a.name < b.name ? -1 : 1));
+      attributes.forEach(attribute => element.removeAttribute(attribute.name));
+      attributes.forEach(attribute => element.setAttribute(attribute.name, attribute.value));
+    });
+    return copy.innerHTML;
+  }
+  // A new Side Bar view starts empty, so the host's request posts even an unchanged copy.
+  function publishSidebar(force) {
     sidebarPublishPending = false;
     if (!dashboardSidebar) return;
     dashboardSidebar.querySelectorAll('[data-action]').forEach(element => {
@@ -2782,14 +2796,19 @@
     });
     // The number of uncommitted changes becomes the Activity Bar icon's badge.
     const changes = workingState.count(activeDashboardRepository);
-    postMessage('sidebarSnapshot', { html: dashboardSidebar.innerHTML, changes });
+    const html = dashboardSidebar.innerHTML;
+    const signature = sidebarSignature();
+    if (force !== true && signature === lastSidebarSignature && changes === lastSidebarChanges) return;
+    lastSidebarSignature = signature;
+    lastSidebarChanges = changes;
+    postMessage('sidebarSnapshot', { html, changes });
   }
   // After the changes of the current task, not at the next frame: a dashboard behind another
   // editor tab is not painted, and the Side Bar must not wait for it to be.
   function scheduleSidebarPublish() {
     if (sidebarPublishPending) return;
     sidebarPublishPending = true;
-    queueMicrotask(publishSidebar);
+    queueMicrotask(() => publishSidebar());
   }
   if (dashboardSidebar && typeof MutationObserver === 'function') {
     new MutationObserver(records => {
@@ -3137,7 +3156,7 @@
           break;
 
         case 'publishSidebar':
-          publishSidebar();
+          publishSidebar(true);
           break;
 
         case 'sidebarAction':

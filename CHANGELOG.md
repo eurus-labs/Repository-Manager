@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Picking a changed file in the Side Bar no longer redraws the whole Side Bar. Only the rows whose state changed are updated, so hover and keyboard focus stay put, and a status refresh that changes nothing sends no update at all.
 - History actions (rebase, drop, reset, cherry-pick, revert and merge) no longer refuse because of untracked files. Only staged or unstaged changes to tracked files block them, as before. An action is refused, with the files listed, only when it would write to the path of an untracked file, which Git would otherwise lose (`reset --hard`) or stop a rebase half-way over. The confirmation text now says that untracked files stay as they are.
 
 ## [3.8.0] - 2026-11-20
