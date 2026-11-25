@@ -45,6 +45,11 @@ export interface ModelRules {
   onChosenRefused?: () => void | Promise<void>;
 }
 
+/** The model the person chose refused: it is marked, and the person is told; nothing is retried. */
+export class ChosenModelRefused extends Error {
+  constructor(readonly selector: string, readonly modelName: string) { super(refusedChoiceMessage(modelName)); }
+}
+
 interface GuardableModel {
   id: string;
   name?: string;
@@ -75,8 +80,10 @@ export function guardModel<T extends GuardableModel>(first: T, options: GuardOpt
   const refused = new Set<string>();
   const sendRequest = async (messages: unknown[], requestOptions: unknown, token: unknown) => {
     for (;;) {
+      // This attempt's model: another request may switch `current` while this one waits.
+      const attempt = current;
       try {
-        const response = await current.sendRequest(messages, requestOptions, token);
+        const response = await attempt.sendRequest(messages, requestOptions, token);
         // A refusal may come with the first fragment instead of the call: read it here, before the caller does.
         const iterator = response.text[Symbol.asyncIterator]();
         const head = await iterator.next();
@@ -87,16 +94,17 @@ export function guardModel<T extends GuardableModel>(first: T, options: GuardOpt
         })() };
       } catch (error) {
         if (!isCoreOnlyError(error)) { throw error; }
-        const model = current;
+        const model = attempt;
         refused.add(model.id);
         await markUnusable(options.state, options.vscodeVersion, model.id);
         if (options.chosen) {
           await options.onChosenRefused?.(model);
-          throw new Error(refusedChoiceMessage(model.name || model.id));
+          throw new ChosenModelRefused(model.id, model.name || model.id);
         }
         const unused = usable(await options.alternatives(), options.state, options.vscodeVersion).filter(item => !refused.has(item.id));
         if (!unused.length) { throw new Error(options.noneLeft); }
-        current = unused[0];
+        // Only the first request to find the model refused switches; the others use what it chose.
+        if (current === attempt) { current = unused[0]; }
       }
     }
   };

@@ -6,7 +6,7 @@
  */
 import * as vscode from 'vscode';
 import { readSelectedModel } from '../modelPreferences';
-import { isCoreOnlyError, markUnusable, ModelState, refusedChoiceMessage, usable } from '../services/extensionModels';
+import { ChosenModelRefused, isCoreOnlyError, markUnusable, ModelState, usable } from '../services/extensionModels';
 import { CancelSignal, StudioModel } from './steps';
 
 export interface LmModel {
@@ -53,10 +53,7 @@ export async function lmModels(context?: { globalState: ModelState }): Promise<L
 
 const vscodeVersion = () => (vscode as { version?: string }).version ?? '';
 
-/** The model the person chose refused: it is marked, and the person is told; nothing is retried. */
-export class ChosenModelRefused extends Error {
-  constructor(readonly selector: string, readonly modelName: string) { super(refusedChoiceMessage(modelName)); }
-}
+export { ChosenModelRefused };
 
 export async function listModels(context?: { globalState: ModelState }): Promise<ModelChoice[]> {
   const seen = new Set<string>();

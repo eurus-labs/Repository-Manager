@@ -93,7 +93,9 @@ export class SecurityReviewService {
       }
     }
     const model = await this.provider.selectModel(selectedModelId);
-    const modelId = `${model.id}:${model.version}`;
+    // Read from the model as it stands: a model VS Code keeps for itself is replaced during the review, and
+    // results, cache keys and the report name the model that answered.
+    const modelIdNow = () => `${model.id}:${model.version}`;
     state.model = model.name || model.id;
     progress(`Planned ${plan.units.length} component(s), ${state.filesTotal} file(s)`, { ...state,
       components: progressComponents(plan) });
@@ -103,7 +105,7 @@ export class SecurityReviewService {
     const skillsFor = (unit: ReviewWorkUnit): AppliedSkills =>
       selectReviewSkills(available.skills, unit.paths, plan.request.categories, available.disabled);
     const skillsApplied: NonNullable<ReviewResult['skillsApplied']> = [];
-    const keyFor = (unit: ReviewWorkUnit, applied: AppliedSkills) => reviewUnitKey({ modelId, promptVersion: PROMPT_VERSION, instructions: applied.hash,
+    const keyFor = (unit: ReviewWorkUnit, applied: AppliedSkills) => reviewUnitKey({ modelId: modelIdNow(), promptVersion: PROMPT_VERSION, instructions: applied.hash,
       targetSha: plan.request.targetSha, baseSha: plan.request.baseSha, scope: plan.request.scope,
       categories: plan.request.categories, component: unit.component, paths: unit.paths, rules: unit.rules });
     let unitsDone = 0;
@@ -158,7 +160,8 @@ export class SecurityReviewService {
         }
         // Kept with what it lacks, so the next run asks for that only. A component whose answer was
         // unusable as a whole (a failed request, too many results) is not kept and is asked again in full.
-        if (outcome && cacheable) { await this.cache?.set(key, outcome).catch(() => undefined); }
+        state.model = model.name || model.id;
+        if (outcome && cacheable) { await this.cache?.set(keyFor(unit, applied), outcome).catch(() => undefined); }
       }
       if (outcome && (applied.skills.length || applied.omitted.length)) {
         skillsApplied.push({ component: unit.component, skills: applied.skills.map(skill => skill.id),
@@ -224,7 +227,7 @@ export class SecurityReviewService {
     if (!coverage.complete) { limitations.push('Review coverage is incomplete; missing checks are not a pass.'); }
     limitations.push('Verified findings have source and diff citations and a second AI check; this does not prove absence of other vulnerabilities.');
     return { request: plan.request, findings: [...findings.values()], policyResults, coverage,
-      policyStatus: policy.status, modelId, modelName: state.model, log: trimReviewLog(log, MAX_LOG), limitations: [...new Set(limitations)].slice(0, 40),
+      policyStatus: policy.status, modelId: modelIdNow(), modelName: state.model, log: trimReviewLog(log, MAX_LOG), limitations: [...new Set(limitations)].slice(0, 40),
       toVerify: consolidated.toVerify.slice(0, 20),
       ...(skillsApplied.length ? { skillsApplied } : {}),
       ...(stopped ? { partial: { unitsDone, unitsTotal: plan.units.length } } : {}) };

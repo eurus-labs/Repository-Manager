@@ -12,6 +12,7 @@ import {
   mapProblem, normalizeSummary, samePlace, outline, parseMap, readListed, readMapFile, renderMap, summaryPrompt, updateEntries, withSummary, writeMapFile
 } from './folderMap';
 import type { CancelSignal } from './steps';
+import { ChosenModelRefused } from '../services/extensionModels';
 
 export const MAX_ATTACHMENTS = 10;
 const MAX_SUMMARIES_PER_SEND = 3;
@@ -312,8 +313,10 @@ export async function prepareAttachments(chips: Attachment[], deps: PrepareDeps)
           parent.entries = updated.entries.map(entry => entry.path === unit.file.path ? withSummary(entry, summary, today) : entry);
           parent.changed = true;
         }
-      } catch {
+      } catch (error) {
         if (deps.signal.cancelled) { cancelled = true; break; }
+        // The model the person chose is not usable: the send stops there, and the chat tells them.
+        if (error instanceof ChosenModelRefused) { throw error; }
         // No summary this time: the outline goes, and the next send tries again.
       }
     }

@@ -912,6 +912,22 @@ async function main() {
       assert.equal(unusable(view.memento, '1.104.0').size, 2);
       assert.equal(unusable(view.memento, '1.105.0').size, 0);
 
+      // The chosen model refuses while an attachment is being summarized: the person is told, the choice is cleared,
+      // and only that one request is made (the failed summary is not a reason to go on to the planner).
+      availableModels.splice(0, availableModels.length, { ...refusing('internal-a', 'Internal A'), maxInputTokens: 30000 }, lmModel('gpt-4o', 'GPT-4o'));
+      const big = path.join(workspace, 'big-core-test.md');
+      fs.writeFileSync(big, `${'A line of notes that is long enough to need a summary.\n'.repeat(1800)}`);
+      try {
+        view = await open();
+        await view.chat.receive({ type: 'setModel', selector: 'copilot:internal-a' });
+        await view.chat.receive({ type: 'attach', uris: [`file://${big}`] });
+        lmCalls.length = 0;
+        await view.chat.receive({ type: 'send', text: 'Use the notes' });
+        assert.deepEqual(lmCalls.map(call => call.family), ['internal-a'], 'more than one request was made');
+        assert.deepEqual(errors(view), ['Internal A is kept by VS Code for its own use and cannot be used by extensions. It was removed from the Model menu; choose another model.']);
+        assert.equal(view.last().model, null, 'the refused choice was kept');
+      } finally { fs.rmSync(big, { force: true }); }
+
       // A reopened chat keeps the person's choice: a default filled in for another chat does not replace it.
       availableModels.splice(0, availableModels.length, lmModel('gpt-4o', 'GPT-4o'), lmModel('claude-x', 'Claude X'));
       view = await open();

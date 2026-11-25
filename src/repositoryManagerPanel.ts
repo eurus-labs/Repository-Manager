@@ -79,9 +79,12 @@ export class RepositoryManagerPanel {
     state: () => RepositoryManagerPanel.globalState,
     onChosenRefused: async () => {
       await clearSelectedModel(RepositoryManagerPanel.globalState);
-      await this._sendSummaryModels();
+      // The page drops a summary when its chosen model leaves the menu, and would then ignore the refusal:
+      // while a summary runs, its error goes first and the menu follows (see _summarizeChanges).
+      if (this._summaryToken) { this._modelsStale = true; } else { await this._sendSummaryModels(); }
     }
   };
+  private _modelsStale = false;
   private readonly _summaryProvider = new CopilotSummaryProvider(this._modelRules);
   private readonly _reviews: ReviewController;
   private readonly _commitMessages: CommitMessageController;
@@ -849,6 +852,10 @@ export class RepositoryManagerPanel {
         this._summaryToken = undefined;
       }
       controller.dispose();
+      if (this._modelsStale) {
+        this._modelsStale = false;
+        await this._sendSummaryModels();
+      }
     }
   }
 }

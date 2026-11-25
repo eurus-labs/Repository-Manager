@@ -96,6 +96,48 @@ async function main() {
   await assert.rejects(dashboard().complete('Write a message', undefined, token), /fetch failed/);
   assert.equal(shared.unusable(globalState, '1.104.0').size, 0);
 
+  // ---- Two requests at once through one guarded model: the first to see the refusal switches; the replacement
+  // ---- is not marked by the other request's refusal.
+  {
+    const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+    const slow = { ...model('slow'), async sendRequest(messages) {
+      await delay(messages[0]);
+      throw new Error('Model slow is only available to VS Code core.');
+    } };
+    const good = model('good');
+    const overlapState = memento();
+    const guarded = shared.guardModel(slow, { state: overlapState, vscodeVersion: '1.104.0', chosen: false, noneLeft: 'none left', alternatives: async () => [slow, good] });
+    const [first, second] = await Promise.all([guarded.sendRequest([5], {}, token), guarded.sendRequest([60], {}, token)]);
+    assert.equal(await drain(first), 'answer from good');
+    assert.equal(await drain(second), 'answer from good');
+    assert.deepEqual([...shared.unusable(overlapState, '1.104.0')], ['slow'], 'the replacement was marked by the other request');
+  }
+
+  // ---- A summary after a fallback names the model that answered (result and cache key).
+  {
+    const goodSummary = { ...model('good'), name: 'Good', async sendRequest(messages) {
+      calls.push('good');
+      const packet = JSON.parse(messages[1]);
+      return { text: (async function* () { yield JSON.stringify({ schemaVersion: 1, baseSha: packet.baseSha, targetSha: packet.targetSha,
+        intent: { text: 'Intent', evidence: [packet.patches[0].path] }, behaviorChanges: [], affectedAreas: [], dependencyConfigChanges: [],
+        possibleBreakingChanges: [], riskHints: [], suggestedTests: [], limitations: [] }); })() };
+    } };
+    const sha = 'a'.repeat(40);
+    const packet = () => ({ repositoryPath: '/test', baseSha: 'b'.repeat(40), targetSha: sha, root: false, files: [{ path: 'a.ts', status: 'modified' }],
+      patches: [{ path: 'a.ts', patch: '+hello\n' }], commits: [{ hash: sha, subject: 'test' }],
+      coverage: { totalFiles: 1, includedFiles: 1, omitted: [], truncatedCommits: false } });
+    globalState = memento();
+    listed = [model('internal-a', 'refuses'), goodSummary];
+    const summarizer = new CopilotSummaryProvider({ state: () => globalState });
+    const answered = await summarizer.summarize(packet(), token, () => {});
+    assert.equal(answered.model, 'Good', 'the summary names the model that was asked first');
+    // Cached under the answering model: the same request now starts with that model and is served from the cache.
+    calls.length = 0;
+    const again = await summarizer.summarize(packet(), token, () => {});
+    assert.deepEqual(calls, [], 'the summary was cached under the refusing model');
+    assert.equal(again.model, 'Good');
+  }
+
   // ---- The review's pick.
   const review = rules => new SecurityReviewProvider({ lm: { async selectChatModels() { return [...listed]; } }, LanguageModelChatMessage: { User: value => value } }, rules);
   globalState = memento();
