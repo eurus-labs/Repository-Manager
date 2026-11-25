@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.8.1] - 2026-11-25
+
+### Fixed
+
+- History actions (rebase, drop, reset, cherry-pick, revert and merge) no longer refuse because of untracked files. Only staged or unstaged changes to tracked files block them, as before. An action is refused, with the files listed, only when it would write to the path of an untracked file, which Git would otherwise lose (`reset --hard`) or stop a rebase half-way over. The confirmation text now says that untracked files stay as they are.
+
 ## [3.8.0] - 2026-11-20
 
 ### Added

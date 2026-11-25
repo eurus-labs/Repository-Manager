@@ -1,6 +1,6 @@
 import * as assert from 'assert/strict';
 import * as path from 'path';
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { BranchService } from '../services/branchService';
 import { countChanges } from '../services/submoduleService';
@@ -407,10 +407,17 @@ async function testHistoryApplyActions(): Promise<void> {
     assert.equal(blocked.success, false);
     assert.match(blocked.message, /Finish or abort the current Git operation/);
     rmSync(applyPath, { recursive: true, force: true });
-    writeFileSync(path.join(root, 'dirty.txt'), 'untracked\n');
+    // A change to a tracked file blocks; an untracked file that the action does not write does not.
+    writeFileSync(path.join(root, 'base.txt'), 'edited\n');
     const current = await git.execGit(['rev-parse', 'HEAD']);
-    assert.equal((await actions.apply('.', source, 'merge')).success, false);
+    const dirty = await actions.apply('.', source, 'merge');
+    assert.equal(dirty.success, false);
+    assert.match(dirty.message, /changes to tracked files/);
     assert.equal(await git.execGit(['rev-parse', 'HEAD']), current);
+    await git.execGit(['checkout', '--', 'base.txt']);
+    writeFileSync(path.join(root, 'dirty.txt'), 'untracked\n');
+    assert.equal((await actions.apply('.', source, 'merge')).success, true);
+    assert.equal(readFileSync(path.join(root, 'dirty.txt'), 'utf8'), 'untracked\n');
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

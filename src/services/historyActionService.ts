@@ -2,6 +2,7 @@ import { CommandResult } from '../types';
 import { existsSync } from 'fs';
 import * as path from 'path';
 import { GitCommandService } from './gitCommandService';
+import { TreeWrites, assertNoCollisions, trackedChanges, trackedChangesMessage } from './untrackedGuard';
 
 export type HistoryAction = 'cherry-pick' | 'revert' | 'merge';
 type PendingOperation = HistoryAction | 'am' | 'rebase';
@@ -32,14 +33,14 @@ export class HistoryActionService {
       if (await this.pendingOperation(repositoryPath)) {
         throw new Error('Finish or abort the current Git operation first.');
       }
-      const status = await this.git.execGitRaw(['status', '--porcelain=v1', '-z', '--untracked-files=all'], cwd, 10000);
-      if (status) {
-        throw new Error('Commit, stash, or discard working tree changes before running this action.');
+      if (await trackedChanges(this.git, cwd)) {
+        throw new Error(trackedChangesMessage('running this action'));
       }
       if (operation !== 'merge' && parents.length > 1 &&
           (!Number.isInteger(mainline) || mainline! < 1 || mainline! > parents.length)) {
         throw new Error('Choose a parent for the merge commit.');
       }
+      await this.assertNoUntrackedCollisions(repositoryPath, sha, operation, parents, mainline);
       if (expectedBranch) {
         const currentBranch = await this.git.execGit(['symbolic-ref', '--quiet', '--short', 'HEAD'], cwd, 5000);
         if (currentBranch !== expectedBranch) {
@@ -66,6 +67,30 @@ export class HistoryActionService {
       }
       return { success: false, data: { pending }, message: `${operation} failed: ${detail}${guidance}` };
     }
+  }
+
+  /** Refuses when an untracked file is at a path the action would write; other untracked files stay. */
+  async assertNoUntrackedCollisions(repositoryPath: string, sha: string, operation: HistoryAction,
+    parents: string[], mainline?: number): Promise<void> {
+    const cwd = this.git.resolveRepositoryPath(repositoryPath);
+    let writes: TreeWrites;
+    if (operation === 'merge') {
+      const base = await this.git.execGit(['merge-base', 'HEAD', sha], cwd, 5000).catch(() => '');
+      writes = { trees: [sha], ranges: base ? [`${base}..${sha}`] : [] };
+    } else if (!parents.length) {
+      writes = { trees: [sha], ranges: [] };
+    } else {
+      writes = { trees: [], ranges: [parents.length > 1 ? `${sha}^${mainline}..${sha}` : `${sha}^..${sha}`] };
+    }
+    await assertNoCollisions(this.git, cwd, operation, writes);
+  }
+
+  /** The same refusals `apply` makes for changes to tracked files and colliding untracked files, before a confirm. */
+  async assertRunnable(repositoryPath: string, sha: string, operation: HistoryAction, parents: string[], mainline?: number): Promise<void> {
+    if (await trackedChanges(this.git, this.git.resolveRepositoryPath(repositoryPath))) {
+      throw new Error(trackedChangesMessage('running this action'));
+    }
+    await this.assertNoUntrackedCollisions(repositoryPath, sha, operation, parents, mainline);
   }
 
   async pendingOperation(repositoryPath: string): Promise<PendingOperation | undefined> {
