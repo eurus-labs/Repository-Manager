@@ -192,6 +192,44 @@ async function main() {
     assert.equal(result.success, true, result.message);
     assert.equal(git(repos.local, 'rev-parse', 'x'), originX);
     assert.equal(existsSync(path.join(repos.local, 'g.txt')), false);
+
+    // A remote-only branch deleted on origin, with a tracked file of the same name: the click fails
+    // and the file keeps its edit (a bare `checkout x` would restore it as a path).
+    repos = setup();
+    commit(repos.upstream, 'x', 'tracked\n', 'a file named like the branch');
+    git(repos.upstream, 'push', '-q', 'origin', 'main');
+    git(repos.local, 'pull', '-q', 'origin', 'main');
+    git(repos.upstream, 'push', '-q', 'origin', ':x');
+    writeFileSync(path.join(repos.local, 'x'), 'edited\n');
+    result = await checkout(repos.local, 'x');
+    assert.equal(result.success, false, result.message);
+    assert.match(result.message, /x is no longer on origin/);
+    assert.equal(currentBranch(repos.local), 'main');
+    assert.equal(readFileSync(path.join(repos.local, 'x'), 'utf8'), 'edited\n');
+
+    // A tag named like the branch does not stand in for it: x is behind and is fast-forwarded.
+    repos = setup();
+    git(repos.local, 'checkout', '-q', 'x');
+    git(repos.local, 'checkout', '-q', 'main');
+    pushed = pushOnX(repos, 'f.txt', '2\n', 'pushed');
+    git(repos.local, 'fetch', '-q', 'origin');
+    git(repos.local, 'tag', 'x', pushed);
+    result = await checkout(repos.local, 'x');
+    assert.equal(outcome(result), 'fast-forwarded', result.message);
+    assert.equal(git(repos.local, 'rev-parse', 'refs/heads/x'), pushed);
+
+    // merge.autoStash does not carry overlapping edits across the update: it stays blocked.
+    repos = setup();
+    git(repos.local, 'checkout', '-q', 'x');
+    git(repos.local, 'config', 'merge.autoStash', 'true');
+    const stashedBefore = git(repos.local, 'rev-parse', 'x');
+    pushOnX(repos, 'f.txt', '2\n', 'pushed');
+    writeFileSync(path.join(repos.local, 'f.txt'), 'dirty\n');
+    result = await checkout(repos.local, 'x');
+    assert.equal(outcome(result), 'blocked', result.message);
+    assert.equal(git(repos.local, 'rev-parse', 'x'), stashedBefore);
+    assert.equal(readFileSync(path.join(repos.local, 'f.txt'), 'utf8'), 'dirty\n');
+    assert.equal(git(repos.local, 'stash', 'list'), '');
     console.log('Branch checkout smoke passed.');
   } finally {
     for (const base of bases) rmSync(base, { recursive: true, force: true });

@@ -245,18 +245,25 @@ export class BranchService {
       }
     }
 
+    if (!hasLocal && !onOrigin) {
+      // Never fall back to a bare `checkout <name>`: with no such branch Git reads it as a path and
+      // restores that file, discarding its edits.
+      return { success: false, message: `${name} is no longer on origin and has no local branch.` };
+    }
     const current = await exec(['symbolic-ref', '--quiet', '--short', 'HEAD']).catch(() => '');
-    if (!hasLocal && onOrigin) {
-      await exec(['checkout', '-b', name, '--track', originName]);
+    if (!hasLocal) {
+      await exec(['checkout', '-b', name, '--track', remoteRef]);
     } else if (current !== name) {
-      await exec(['checkout', name]);
+      // `--` makes Git take the name as a branch only, never as a path.
+      await exec(['checkout', name, '--']);
     }
 
     if (!onOrigin) {
       return done('local-only', `${fetchNote}Checked out '${name}'`);
     }
 
-    const counts = (await exec(['rev-list', '--left-right', '--count', `${name}...${originName}`])).split(/\s+/).map(Number);
+    // Full ref names: a tag called like the branch must not stand in for it.
+    const counts = (await exec(['rev-list', '--left-right', '--count', `refs/heads/${name}...${remoteRef}`])).split(/\s+/).map(Number);
     const [ahead, behind] = counts;
     if (!ahead && !behind) {
       return done('up-to-date', `${fetchNote}${name} is up to date with origin`);
@@ -268,7 +275,9 @@ export class BranchService {
       return done('diverged', `${fetchNote}${name} and ${originName} have diverged (${ahead} ahead, ${behind} behind). Use Pull or Reset to origin.`);
     }
     try {
-      await exec(['merge', '--ff-only', originName]);
+      // --no-autostash: with merge.autoStash set, Git would carry overlapping edits across the
+      // update and leave conflicts, instead of refusing as `blocked` promises.
+      await exec(['merge', '--ff-only', '--no-autostash', remoteRef]);
       return done('fast-forwarded', `${fetchNote}Updated ${name} by ${behind} commit${behind === 1 ? '' : 's'} from origin`);
     } catch (error: unknown) {
       const reason = /overwritten/i.test((error as Error).message)
