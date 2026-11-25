@@ -70,6 +70,23 @@
     });
   }
 
+  // The dashboard's snapshots hold none of this; anything else in a snapshot is dropped before it
+  // reaches the document.
+  const BLOCKED_ELEMENTS = 'script, iframe, frame, object, embed, link, meta, base, form';
+  const URL_ATTRIBUTES = ['href', 'src', 'xlink:href', 'action', 'formaction', 'srcdoc'];
+  function neutralize(fragment) {
+    fragment.querySelectorAll(BLOCKED_ELEMENTS).forEach(element => element.remove());
+    fragment.querySelectorAll('*').forEach(element => {
+      Array.from(element.attributes).forEach(attribute => {
+        const name = attribute.name.toLowerCase();
+        const value = attribute.value.trim().toLowerCase();
+        if (name.startsWith('on') || (URL_ATTRIBUTES.includes(name) && /^(javascript|data|vbscript):/.test(value))) {
+          element.removeAttribute(attribute.name);
+        }
+      });
+    });
+  }
+
   // The snapshot changes only the nodes that differ, so hover, transitions and focus survive a
   // refresh that touches one row. The result is the same DOM that root.innerHTML = html would give.
   function render(html) {
@@ -77,6 +94,7 @@
     const scrollTop = root.scrollTop;
     const template = document.createElement('template');
     template.innerHTML = html;
+    neutralize(template.content);
     patchChildren(root, template.content);
     root.scrollTop = scrollTop;
     // A focused node that was removed: put focus back on its twin.
@@ -87,6 +105,10 @@
   }
 
   window.addEventListener('message', event => {
+    // VS Code delivers host messages with target.contentWindow.postMessage(message, window.origin)
+    // (src/vs/workbench/contrib/webview/browser/pre/index.html), so they carry this page's origin.
+    // event.source is not checked: that page sets window.parent = window.
+    if (event.origin !== window.origin) return;
     const message = event.data || {};
     if (message.type === 'sidebarSnapshot' && message.payload && typeof message.payload.html === 'string') render(message.payload.html);
     if (message.type === 'sidebarClosed') showClosed();

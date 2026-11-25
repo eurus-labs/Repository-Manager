@@ -627,6 +627,31 @@ async function main() {
       }, html);
       assert.equal(mismatches, 0, 'the patcher differs from innerHTML in the shuffle');
     }
+    // Messages from another origin are ignored, and a hostile snapshot from this origin is neutralized.
+    {
+      const before = await side.evaluate(() => document.getElementById('sidebarRoot').innerHTML);
+      await side.evaluate(() => {
+        const send = data => window.dispatchEvent(new MessageEvent('message', { data, origin: 'https://evil.example' }));
+        send({ type: 'sidebarSnapshot', payload: { html: '<p id="evil">x</p>' } });
+        send({ type: 'sidebarClosed' });
+      });
+      await side.waitForTimeout(100);
+      assert.equal(await side.locator('#evil').count(), 0, 'a foreign-origin snapshot was rendered');
+      assert.equal(await side.evaluate(() => document.getElementById('sidebarRoot').innerHTML), before, 'a foreign-origin message changed the Side Bar');
+      const hostile = await side.evaluate(async () => {
+        const html = '<img src="x" onerror="window.__pwned=1"><script>window.__pwned=2<\/script><a href=" JavaScript:window.__pwned=3">a</a>' +
+          '<iframe srcdoc="<script>parent.__pwned=4<\/script>"></iframe><form action="data:text/html,x"><button formaction="vbscript:x">b</button></form>';
+        window.postMessage({ type: 'sidebarSnapshot', payload: { html } }, '*');
+        await new Promise(resolve => setTimeout(resolve, 300));
+        const root = document.getElementById('sidebarRoot');
+        return { pwned: window.__pwned, blocked: root.querySelectorAll('script, iframe, form').length,
+          onerror: root.querySelectorAll('[onerror]').length, js: root.querySelectorAll('[href^="javascript" i], [formaction]').length,
+          anchor: Boolean(root.querySelector('a')) };
+      });
+      assert.deepEqual(hostile, { pwned: undefined, blocked: 0, onerror: 0, js: 0, anchor: true });
+      await deliverSnapshot(side, { type: 'sidebarSnapshot', payload: { html: page.sidebarHtml, changes: page.sidebarChanges } });
+      assert.equal(await side.locator('#dashboardChanges .sidebar-change-item').count(), 3);
+    }
     assert.deepEqual(executed.filter(([command]) => command === 'vscode.diff' || command === 'vscode.open'), [], 'a click opened an editor tab');
     const diffBox = await page.locator('#commitContent .diff-panel').boundingBox();
     const contentBox = await page.locator('#commitContent').boundingBox();
