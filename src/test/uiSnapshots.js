@@ -639,14 +639,14 @@ async function main() {
       assert.equal(await side.locator('#evil').count(), 0, 'a foreign-origin snapshot was rendered');
       assert.equal(await side.evaluate(() => document.getElementById('sidebarRoot').innerHTML), before, 'a foreign-origin message changed the Side Bar');
       const hostile = await side.evaluate(async () => {
-        const html = '<img src="x" onerror="window.__pwned=1"><script>window.__pwned=2<\/script><a href=" JavaScript:window.__pwned=3">a</a>' +
+        const html = '<img src="x" onerror="window.__pwned=1"><script>window.__pwned=2<\/script><a href=" JavaScript:window.__pwned=3">a</a><a href="java&#9;script:window.__pwned=4">b</a><a href="java&#10;script:window.__pwned=5">c</a>' +
           '<iframe srcdoc="<script>parent.__pwned=4<\/script>"></iframe><form action="data:text/html,x"><button formaction="vbscript:x">b</button></form>';
         window.postMessage({ type: 'sidebarSnapshot', payload: { html } }, '*');
         await new Promise(resolve => setTimeout(resolve, 300));
         const root = document.getElementById('sidebarRoot');
         return { pwned: window.__pwned, blocked: root.querySelectorAll('script, iframe, form').length,
-          onerror: root.querySelectorAll('[onerror]').length, js: root.querySelectorAll('[href^="javascript" i], [formaction]').length,
-          anchor: Boolean(root.querySelector('a')) };
+          onerror: root.querySelectorAll('[onerror]').length, js: root.querySelectorAll('[href], [formaction]').length,
+          anchor: root.querySelectorAll('a').length === 3 };
       });
       assert.deepEqual(hostile, { pwned: undefined, blocked: 0, onerror: 0, js: 0, anchor: true });
       await deliverSnapshot(side, { type: 'sidebarSnapshot', payload: { html: page.sidebarHtml, changes: page.sidebarChanges } });

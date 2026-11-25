@@ -79,7 +79,8 @@
     fragment.querySelectorAll('*').forEach(element => {
       Array.from(element.attributes).forEach(attribute => {
         const name = attribute.name.toLowerCase();
-        const value = attribute.value.trim().toLowerCase();
+        // Browsers drop tabs, newlines and leading control characters inside a URL scheme.
+        const value = attribute.value.replace(/[\u0000-\u0020]/g, '').toLowerCase();
         if (name.startsWith('on') || (URL_ATTRIBUTES.includes(name) && /^(javascript|data|vbscript):/.test(value))) {
           element.removeAttribute(attribute.name);
         }
