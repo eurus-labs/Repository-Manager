@@ -251,7 +251,7 @@ export class GitOperations {
   async switchBranch(
     submodulePath: string,
     branchName: string,
-    options?: { settleAutoFetch?: () => Promise<boolean> }
+    options?: { settleAutoFetch?: () => Promise<void> }
   ): Promise<CommandResult> {
     return this.branchService.switchBranch(submodulePath, branchName, options);
   }
@@ -260,7 +260,7 @@ export class GitOperations {
   async updateBranch(
     submodulePath: string,
     branchName: string,
-    options?: { settleAutoFetch?: () => Promise<boolean>; isLatest?: () => boolean }
+    options?: { settleAutoFetch?: () => Promise<void>; isLatest?: () => boolean }
   ): Promise<CommandResult> {
     return this.branchService.updateBranch(submodulePath, branchName, options);
   }

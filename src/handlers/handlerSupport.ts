@@ -24,8 +24,8 @@ export interface MessageHandlerContext {
   showProposedFile?: (filePath: string, current: string, proposed: string) => Promise<void>;
   /** Numbers the branch clicks of each repository; absent, the handler keeps its own. */
   branchSwitches?: BranchSwitchTracker;
-  /** Waits for a running auto-fetch; true when it fetched this repository, so a second fetch is not needed. */
-  settleAutoFetch?: (repositoryPath: string) => Promise<boolean>;
+  /** Waits for a running auto-fetch to end, so a branch fetch never races it for ref locks. */
+  settleAutoFetch?: (repositoryPath: string) => Promise<void>;
   /** The timings recorder, present when repositoryManager.debug.timings is on. */
   timings?: OpenTimings;
 }

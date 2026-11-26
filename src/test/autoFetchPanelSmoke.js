@@ -156,6 +156,7 @@ async function main() {
     // The page reports when the new history is drawn; the panel writes it into the switch's block.
     await receivers.get('repositoryManager')({ type: 'dashboardTiming', payload: { name: 'branch history drawn' } });
     assert.notEqual(git(local, 'rev-parse', 'x'), originX);
+    assert.equal(timingLines.some(line => / git fetch origin /.test(line)), false, 'the update fetched while the auto-fetch was running');
     releaseFetch();
     await click;
     const update = posted.find(message => message.type === 'branchUpdateResult');
@@ -163,13 +164,25 @@ async function main() {
     assert.equal(update.payload.update, 'fast-forwarded', update.payload.message);
     assert.equal(git(local, 'rev-parse', 'x'), originX);
     const block = timingLines.slice(timingLines.findLastIndex(line => line.startsWith('--- Switching to x')));
+    // The update fetches its own branch, after the auto-fetch has ended (a line is written when a process ends).
     const fetches = block.filter(line => / git fetch /.test(line));
-    assert.equal(fetches.some(line => / git fetch origin /.test(line)), false, `a second fetch ran: ${fetches}`);
-    assert.ok(fetches.some(line => / git fetch --all /.test(line)), `the auto-fetch did not run: ${block.join('\n')}`);
+    assert.equal(fetches.length, 2, `${fetches}`);
+    assert.match(fetches[0], / git fetch --all /);
+    assert.match(fetches[1], / git fetch origin \+refs\/heads\/x:refs\/remotes\/origin\/x /);
     // The marks of the switch, in order.
     const marks = ['click arrived', 'checkout done', 'result posted', 'branch history drawn', 'update ended: fast-forwarded'];
     const at = marks.map(mark => block.findIndex(line => line.endsWith(` ${mark}`)));
     assert.ok(at.every(index => index >= 0) && at.every((index, position) => position === 0 || index > at[position - 1]), `${at}\n${block.join('\n')}`);
+
+    // The auto-fetch does not prune, so after it ran origin/x is still known here. Origin deletes x:
+    // the click's own fetch notices, reports local-only and forgets that one stale ref.
+    git(upstream, 'push', '-q', 'origin', ':x');
+    assert.ok(git(local, 'branch', '-r').includes('origin/x'));
+    posted.length = 0;
+    await receivers.get('repositoryManager')({ type: 'checkoutBranch', payload: { submodule: '.', branch: 'x' } });
+    assert.equal(posted.find(message => message.type === 'branchUpdateResult').payload.update, 'local-only');
+    assert.equal(git(local, 'branch', '-r').includes('origin/x'), false, 'the stale origin/x is still there');
+    assert.equal(git(local, 'symbolic-ref', '--short', 'HEAD'), 'x');
 
     RepositoryManagerPanel.currentPanel.dispose();
     console.log('Auto fetch panel smoke passed');

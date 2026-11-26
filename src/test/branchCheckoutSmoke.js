@@ -249,17 +249,20 @@ async function main() {
     assert.notEqual(git(repos.local, 'rev-parse', 'x'), pushed);
     assert.equal(git(repos.local, 'rev-parse', 'origin/x'), pushed);
 
-    // A running auto-fetch that fetched this repository: its copy is used, no second fetch.
+    // A running auto-fetch: the update waits for it to end, then runs its own fetch of the branch.
     repos = setup();
     git(repos.local, 'checkout', '-q', 'x');
     git(repos.local, 'checkout', '-q', 'main');
     pushed = pushOnX(repos, 'f.txt', '2\n', 'two');
     await service(repos.local).switchBranch('.', 'x');
-    git(repos.local, 'fetch', '-q', 'origin'); // what the auto-fetch did
     steps = [];
-    result = await service(repos.local, steps).updateBranch('.', 'x', { settleAutoFetch: async () => true });
+    let settled = false;
+    result = await service(repos.local, steps).updateBranch('.', 'x', {
+      settleAutoFetch: async () => { assert.equal(steps.some(args => args[0] === 'fetch'), false); settled = true; }
+    });
+    assert.equal(settled, true);
     assert.equal(outcome(result), 'fast-forwarded', result.message);
-    assert.equal(steps.some(args => args[0] === 'fetch'), false, JSON.stringify(steps));
+    assert.equal(steps.filter(args => args[0] === 'fetch').length, 1, JSON.stringify(steps));
 
     // A local-only branch: checked out without any fetch.
     repos = setup();

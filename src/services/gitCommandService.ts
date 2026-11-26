@@ -14,6 +14,17 @@ export class SupersededError extends Error {
 /** One finished Git process: for repositoryManager.debug.timings. */
 export interface GitCommandTiming { args: string[]; cwd: string; ms: number; ok: boolean }
 
+/**
+ * The environment of every Git process. GIT_OPTIONAL_LOCKS=0 stops read commands such as `git status`
+ * from taking index.lock to refresh the index, which made a checkout running at the same moment fail
+ * with "Unable to create '.git/index.lock'".
+ */
+function gitEnvironment(env?: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const result: NodeJS.ProcessEnv = { ...(env || process.env) };
+  result.GIT_OPTIONAL_LOCKS = '0';
+  return result;
+}
+
 export class GitCommandService {
   /** Told about every Git process when set (repositoryManager.debug.timings); nothing else uses it. */
   static observer?: (timing: GitCommandTiming) => void;
@@ -45,7 +56,7 @@ export class GitCommandService {
     return new Promise((resolve, reject) => {
       execFile('git', args, {
         cwd: workDir,
-        env,
+        env: gitEnvironment(env),
         encoding: 'utf8',
         maxBuffer: 20 * 1024 * 1024,
         timeout: timeoutMs,
@@ -75,7 +86,7 @@ export class GitCommandService {
     const started = Date.now();
     return new Promise((resolve, reject) => {
       execFile('git', args, {
-        cwd: workDir, encoding: 'buffer',
+        cwd: workDir, env: gitEnvironment(), encoding: 'buffer',
         maxBuffer: 2 * 1024 * 1024, timeout: timeoutMs, windowsHide: true
       }, (error, stdout, stderr) => {
         GitCommandService.observer?.({ args, cwd: workDir, ms: Date.now() - started, ok: !error });
@@ -146,7 +157,7 @@ export class GitCommandService {
     return new Promise((resolve, reject) => {
       if (signal?.aborted) { reject(new SupersededError()); return; }
       const started = Date.now();
-      const child = spawn('git', args, { cwd, windowsHide: true });
+      const child = spawn('git', args, { cwd, env: gitEnvironment(), windowsHide: true });
       let pending = '';
       let stderr = '';
       let done = false;
@@ -206,7 +217,7 @@ export class GitCommandService {
   execGitStream(args: string[], cwd?: string): Promise<string> {
     return new Promise((resolve, reject) => {
       const workDir = cwd || this.workspaceRoot;
-      const process = spawn('git', args, { cwd: workDir });
+      const process = spawn('git', args, { cwd: workDir, env: gitEnvironment() });
 
       let stdout = '';
       let stderr = '';

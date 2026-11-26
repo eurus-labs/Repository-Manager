@@ -245,6 +245,42 @@ async function main() {
     assert.deepEqual(shown.map(item => item.kind), ['error'], JSON.stringify(shown));
     assert.equal(clicked.posted.some(message => message.type === 'branchUpdateResult'), false);
 
+    // The refresh's `git status` and a checkout run at the same time now. Without GIT_OPTIONAL_LOCKS=0
+    // status takes index.lock to refresh the index and about one checkout in six fails with
+    // "Unable to create '.git/index.lock'". Two branches differ in 400 files; status runs in a loop
+    // that touches three tracked files between runs, while 200 checkouts alternate the branches.
+    const lockBase = mkdtempSync(path.join(tmpdir(), 'repository-manager-lock-'));
+    bases.push(lockBase);
+    const lockRepo = path.join(lockBase, 'repo');
+    mkdirSync(lockRepo);
+    git(lockRepo, 'init', '-q', '-b', 'a');
+    const touched = ['t1.txt', 't2.txt', 't3.txt'];
+    for (const file of touched) writeFileSync(path.join(lockRepo, file), `${file}\n`);
+    for (let index = 0; index < 400; index++) writeFileSync(path.join(lockRepo, `f${index}.txt`), `a ${index}\n`);
+    git(lockRepo, 'add', '.');
+    git(lockRepo, 'commit', '-qm', 'a');
+    git(lockRepo, 'checkout', '-q', '-b', 'b');
+    for (let index = 0; index < 400; index++) writeFileSync(path.join(lockRepo, `f${index}.txt`), `b ${index}\n`);
+    git(lockRepo, 'commit', '-qam', 'b');
+    const lockGit = new GitCommandService(lockRepo);
+    let statusRuns = 0;
+    let looping = true;
+    const statusLoop = (async () => {
+      while (looping) {
+        for (const file of touched) writeFileSync(path.join(lockRepo, file), `${file}\n`);
+        await lockGit.execGit(['status', '--porcelain'], lockRepo).catch(() => undefined);
+        statusRuns++;
+      }
+    })();
+    const failures = [];
+    for (let index = 0; index < 200; index++) {
+      await lockGit.execGit(['checkout', index % 2 ? 'b' : 'a', '--'], lockRepo).catch(error => failures.push(error.message));
+    }
+    looping = false;
+    await statusLoop;
+    console.log(`Checkouts failing while status runs: ${failures.length} of 200 (${statusRuns} status runs)`);
+    assert.deepEqual(failures.slice(0, 1), [], `${failures.length} of 200 checkouts failed`);
+
     // The tracker numbers clicks per repository.
     const tracker = new BranchSwitchTracker();
     const first = tracker.begin('/r');

@@ -432,7 +432,7 @@ async function updateSwitchedBranch(
   payload: { submodule: string; branch: string },
   root: string,
   click: number,
-  settleAutoFetch: (() => Promise<boolean>) | undefined
+  settleAutoFetch: (() => Promise<void>) | undefined
 ): Promise<void> {
   const switches = branchSwitchesOf(ctx);
   const result = await ctx.gitOps.updateBranch(payload.submodule, payload.branch, {

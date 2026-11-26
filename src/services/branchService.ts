@@ -251,7 +251,7 @@ export class BranchService {
    * from a stale or deleted `origin/<name>` would leave a wrong branch behind.
    * `data.unchanged` is true when the branch was already checked out.
    */
-  async switchBranch(submodulePath: string, name: string, options: { settleAutoFetch?: () => Promise<boolean> } = {}): Promise<CommandResult> {
+  async switchBranch(submodulePath: string, name: string, options: { settleAutoFetch?: () => Promise<void> } = {}): Promise<CommandResult> {
     try {
       const fullPath = this.gitCmd.resolveRepositoryPath(submodulePath);
       if (!name || name.startsWith('-')) {
@@ -285,12 +285,12 @@ export class BranchService {
   }
 
   /** A branch that exists only on origin: fetch it, then create the local branch from the fetched copy. */
-  private async createFromOrigin(fullPath: string, name: string, settleAutoFetch?: () => Promise<boolean>): Promise<CommandResult> {
+  private async createFromOrigin(fullPath: string, name: string, settleAutoFetch?: () => Promise<void>): Promise<CommandResult> {
     const exec = (args: string[], timeout?: number) => this.gitCmd.execGit(args, fullPath, timeout);
     const ok = (args: string[]) => exec(args).then(() => true, () => false);
     const remoteRef = `refs/remotes/origin/${name}`;
     // A background fetch may hold the ref locks; let it finish first.
-    await settleAutoFetch?.().catch(() => false);
+    await settleAutoFetch?.().catch(() => undefined);
     let onOrigin = true;
     let fetchNote = '';
     try {
@@ -331,7 +331,7 @@ export class BranchService {
   async updateBranch(
     submodulePath: string,
     name: string,
-    options: { settleAutoFetch?: () => Promise<boolean>; isLatest?: () => boolean } = {}
+    options: { settleAutoFetch?: () => Promise<void>; isLatest?: () => boolean } = {}
   ): Promise<CommandResult> {
     const fullPath = this.gitCmd.resolveRepositoryPath(submodulePath);
     const exec = (args: string[], timeout?: number) => this.gitCmd.execGit(args, fullPath, timeout);
@@ -348,21 +348,20 @@ export class BranchService {
         return done('local-only', `Checked out '${name}'`);
       }
       let fetchNote = '';
-      // A running auto-fetch has fetched this repository when it says so: use its copy.
-      const covered = await options.settleAutoFetch?.().catch(() => false);
-      if (!covered) {
-        try {
-          await exec(['fetch', 'origin', `+refs/heads/${name}:${remoteRef}`]);
-        } catch (error: unknown) {
-          if (/couldn't find remote ref/i.test((error as Error).message)) {
-            // origin no longer has the branch: forget only this stale tracking ref.
-            await ok(['update-ref', '-d', remoteRef]);
-            if (!await ok(['rev-parse', '--verify', '--quiet', remoteRef])) {
-              return done('local-only', `Checked out '${name}'`);
-            }
-          } else {
-            fetchNote = `Could not fetch origin; used ${originName} as last fetched. `;
+      // Let a running auto-fetch end first, then always fetch this branch: the auto-fetch does not
+      // prune, so it never notices a branch deleted on origin.
+      await options.settleAutoFetch?.().catch(() => undefined);
+      try {
+        await exec(['fetch', 'origin', `+refs/heads/${name}:${remoteRef}`]);
+      } catch (error: unknown) {
+        if (/couldn't find remote ref/i.test((error as Error).message)) {
+          // origin no longer has the branch: forget only this stale tracking ref.
+          await ok(['update-ref', '-d', remoteRef]);
+          if (!await ok(['rev-parse', '--verify', '--quiet', remoteRef])) {
+            return done('local-only', `Checked out '${name}'`);
           }
+        } else {
+          fetchNote = `Could not fetch origin; used ${originName} as last fetched. `;
         }
       }
       const extra = { fetchFailed: Boolean(fetchNote) };

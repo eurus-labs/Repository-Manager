@@ -101,8 +101,6 @@ export class RepositoryManagerPanel {
   private _autoFetchTimer?: NodeJS.Timeout;
   private _autoFetchRun?: Promise<void>;
   private _lastAutoFetch = 0;
-  /** Repositories the running (or last) auto-fetch fetched: a branch update then needs no second fetch. */
-  private _autoFetched = new Set<string>();
   /** Numbers each repository's branch clicks, so a late update never moves a branch after a newer click. */
   private readonly _branchSwitches = new BranchSwitchTracker();
   /**
@@ -343,8 +341,6 @@ export class RepositoryManagerPanel {
     }
     this._lastAutoFetch = Date.now();
     const gitOps = this._gitOps;
-    const fetched = new Set<string>();
-    this._autoFetched = fetched;
     this._autoFetchRun = (async () => {
       const repositories = await this._listRepositories();
       for (const repository of repositories) {
@@ -353,7 +349,7 @@ export class RepositoryManagerPanel {
           return;
         }
         if (repository.status !== 'uninitialized') {
-          await gitOps.fetchInBackground(repository.path).then(() => { fetched.add(repository.path); }, () => undefined);
+          await gitOps.fetchInBackground(repository.path).catch(() => undefined);
         }
       }
       if (gitOps === this._gitOps) {
@@ -524,7 +520,7 @@ export class RepositoryManagerPanel {
       refresh: () => this.refresh(),
       reloadDashboardHistory: (repositoryPaths) => this.reloadDashboardHistory(repositoryPaths),
       branchSwitches: this._branchSwitches,
-      settleAutoFetch: repositoryPath => this._settleAutoFetch(repositoryPath),
+      settleAutoFetch: () => this._settleAutoFetch(),
       timings: this._timings,
       workspaceState: this._workspaceState,
       conflictExplainer: this._conflictExplainer(),
@@ -560,16 +556,9 @@ export class RepositoryManagerPanel {
       && (message.payload as { replaceWithRemote?: unknown } | undefined)?.replaceWithRemote !== true;
   }
 
-  /**
-   * Waits for a running auto-fetch to end. True when it fetched this repository, so its copy of
-   * origin is as fresh as a fetch of the branch would make it.
-   */
-  private async _settleAutoFetch(repositoryPath: string): Promise<boolean> {
-    const run = this._autoFetchRun;
-    if (!run) { return false; }
-    const fetched = this._autoFetched;
-    await run.catch(() => undefined);
-    return fetched.has(repositoryPath);
+  /** Waits for a running auto-fetch to end; the branch fetch that follows is its own. */
+  private async _settleAutoFetch(): Promise<void> {
+    await this._autoFetchRun?.catch(() => undefined);
   }
 
   private async _handleMessage(message: { type: string; payload?: unknown }) {
