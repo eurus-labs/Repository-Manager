@@ -14,6 +14,9 @@ function summarizeGitError(message: string): string {
   return (reasons.length ? reasons : lines.slice(-1)).join(' ').replace(/^(fatal|error):\s*/i, '');
 }
 
+/** How a branch checkout related the branch to origin/<name>. */
+export type BranchUpdateOutcome = 'up-to-date' | 'fast-forwarded' | 'ahead' | 'diverged' | 'blocked' | 'local-only';
+
 export class BranchService {
   constructor(private gitCmd: GitCommandService) {}
 
@@ -198,8 +201,7 @@ export class BranchService {
         };
       }
 
-      await this.gitCmd.execGit(['checkout', branchName], fullPath);
-      return { success: true, message: `Checked out '${branchName}'` };
+      return await this.checkoutAndUpdate(fullPath, branchName);
     } catch (error: unknown) {
       const err = error as Error;
       return {
@@ -208,6 +210,80 @@ export class BranchService {
           ? `Failed to replace local branch from origin: ${err.message}`
           : `Failed to checkout: ${err.message}`
       };
+    }
+  }
+
+  /**
+   * Check out a branch; when it is on origin, fetch it first and fast-forward it afterwards.
+   * Only a fast-forward is ever applied, so nothing the person committed is rewritten.
+   * `data.update` names the outcome (see BranchUpdateOutcome).
+   */
+  private async checkoutAndUpdate(fullPath: string, name: string): Promise<CommandResult> {
+    const exec = (args: string[], timeout?: number) => this.gitCmd.execGit(args, fullPath, timeout);
+    const ok = (args: string[]) => exec(args).then(() => true, () => false);
+    const remoteRef = `refs/remotes/origin/${name}`;
+    const originName = `origin/${name}`;
+    const done = (update: BranchUpdateOutcome, message: string): CommandResult =>
+      ({ success: true, message, data: { update } });
+
+    const hasLocal = await ok(['rev-parse', '--verify', '--quiet', `refs/heads/${name}`]);
+    let onOrigin = !hasLocal || await ok(['rev-parse', '--verify', '--quiet', remoteRef]);
+
+    let fetchNote = '';
+    if (onOrigin) {
+      try {
+        await exec(['fetch', 'origin', `+refs/heads/${name}:${remoteRef}`]);
+      } catch (error: unknown) {
+        const text = (error as Error).message;
+        if (/couldn't find remote ref/i.test(text)) {
+          // origin no longer has the branch: forget only this stale tracking ref.
+          await ok(['update-ref', '-d', remoteRef]);
+          onOrigin = await ok(['rev-parse', '--verify', '--quiet', remoteRef]);
+        } else {
+          fetchNote = `Could not fetch origin; used ${originName} as last fetched. `;
+        }
+      }
+    }
+
+    if (!hasLocal && !onOrigin) {
+      // Never fall back to a bare `checkout <name>`: with no such branch Git reads it as a path and
+      // restores that file, discarding its edits.
+      return { success: false, message: `${name} is no longer on origin and has no local branch.` };
+    }
+    const current = await exec(['symbolic-ref', '--quiet', '--short', 'HEAD']).catch(() => '');
+    if (!hasLocal) {
+      await exec(['checkout', '-b', name, '--track', remoteRef]);
+    } else if (current !== name) {
+      // `--` makes Git take the name as a branch only, never as a path.
+      await exec(['checkout', name, '--']);
+    }
+
+    if (!onOrigin) {
+      return done('local-only', `${fetchNote}Checked out '${name}'`);
+    }
+
+    // Full ref names: a tag called like the branch must not stand in for it.
+    const counts = (await exec(['rev-list', '--left-right', '--count', `refs/heads/${name}...${remoteRef}`])).split(/\s+/).map(Number);
+    const [ahead, behind] = counts;
+    if (!ahead && !behind) {
+      return done('up-to-date', `${fetchNote}${name} is up to date with origin`);
+    }
+    if (ahead && !behind) {
+      return done('ahead', `${fetchNote}${name} has ${ahead} commit${ahead === 1 ? '' : 's'} not on origin`);
+    }
+    if (ahead && behind) {
+      return done('diverged', `${fetchNote}${name} and ${originName} have diverged (${ahead} ahead, ${behind} behind). Use Pull or Reset to origin.`);
+    }
+    try {
+      // --no-autostash: with merge.autoStash set, Git would carry overlapping edits across the
+      // update and leave conflicts, instead of refusing as `blocked` promises.
+      await exec(['merge', '--ff-only', '--no-autostash', remoteRef]);
+      return done('fast-forwarded', `${fetchNote}Updated ${name} by ${behind} commit${behind === 1 ? '' : 's'} from origin`);
+    } catch (error: unknown) {
+      const reason = /overwritten/i.test((error as Error).message)
+        ? 'local changes would be overwritten. Commit or stash them, then Pull.'
+        : summarizeGitError((error as Error).message);
+      return done('blocked', `${fetchNote}Checked out ${name}; not updated: ${reason}`);
     }
   }
 

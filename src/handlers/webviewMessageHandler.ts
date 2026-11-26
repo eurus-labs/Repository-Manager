@@ -376,7 +376,8 @@ export async function handleCheckoutBranch(
       repositoryPath: payload.submodule,
       branch: payload.branch,
       success: result.success,
-      message: result.message
+      message: result.message,
+      update: (result.data as { update?: string } | undefined)?.update
     }
   });
 }
