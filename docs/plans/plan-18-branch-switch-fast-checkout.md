@@ -59,8 +59,8 @@ Decision 1 was made by the user on 2026-11-26 (AskUserQuestion). The rest are th
      - no wait for auto-fetch.
    - **Real check:** the user's own Windows measurement, through the timings output (Decision 8).
 3. **The critical path, on the host.** For a branch that exists locally, `handleCheckoutBranch`:
-   1. **Reads** in one Git process what it needs: whether `refs/heads/<name>` exists, the current branch, and whether
-      an operation is pending.
+   1. **Reads** in one Git process what it needs: whether `refs/heads/<name>` exists, and the current branch. A
+      pending operation is left to `checkout` to refuse here; the update checks it before its merge (Decision 5).
    2. **Checks out** with `git checkout <name> --`, in one process, unless the branch is already current. A failed
       checkout is reported as now, and nothing else runs.
    3. **Posts** `branchCheckoutResult` (`success`, `message`, `update: 'pending'`) at once. It does not wait for
@@ -74,8 +74,9 @@ Decision 1 was made by the user on 2026-11-26 (AskUserQuestion). The rest are th
      target.
 5. **The background update.** It runs after the result is posted. For a branch with `refs/remotes/origin/<name>`, the
    rule is plan 16's:
-   1. **Wait for auto-fetch, then fetch.** If an auto-fetch is running, wait for it to finish; its fetch is used
-      instead of a second one. Otherwise run `git fetch origin +refs/heads/<name>:refs/remotes/origin/<name>`.
+   1. **Wait for auto-fetch, then fetch.** If an auto-fetch is running, wait for it to finish. Then always run
+      `git fetch origin +refs/heads/<name>:refs/remotes/origin/<name>`. Auto-fetch's copy is not reused: it runs with
+      `--no-prune`, so it cannot tell that origin deleted the branch. The extra fetch is in the background.
       - If the fetch fails, the update goes on with the last fetched copy, and the message says so.
       - If origin no longer has the branch, that one stale tracking ref is deleted and the outcome is `local-only`.
    2. **Compare** `refs/heads/<name>...refs/remotes/origin/<name>`.
@@ -125,6 +126,15 @@ Decision 1 was made by the user on 2026-11-26 (AskUserQuestion). The rest are th
 9. **Version.** The click now updates from origin after the checkout instead of before it, and the notifications
    change. That is a user-visible change, so it is a **minor** bump: 3.10.0. The CHANGELOG gets `### Changed`.
 
+10. **No optional locks.** `ctx.refresh()` now runs `git status` while the update's `merge`, or the next click's
+    `checkout`, may run in the same repository. By default `git status` takes `.git/index.lock` to save the refreshed
+    index, and a checkout that meets that lock fails ("Unable to create '.git/index.lock': File exists").
+    - **Measured** on 2026-11-26: 32 of 200 checkouts failed with a `status` loop alongside, and 0 of 200 with
+      `--no-optional-locks`.
+    - **Change:** every process `GitCommandService` starts gets `GIT_OPTIONAL_LOCKS=0`. This only stops reads such as
+      `status` from writing the index; commands that need the lock (checkout, merge, commit) still take it.
+    - Added after implementation review, 2026-11-26.
+
 ## Scope
 
 In:
@@ -140,6 +150,7 @@ In:
   - the per-repository click number;
   - timing marks.
 - `src/openTimings.ts`: branch-switch marks (Decision 8).
+- `src/services/gitCommandService.ts`: `GIT_OPTIONAL_LOCKS=0` for every Git process (Decision 10).
 - `resources/webview.js`: `requestBranchCheckout` and the `branchCheckoutResult` handler; the new
   `branchUpdateResult` handler; the "history drawn" mark for a switch.
 - Tests, `CHANGELOG.md`, `package.json` (`npm version 3.10.0 --no-git-tag-version`).
@@ -149,7 +160,7 @@ Out:
 - "Reset to origin" (`replaceWithRemote`). It keeps its confirmation and runs as now.
 - Making `ctx.refresh()` or the history and refs queries cheaper. They are off the critical path or already run
   together; widen scope only if the budget test shows they block it.
-- Auto-fetch's own schedule and its `fetch --all --prune`.
+- Auto-fetch's own schedule and its `fetch --all --no-prune`.
 - Plan 16's labels and chips.
 
 ## Baseline
@@ -207,7 +218,7 @@ Default (`AGENTS.md`):
   - a merge in progress: no fast-forward.
 - [ ] **Auto-fetch** (`src/test/autoFetchPanelSmoke.js`). While a held auto-fetch is running:
   - `checkoutBranch` posts its result without waiting for it;
-  - the update step waits for it and runs no second fetch when that fetch covered `origin/<name>`.
+  - the update step waits for it, then runs its own fetch of `origin/<name>`.
 - [ ] **Notifications** (Decision 7). Through the recording context:
   - a checkout followed by `up-to-date` shows no message;
   - `fast-forwarded` shows one information message;
@@ -220,6 +231,10 @@ Default (`AGENTS.md`):
   - an update result for a branch no longer shown changes nothing.
 - [ ] **Timings.** With `repositoryManager.debug.timings` on, a switch writes the marks of Decision 8 in order.
   Assert it through the recording writer.
+- [ ] **No index lock race** (Decision 10). Through `GitCommandService`, run `git status` in a loop while 200
+  checkouts alternate between two branches that differ in 400 files. No checkout fails.
+  - **Failing first:** without the setting, on 2026-11-26 the same loop failed 32 of 200 checkouts with
+    "Unable to create '.git/index.lock': File exists".
 - [ ] `npm run lint`, `npm test`, `npm run test:ui` and `npm run package` pass. CHANGELOG and version follow
   Decision 9.
 - [ ] The commit identity check from `AGENTS.md` prints one line.
@@ -236,6 +251,7 @@ Timings output (Decision 8). The 100 ms per process in the test is an assumption
 | The page shows the branch before origin's new commits arrive, and the person acts on stale history | The update reloads the history when it fast-forwards and says so (Decisions 6 and 7). Until then the branch is exactly what plan 16 showed when origin could not be reached |
 | A checkout no longer waits for auto-fetch, and the two race for a lock | The checkout writes `HEAD` and the index; the fetch writes `refs/remotes/*` and `FETCH_HEAD`. The update, which writes `refs/heads/<name>`, still waits for it (Decision 5) |
 | The 100 ms per process does not match the user's Windows machine | The budget counts processes in series, not only milliseconds. The user measures the real time through Timings (Decision 8) |
+| `git status` in the refresh holds `index.lock` while a checkout or the update's merge runs, and that command fails | Decision 10: no Git process of the extension takes optional locks; the lock race test |
 | The repository list (ahead/behind, status) lags the switched branch for a moment | `ctx.refresh()` still runs right after the result; only the page no longer waits for it |
 | Fewer notifications hide an outcome | Each outcome that needs action (`diverged`, `blocked`, a failed fetch) is still a warning; a quiet outcome leaves the branch as it was |
 
