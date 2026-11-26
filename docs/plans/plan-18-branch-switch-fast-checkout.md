@@ -1,6 +1,6 @@
 # Plan 18 — Switch branches in half a second: check out first, update from origin after
 
-Status: draft
+Status: approved
 Date: 2026-11-26
 Branch: `feat/branch-switch-fast-checkout`
 Baseline: `main` at `3fdaa631d2d159fa3fb9a9840e3c786d88263836` (3.9.0, released)
