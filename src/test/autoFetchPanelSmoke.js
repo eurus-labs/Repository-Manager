@@ -17,16 +17,21 @@ const git = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8',
 const posted = [];
 // Every editor tab the panel opens, by view type: the dashboard and the review tab.
 const panels = new Map();
+// What each tab's page would post to the host, by view type.
+const receivers = new Map();
 const rememberPanel = (viewType, panel) => { panels.set(viewType, panel); return panel; };
 let panelVisible = true;
 let viewStateListener = () => {};
-const settings = { autoFetch: true, autoFetchInterval: 5 };
+const settings = { autoFetch: true, autoFetchInterval: 5, 'debug.timings': true };
+// The lines of the Repository Manager Timings output.
+const timingLines = [];
 const noopEvent = () => ({ dispose() {} });
 const fakeVscode = {
   ViewColumn: { One: 1 },
   Uri: { joinPath: (uri, ...parts) => ({ fsPath: path.join(uri.fsPath, ...parts), toString() { return this.fsPath; } }) },
   window: {
     activeTextEditor: undefined,
+    createOutputChannel: () => ({ appendLine: line => timingLines.push(line) }),
     showInformationMessage() {}, showWarningMessage() {}, showErrorMessage() {},
     createWebviewPanel: viewType => rememberPanel(viewType, {
       get visible() { return panelVisible; },
@@ -34,7 +39,7 @@ const fakeVscode = {
         html: '', cspSource: 'test',
         asWebviewUri: uri => ({ scheme: 'test', toString: () => uri.fsPath }),
         postMessage: async message => { posted.push(message); return true; },
-        onDidReceiveMessage: noopEvent
+        onDidReceiveMessage: listener => { receivers.set(viewType, listener); return { dispose() {} }; }
       },
       onDidDispose: noopEvent,
       onDidChangeViewState: listener => { viewStateListener = listener; return { dispose() {} }; },
@@ -120,6 +125,51 @@ async function main() {
       && message.payload.submodules.some(repository => repository.isParentRepo && repository.behind === 1)));
     assert.equal(git(local, 'rev-parse', 'origin/main'), git(upstream, 'rev-parse', 'HEAD'));
     assert.ok(git(local, 'branch', '-r').includes('origin/old-feature'), 'background fetch pruned a remote branch');
+
+    // A branch click while an auto-fetch is running: the checkout does not wait for it; the update
+    // from origin does, and uses its fetch instead of running a second one.
+    git(upstream, 'checkout', '-q', '-b', 'x');
+    git(upstream, 'push', '-q', 'origin', 'x');
+    git(local, 'fetch', '-q', 'origin');
+    git(local, 'branch', 'x', 'origin/x');
+    writeFileSync(path.join(upstream, 'f.txt'), '3\n');
+    git(upstream, 'commit', '-qam', 'ahead on x');
+    git(upstream, 'push', '-q', 'origin', 'x');
+    const originX = git(upstream, 'rev-parse', 'HEAD');
+    assert.notEqual(git(local, 'rev-parse', 'x'), originX);
+    const panel = RepositoryManagerPanel.currentPanel;
+    let releaseFetch;
+    let fetchEntered = false;
+    const gate = new Promise(resolve => { releaseFetch = resolve; });
+    const realFetch = panel._gitOps.fetchInBackground.bind(panel._gitOps);
+    panel._gitOps.fetchInBackground = async repositoryPath => { fetchEntered = true; await gate; return realFetch(repositoryPath); };
+    panel._lastAutoFetch = 1;
+    viewStateListener();
+    await waitFor(() => fetchEntered);
+    posted.length = 0;
+    const click = receivers.get('repositoryManager')({ type: 'checkoutBranch', payload: { submodule: '.', branch: 'x' } });
+    await waitFor(() => posted.some(message => message.type === 'branchCheckoutResult'));
+    assert.equal(posted.find(message => message.type === 'branchCheckoutResult').payload.success, true);
+    assert.equal(git(local, 'symbolic-ref', '--short', 'HEAD'), 'x', 'the checkout waited for the auto-fetch');
+    await new Promise(resolve => setTimeout(resolve, 300));
+    assert.equal(posted.some(message => message.type === 'branchUpdateResult'), false, 'the update did not wait for the auto-fetch');
+    // The page reports when the new history is drawn; the panel writes it into the switch's block.
+    await receivers.get('repositoryManager')({ type: 'dashboardTiming', payload: { name: 'branch history drawn' } });
+    assert.notEqual(git(local, 'rev-parse', 'x'), originX);
+    releaseFetch();
+    await click;
+    const update = posted.find(message => message.type === 'branchUpdateResult');
+    assert.ok(update, 'no branchUpdateResult');
+    assert.equal(update.payload.update, 'fast-forwarded', update.payload.message);
+    assert.equal(git(local, 'rev-parse', 'x'), originX);
+    const block = timingLines.slice(timingLines.findLastIndex(line => line.startsWith('--- Switching to x')));
+    const fetches = block.filter(line => / git fetch /.test(line));
+    assert.equal(fetches.some(line => / git fetch origin /.test(line)), false, `a second fetch ran: ${fetches}`);
+    assert.ok(fetches.some(line => / git fetch --all /.test(line)), `the auto-fetch did not run: ${block.join('\n')}`);
+    // The marks of the switch, in order.
+    const marks = ['click arrived', 'checkout done', 'result posted', 'branch history drawn', 'update ended: fast-forwarded'];
+    const at = marks.map(mark => block.findIndex(line => line.endsWith(` ${mark}`)));
+    assert.ok(at.every(index => index >= 0) && at.every((index, position) => position === 0 || index > at[position - 1]), `${at}\n${block.join('\n')}`);
 
     RepositoryManagerPanel.currentPanel.dispose();
     console.log('Auto fetch panel smoke passed');

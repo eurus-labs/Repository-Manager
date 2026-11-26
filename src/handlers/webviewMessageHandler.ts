@@ -8,6 +8,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { HistoryQuery } from '../types';
 import { GitCommandService } from '../services/gitCommandService';
+import { BranchSwitchTracker } from '../services/branchService';
 import { HistoryAction, HistoryActionService } from '../services/historyActionService';
 import { HistoryRewriteAction, HistoryRewriteService, ResetMode } from '../services/historyRewriteService';
 import { ConflictPrediction, ConflictPredictionService, PredictedOperation } from '../services/conflictPredictionService';
@@ -363,13 +364,33 @@ export async function handleCheckoutBranch(
     }
   }
 
-  const result = await ctx.gitOps.checkoutBranch(
-    payload.submodule,
-    payload.branch,
-    payload.replaceWithRemote === true
-  );
-  showResult(result.success, result.message);
-  await ctx.refresh();
+  if (payload.replaceWithRemote) {
+    const result = await ctx.gitOps.checkoutBranch(payload.submodule, payload.branch, true);
+    showResult(result.success, result.message);
+    await ctx.refresh();
+    await sendToWebview(ctx, {
+      type: 'branchCheckoutResult',
+      payload: { repositoryPath: payload.submodule, branch: payload.branch, success: result.success, message: result.message }
+    });
+    return;
+  }
+
+  const timings = ctx.timings;
+  timings?.beginSwitch(payload.branch);
+  const root = ctx.gitOps.resolveRepositoryPath(payload.submodule);
+  const switches = branchSwitchesOf(ctx);
+  const click = switches.begin(root);
+  const settleAutoFetch = ctx.settleAutoFetch ? () => ctx.settleAutoFetch!(payload.submodule) : undefined;
+
+  // The critical path: check out, post. Nothing waits for origin, for the auto-fetch or for the refresh.
+  const result = await ctx.gitOps.switchBranch(payload.submodule, payload.branch, { settleAutoFetch });
+  timings?.mark('checkout done');
+  const data = (result.data || {}) as { update?: string; unchanged?: boolean; fetchFailed?: boolean };
+  if (!result.success) {
+    vscode.window.showErrorMessage(result.message);
+  } else if (data.fetchFailed) {
+    vscode.window.showWarningMessage(result.message);
+  }
   await sendToWebview(ctx, {
     type: 'branchCheckoutResult',
     payload: {
@@ -377,9 +398,65 @@ export async function handleCheckoutBranch(
       branch: payload.branch,
       success: result.success,
       message: result.message,
-      update: (result.data as { update?: string } | undefined)?.update
+      update: data.update,
+      unchanged: data.unchanged === true
     }
   });
+  timings?.mark('result posted');
+
+  // Then, without the page waiting: the repository list, and the update from origin.
+  const refreshing = ctx.refresh().catch(error => console.error('[RepositoryManager] Refresh after checkout failed:', error));
+  try {
+    if (result.success && data.update === 'pending') {
+      await updateSwitchedBranch(ctx, payload, root, click, settleAutoFetch);
+    }
+  } finally {
+    await refreshing;
+  }
+}
+
+function branchSwitchesOf(ctx: MessageHandlerContext): BranchSwitchTracker {
+  if (ctx.branchSwitches) { return ctx.branchSwitches; }
+  let tracker = fallbackBranchSwitches.get(ctx.gitOps);
+  if (!tracker) {
+    tracker = new BranchSwitchTracker();
+    fallbackBranchSwitches.set(ctx.gitOps, tracker);
+  }
+  return tracker;
+}
+const fallbackBranchSwitches = new WeakMap<object, BranchSwitchTracker>();
+
+/** The update from origin after a checkout, and what the person is told about it. */
+async function updateSwitchedBranch(
+  ctx: MessageHandlerContext,
+  payload: { submodule: string; branch: string },
+  root: string,
+  click: number,
+  settleAutoFetch: (() => Promise<boolean>) | undefined
+): Promise<void> {
+  const switches = branchSwitchesOf(ctx);
+  const result = await ctx.gitOps.updateBranch(payload.submodule, payload.branch, {
+    settleAutoFetch,
+    isLatest: () => switches.isLatest(root, click)
+  });
+  const data = (result.data || {}) as { update?: string; skipped?: string; fetchFailed?: boolean };
+  ctx.timings?.mark(`update ended: ${data.skipped ? `skipped (${data.skipped})` : data.update}`);
+  // A newer click, another branch or a pending operation: the newer click reports its own result.
+  if (data.skipped || !data.update) { return; }
+
+  if (data.update === 'fast-forwarded' && !data.fetchFailed) {
+    vscode.window.showInformationMessage(result.message);
+  } else if (data.fetchFailed || data.update === 'diverged' || data.update === 'blocked') {
+    vscode.window.showWarningMessage(result.message);
+  }
+  await sendToWebview(ctx, {
+    type: 'branchUpdateResult',
+    payload: { repositoryPath: payload.submodule, branch: payload.branch, update: data.update, message: result.message }
+  });
+  if (data.update === 'fast-forwarded') {
+    // The branch moved after the first refresh read it.
+    await ctx.refresh().catch(error => console.error('[RepositoryManager] Refresh after update failed:', error));
+  }
 }
 
 /**

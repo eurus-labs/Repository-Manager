@@ -27,6 +27,10 @@
   let dashboardActivated = false;
   let repositoryRefs = { branches: [], tags: [], remotes: [], stashes: [] };
   let pendingBranchCheckout = null;
+  // The branch a click last checked out, so a late update from origin only reloads the branch still shown.
+  let switchedBranch = null;
+  // Set when a branch switch is waiting for its history to be drawn; the page then reports it (debug.timings).
+  let branchHistoryDrawnPending = false;
   let historyPanelHeight = Number(previousState.historyPanelHeight) || 0;
   let summaryModelsState = 'idle'; // the Model menu's list: idle (not loaded), loading, loaded
   let filesPanelWidth = Number(previousState.filesPanelWidth) || 0;
@@ -1624,12 +1628,15 @@
   function requestBranchCheckout(branch, replaceWithRemote = false) {
     if (!branch || pendingBranchCheckout) return;
     const current = getRepository(activeDashboardRepository);
+    let requestedHistory = false;
     if (current && current.currentBranch === branch && !replaceWithRemote) {
-      // Show this branch's history at once; the checkout below fetches and fast-forwards it.
+      // Show this branch's history at once; the update from origin follows the checkout.
       setHistoryRevision('');
+      branchHistoryDrawnPending = true;
       requestDashboardHistory(0, false);
+      requestedHistory = true;
     }
-    pendingBranchCheckout = { repositoryPath: activeDashboardRepository, branch, replaceWithRemote };
+    pendingBranchCheckout = { repositoryPath: activeDashboardRepository, branch, replaceWithRemote, requestedHistory };
     setBranchCheckoutPending(true);
     postMessage('checkoutBranch', {
       submodule: activeDashboardRepository,
@@ -2131,6 +2138,11 @@
     if (!historyDrawnReported && shownCommits.length) {
       historyDrawnReported = true;
       requestAnimationFrame(() => requestAnimationFrame(() => postMessage('dashboardTiming', { name: 'history drawn' })));
+    }
+    // After a branch switch: when its history is on screen (repositoryManager.debug.timings).
+    if (branchHistoryDrawnPending && !append && shownCommits.length) {
+      branchHistoryDrawnPending = false;
+      requestAnimationFrame(() => requestAnimationFrame(() => postMessage('dashboardTiming', { name: 'branch history drawn' })));
     }
     // A page that does not reach past the view cannot be scrolled to its end: load the next one now.
     requestAnimationFrame(loadHistoryNearEnd);
@@ -3087,11 +3099,18 @@
           const matchesPending = pendingBranchCheckout
             && pendingBranchCheckout.repositoryPath === payload.repositoryPath
             && pendingBranchCheckout.branch === payload.branch;
+          const alreadyRequested = Boolean(matchesPending && pendingBranchCheckout.requestedHistory);
           if (matchesPending) {
             setBranchCheckoutPending(false);
             pendingBranchCheckout = null;
           }
+          if (payload.success && payload.update) {
+            switchedBranch = { repositoryPath: payload.repositoryPath, branch: payload.branch };
+          }
+          // Nothing was checked out and the click already asked for this branch's history: not twice.
+          if (payload.success && payload.unchanged && alreadyRequested) break;
           if (payload.success && payload.repositoryPath === activeDashboardRepository) {
+            branchHistoryDrawnPending = true;
             setHistoryRevision('');
             commitCompareSelection = [];
             comparisonBaseHash = null;
@@ -3102,6 +3121,19 @@
             requestDashboardHistory(0, false, { preserveViewport: true });
             postMessage('getRepositoryRefs', { repositoryPath: activeDashboardRepository });
           }
+          break;
+        }
+
+        case 'branchUpdateResult': {
+          // The update from origin brought commits: reload what the page shows. Other outcomes change no data.
+          const payload = message.payload || {};
+          if (payload.update !== 'fast-forwarded' || payload.repositoryPath !== activeDashboardRepository) break;
+          const repository = getRepository(activeDashboardRepository);
+          const shown = (switchedBranch && switchedBranch.repositoryPath === payload.repositoryPath && switchedBranch.branch === payload.branch)
+            || Boolean(repository && repository.currentBranch === payload.branch);
+          if (!shown) break;
+          requestDashboardHistory(0, false, { preserveViewport: true });
+          postMessage('getRepositoryRefs', { repositoryPath: activeDashboardRepository });
           break;
         }
 

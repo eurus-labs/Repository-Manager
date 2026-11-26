@@ -6,6 +6,10 @@
  * asked and sent, repositories listed, history drawn in the page) and every Git process with its
  * duration and folder, for the first MAX_GIT_LOG_MS. On a slow machine this shows which step, and
  * which Git command, the time goes to.
+ *
+ * A branch switch writes its own block: a header, then the steps (click arrived, checkout done, result
+ * posted, history drawn in the page, update ended with its outcome) and its Git processes, in
+ * milliseconds since the click.
  */
 
 import * as vscode from 'vscode';
@@ -15,7 +19,8 @@ const MAX_GIT_LOG_MS = 30000;
 let channel: vscode.OutputChannel | undefined;
 
 export class OpenTimings {
-  private readonly started = Date.now();
+  private started = Date.now();
+  private gitLogUntil = this.started + MAX_GIT_LOG_MS;
   private readonly seen = new Set<string>();
 
   /** A recorder when the setting is on; undefined (and no cost) when it is off. */
@@ -30,6 +35,14 @@ export class OpenTimings {
   constructor(private readonly write: (line: string) => void) {
     this.write(`--- Opening the dashboard (${new Date().toISOString()})`);
     GitCommandService.observer = timing => this.git(timing);
+  }
+
+  /** A branch click arrived: a new block, timed from now. */
+  beginSwitch(branch: string): void {
+    this.started = Date.now();
+    this.gitLogUntil = this.started + MAX_GIT_LOG_MS;
+    this.write(`--- Switching to ${branch} (${new Date().toISOString()})`);
+    this.mark('click arrived');
   }
 
   /** A step, each time it happens. */
@@ -49,7 +62,7 @@ export class OpenTimings {
   }
 
   private git(timing: GitCommandTiming): void {
-    if (Date.now() - this.started > MAX_GIT_LOG_MS) { return; }
+    if (Date.now() > this.gitLogUntil) { return; }
     const command = timing.args.filter(arg => !arg.startsWith('--format=')).join(' ');
     this.write(`${this.elapsed()}   git ${command.length > 120 ? `${command.slice(0, 120)}…` : command} ` +
       `(${timing.ms} ms${timing.ok ? '' : ', failed'}) in ${timing.cwd}`);
