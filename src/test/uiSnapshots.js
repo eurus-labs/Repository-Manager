@@ -2663,7 +2663,7 @@ async function main() {
 
     // Labels carry their line's tone as the border and text: main (tone 0, on origin) and feature/x by name.
     // Plan 20 removed plan 13's edge bar (.ref-dot): the border carries the tone, so there is one mark.
-    const tones = await readable.evaluate(() => {
+    const labelTones = await readable.evaluate(() => {
       const toneOf = name => `graph-lane-${window.RepositoryHistoryGraph.toneForName(name)}`;
       const edgeStroke = className => { const path = document.querySelector(`.graph-edge.${className}`); return path ? getComputedStyle(path).stroke : null; };
       const labels = {};
@@ -2675,19 +2675,19 @@ async function main() {
       });
       return { labels, expected: { x: toneOf('feature/x'), y: toneOf('feature/y') } };
     });
-    assert.equal(tones.labels['main'].lane, 'graph-lane-0', 'main has the tone of its line');
-    assert.equal(tones.labels['feature/x'].lane, tones.expected.x, 'the merged feature/x label has another tone');
-    assert.equal(tones.labels['feature/y'].lane, tones.expected.y);
-    assert.equal(tones.labels['origin/HEAD'].lane, null, 'origin/HEAD has a tone');
-    assert.equal(tones.labels['v2.0'].lane, null, 'a tag has a tone');
+    assert.equal(labelTones.labels['main'].lane, 'graph-lane-0', 'main has the tone of its line');
+    assert.equal(labelTones.labels['feature/x'].lane, labelTones.expected.x, 'the merged feature/x label has another tone');
+    assert.equal(labelTones.labels['feature/y'].lane, labelTones.expected.y);
+    assert.equal(labelTones.labels['origin/HEAD'].lane, null, 'origin/HEAD has a tone');
+    assert.equal(labelTones.labels['v2.0'].lane, null, 'a tag has a tone');
     for (const name of ['main', 'feature/x', 'feature/y']) {
-      assert.ok(tones.labels[name].edge, `${name}: no graph line of its tone is drawn`);
-      assert.equal(tones.labels[name].border, tones.labels[name].edge, `${name}: the border colour is not the lane tone`);
+      assert.ok(labelTones.labels[name].edge, `${name}: no graph line of its tone is drawn`);
+      assert.equal(labelTones.labels[name].border, labelTones.labels[name].edge, `${name}: the border colour is not the lane tone`);
     }
-    assert.deepEqual([tones.labels['main'].cloud, tones.labels['main'].local, tones.labels['main'].iconsBeforeName], [1, 1, true], 'main: a cloud and a monitor before its name');
-    assert.deepEqual([tones.labels['feature/x'].cloud, tones.labels['feature/x'].local], [1, 1]);
-    assert.deepEqual([tones.labels['feature/y'].cloud, tones.labels['feature/y'].local], [0, 1], 'a local-only branch has a monitor and no cloud');
-    assert.deepEqual([tones.labels['origin/HEAD'].cloud, tones.labels['origin/HEAD'].local, tones.labels['v2.0'].cloud, tones.labels['v2.0'].local], [0, 0, 0, 0], 'origin/HEAD and tags have no icon');
+    assert.deepEqual([labelTones.labels['main'].cloud, labelTones.labels['main'].local, labelTones.labels['main'].iconsBeforeName], [1, 1, true], 'main: a cloud and a monitor before its name');
+    assert.deepEqual([labelTones.labels['feature/x'].cloud, labelTones.labels['feature/x'].local], [1, 1]);
+    assert.deepEqual([labelTones.labels['feature/y'].cloud, labelTones.labels['feature/y'].local], [0, 1], 'a local-only branch has a monitor and no cloud');
+    assert.deepEqual([labelTones.labels['origin/HEAD'].cloud, labelTones.labels['origin/HEAD'].local, labelTones.labels['v2.0'].cloud, labelTones.labels['v2.0'].local], [0, 0, 0, 0], 'origin/HEAD and tags have no icon');
     assert.equal(await readable.locator('.ref-dot').count(), 0, 'plan 13 edge bars are gone');
     assert.equal(await readable.locator('.history-ref-more:not([hidden])').count(), 0, 'one commit has no folded labels at 1440 px');
     // The row is as tall as any other with labels: a label never makes it wrap.
@@ -2884,6 +2884,19 @@ async function main() {
         const head = compact.locator('.history-ref.ref-head');
         assert.equal(await head.locator('.ref-counts').textContent(), '↑1');
         assert.equal(await compact.locator('.ref-counts').count(), 1, 'only the current branch shows counts');
+        // Counts that are not whole numbers never reach the page as markup: no element, no handler, no count.
+        await compact.evaluate(() => window.dispatchEvent(new MessageEvent('message', { data: { type: 'updateSubmodules', payload: {
+          submodules: window.__initialRepositories.map(repository => Object.assign({}, repository,
+            { ahead: '<img src="x" onerror="window.__countsInjected = true">', behind: '2<b>x</b>' })) } } })));
+        await compact.waitForTimeout(200);
+        assert.equal(await compact.evaluate(() => document.querySelectorAll('#dashboardHistory .history-ref img, #dashboardHistory .history-ref b').length), 0, 'counts were inserted as markup');
+        assert.equal(await compact.evaluate(() => window.__countsInjected === true), false, 'a count ran a handler');
+        assert.equal(await compact.locator('.ref-counts').count(), 0, 'a count that is not a number was shown');
+        // A real count afterwards shows again.
+        await compact.evaluate(() => window.dispatchEvent(new MessageEvent('message', { data: { type: 'updateSubmodules', payload: {
+          submodules: window.__initialRepositories.map(repository => Object.assign({}, repository, { ahead: 1, behind: 0 })) } } })));
+        await compact.waitForFunction(() => document.querySelector('.history-ref.ref-head .ref-counts'));
+        assert.equal(await head.locator('.ref-counts').textContent(), '↑1');
         assert.equal(await head.locator('svg.ref-origin[aria-label="on origin"]').count(), 1);
         assert.equal(await head.locator('svg.ref-local[aria-label="on this machine"]').count(), 1);
         // Nodes: initials of the first two words; one word is one letter; no name is "?".
