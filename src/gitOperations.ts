@@ -18,6 +18,7 @@ import {
   ReferenceService
 } from './services';
 import { HistoryAction, HistoryActionService } from './services/historyActionService';
+import { ContainingBranch, listContainingBranches } from './services/containingBranches';
 import { recordUsage } from './services/usageLog';
 import { StashActionService, StashOperation } from './services/stashActionService';
 import { DiscardPlan, DiscardService } from './services/discardService';
@@ -351,6 +352,10 @@ export class GitOperations {
 
   async getCommitDetail(repositoryPath: string, commitHash: string, baseRevision?: string): Promise<CommitDetail> {
     return this.diffService.getCommitDetail(repositoryPath, commitHash, baseRevision);
+  }
+
+  async listContainingBranches(repositoryPath: string, commitHash: string): Promise<ContainingBranch[]> {
+    return listContainingBranches(this.gitCmd, repositoryPath, commitHash);
   }
 
   async getFileDiff(repositoryPath: string, commitHash: string, filePath: string, baseRevision?: string): Promise<FileDiff> {

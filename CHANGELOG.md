@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.12.0] - 2026-11-27
+
+### Added
+
+- **Contained in** in the commit details. Select a commit and a line under its labels lists the branches that contain it: the checked-out branch first, then other local branches, then branches only on a remote. A local branch that is also on `origin` shows once, with an `origin` chip, and each branch has the colour its line has in the graph. Twelve branches show at first, with a "+N more" button for the rest. A commit on no branch reads "Not on any branch". The list is read once per commit until the branches change, and never delays the details.
+
+### Changed
+
+- The history graph lights a branch line only when you point at or Tab to one of its **commit nodes**. Moving over rows, labels or empty graph area no longer fades the other lines, and the lines that fade now stay at 40% so the graph stays readable. A click on a node still picks it for a comparison.
+
 ## [3.11.0] - 2026-11-27
 
 ### Added
