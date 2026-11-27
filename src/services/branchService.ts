@@ -340,11 +340,18 @@ export class BranchService {
     const originName = `origin/${name}`;
     const done = (update: BranchUpdateOutcome, message: string, extra: Record<string, unknown> = {}): CommandResult =>
       ({ success: true, message, data: { update, ...extra } });
-    const skipped = (reason: BranchUpdateSkip): CommandResult => ({ success: true, message: '', data: { skipped: reason } });
+    // Whether the fetch moved (or deleted) origin/<name>: then the repository list and the page read
+    // their ahead/behind counts and origin labels again, whatever the outcome, even a skipped one.
+    const tip = () => exec(['rev-parse', '--verify', '--quiet', remoteRef]).catch(() => '');
+    let before = '';
+    const moved = async () => ({ originMoved: (await tip()) !== before });
+    const skipped = async (reason: BranchUpdateSkip): Promise<CommandResult> =>
+      ({ success: true, message: '', data: { skipped: reason, ...await moved() } });
     const isLatest = options.isLatest || (() => true);
 
     try {
-      if (!await ok(['rev-parse', '--verify', '--quiet', remoteRef])) {
+      before = await tip();
+      if (!before) {
         return done('local-only', `Checked out '${name}'`);
       }
       let fetchNote = '';
@@ -357,14 +364,14 @@ export class BranchService {
         if (/couldn't find remote ref/i.test((error as Error).message)) {
           // origin no longer has the branch: forget only this stale tracking ref.
           await ok(['update-ref', '-d', remoteRef]);
-          if (!await ok(['rev-parse', '--verify', '--quiet', remoteRef])) {
-            return done('local-only', `Checked out '${name}'`);
+          if (!await tip()) {
+            return done('local-only', `Checked out '${name}'`, { originMoved: true });
           }
         } else {
           fetchNote = `Could not fetch origin; used ${originName} as last fetched. `;
         }
       }
-      const extra = { fetchFailed: Boolean(fetchNote) };
+      const extra = { fetchFailed: Boolean(fetchNote), ...await moved() };
       if (!isLatest()) { return skipped('newer-click'); }
 
       // Full ref names: a tag called like the branch must not stand in for it.

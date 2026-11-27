@@ -439,10 +439,17 @@ async function updateSwitchedBranch(
     settleAutoFetch,
     isLatest: () => switches.isLatest(root, click)
   });
-  const data = (result.data || {}) as { update?: string; skipped?: string; fetchFailed?: boolean };
+  const data = (result.data || {}) as { update?: string; skipped?: string; fetchFailed?: boolean; originMoved?: boolean };
   ctx.timings?.mark(`update ended: ${data.skipped ? `skipped (${data.skipped})` : data.update}`);
+  // The fetch moved origin/<name> without moving the branch (diverged, blocked, deleted on origin, or a
+  // newer click): the first refresh read the old counts and the page drew the old origin label.
+  const reread = async () => {
+    if (!data.originMoved || data.update === 'fast-forwarded') { return; }
+    await ctx.refresh().catch(error => console.error('[RepositoryManager] Refresh after fetch failed:', error));
+    await ctx.reloadDashboardHistory([payload.submodule]);
+  };
   // A newer click, another branch or a pending operation: the newer click reports its own result.
-  if (data.skipped || !data.update) { return; }
+  if (data.skipped || !data.update) { await reread(); return; }
 
   if (data.update === 'fast-forwarded' && !data.fetchFailed) {
     vscode.window.showInformationMessage(result.message);
@@ -457,6 +464,7 @@ async function updateSwitchedBranch(
     // The branch moved after the first refresh read it.
     await ctx.refresh().catch(error => console.error('[RepositoryManager] Refresh after update failed:', error));
   }
+  await reread();
 }
 
 /**

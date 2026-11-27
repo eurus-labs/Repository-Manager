@@ -135,7 +135,7 @@ function recordingContext(repos, options = {}) {
       }
     },
     async refresh() { events.push('refresh started'); await gitOps.getSubmodules(); events.push('refresh done'); },
-    async reloadDashboardHistory() {}
+    async reloadDashboardHistory(paths) { events.push(`reload history ${paths.join(',')}`); }
   };
   return { ctx, events, posted, lines, timings };
 }
@@ -212,6 +212,10 @@ async function main() {
     assert.equal(git(repos.parent, 'rev-parse', 'refs/remotes/origin/x'), repos.originX, 'origin/x was not updated');
     assert.deepEqual(shown.filter(item => item.kind !== 'info'), [], JSON.stringify(shown));
     assert.equal(run.posted.filter(message => message.type === 'branchUpdateResult' && message.payload.branch === 'x').length, 0);
+    // x's fetch moved origin/x after main's refresh read it: the list and the page are refreshed again.
+    // One refresh per click, and a third once x's fetch has moved origin/x.
+    assert.equal(run.events.filter(event => event === 'refresh started').length, 3, JSON.stringify(run.events));
+    assert.ok(run.events.includes('reload history .'), JSON.stringify(run.events));
 
     // What the person is told: nothing for a checkout and a quiet update, a warning for one that needs
     // action, an error for a failed checkout.
@@ -228,6 +232,9 @@ async function main() {
     let clicked = await clickOn(repos, 'x');
     assert.equal(clicked.posted.find(message => message.type === 'branchUpdateResult').payload.update, 'up-to-date');
     assert.deepEqual(shown, [], 'a checkout followed by up-to-date showed a message');
+    // The fetch moved nothing: no second refresh and no reload.
+    assert.equal(clicked.events.filter(event => event === 'refresh started').length, 1, JSON.stringify(clicked.events));
+    assert.equal(clicked.events.some(event => event.startsWith('reload history')), false, JSON.stringify(clicked.events));
 
     repos = setup();
     git(repos.parent, 'checkout', '-q', 'x');
@@ -238,6 +245,11 @@ async function main() {
     clicked = await clickOn(repos, 'x');
     assert.equal(clicked.posted.find(message => message.type === 'branchUpdateResult').payload.update, 'diverged');
     assert.deepEqual(shown.map(item => item.kind), ['warning'], JSON.stringify(shown));
+    // Diverged moves no branch, but the fetch moved origin/x: the ahead/behind counts and the graph's
+    // origin/x label are read again after it, not left as the first refresh saw them.
+    const updated = clicked.events.indexOf('branchUpdateResult');
+    assert.ok(clicked.events.lastIndexOf('refresh started') > updated, JSON.stringify(clicked.events));
+    assert.ok(clicked.events.indexOf('reload history .') > updated, JSON.stringify(clicked.events));
 
     repos = setup();
     clicked = await clickOn(repos, 'no-such-branch');
