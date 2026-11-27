@@ -72,10 +72,13 @@ All planner's. The user approved the look through the canvas and the PNGs (2026-
      noise. `.ref-dot` is removed. Plan 13's test that a tone takes no width now checks that the border colour
      equals the lane tone.
    - **Plan 14's drag and menus are unchanged:** the same `<button>`, `data-target` and `data-kind`.
-6. **Light theme.**
-   - Tones come from the existing `--lane-color` per lane.
-   - Pill text uses the tone darkened with `color-mix(in srgb, var(--lane-color) 70%, var(--text-primary))` in a light
-     theme, so it passes 4.5:1. The UI test measures that.
+6. **Light theme.** Pill text and icons use `var(--text-primary)`, the theme's own text colour. The lane tone stays
+   on the pill's border and its 12% fill. The dark theme keeps text in the tone.
+   - **Why the change.** The first rule mixed 70% tone with the text colour. The coder measured it against the
+     fixture's light theme on all eight lanes: 3.79, 6.00, 3.52, 4.18, 5.13, 3.20, 2.80 and 2.77. Six lanes fail 4.5:1.
+     Amended after the coder's report, 2026-11-27.
+   - **Test.** The UI test checks the text contrast of every lane's pill in the light theme, at 4.5 or more. It also
+     checks that the border colour still equals the lane tone.
 7. **Version: 3.12.0** (3.11.0 is released), shared with plan 19 if both land before a
    release. CHANGELOG `### Changed`.
 
