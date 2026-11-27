@@ -2755,6 +2755,9 @@ async function main() {
           return value.startsWith('color(') ? parts[parts.length - 1] : parts.length > 3 ? parts[3] : 1;
         });
         assert.ok(Math.abs(selected - 0.2) < 0.01, `the selected row is ${selected}, not 20%`);
+        // The scripted hashes are not in the repository, so the detail pane would show Git's error: show the working changes instead.
+        await compact.locator('#uncommittedRow').click();
+        await compact.waitForFunction(() => document.querySelector('#uncommittedRow.active'));
         await compact.mouse.move(2, 2);
         await snap(compact, '63-history-compact-rows');
       }
@@ -2942,15 +2945,16 @@ async function main() {
     // (Plan 16's origin text chip is the cloud icon now; the icon is as readable as the text beside it.)
     assert.ok(await light.locator('.history-ref .ref-origin[aria-label="on origin"]').count() > 0, 'no origin icon in the light theme');
     const pillContrast = await light.evaluate(() => {
-      const rgb = value => (value.match(/\d+(\.\d+)?/g) || []).slice(0, 3).map(Number);
+      // Chromium writes a colour-mix() result as color(srgb 0.4 0.2 0.1 / 0.12): channels in 0..1.
+      const parse = value => { const parts = (value.match(/-?\d*\.?\d+(?:e-?\d+)?/g) || []).map(Number); const scale = value.startsWith('color(') ? 255 : 1; return [parts.slice(0, 3).map(part => part * scale), parts.length > 3 ? parts[3] : 1]; };
+      const rgb = value => parse(value)[0];
       const luminance = ([r, g, b]) => [r, g, b].map(c => { c /= 255; return c <= .03928 ? c / 12.92 : ((c + .055) / 1.055) ** 2.4; })
         .reduce((sum, c, i) => sum + c * [.2126, .7152, .0722][i], 0);
       const behind = element => {
         const layers = [];
         for (let node = element; node; node = node.parentElement) {
-          const parts = (getComputedStyle(node).backgroundColor.match(/\d+(\.\d+)?/g) || []).map(Number);
-          const alpha = parts.length > 3 ? parts[3] : 1;
-          if (alpha > 0) layers.push([parts.slice(0, 3), alpha]);
+          const [color, alpha] = parse(getComputedStyle(node).backgroundColor);
+          if (alpha > 0) layers.push([color, alpha]);
           if (alpha >= 1) break;
         }
         return layers.reverse().reduce((under, [color, alpha]) => color.map((c, i) => c * alpha + under[i] * (1 - alpha)), [255, 255, 255]);
@@ -2962,6 +2966,37 @@ async function main() {
     });
     assert.ok(pillContrast.length > 0, 'no tone-coloured label in the light theme');
     for (const pill of pillContrast) assert.ok(pill.ratio >= 4.5, `${pill.name} text has contrast ${pill.ratio} in a light theme`);
+    // Every one of the eight lane tones, not only the one the fixture draws: the pill is put on each in turn.
+    const laneContrast = await light.evaluate(() => {
+      // Chromium writes a colour-mix() result as color(srgb 0.4 0.2 0.1 / 0.12): channels in 0..1.
+      const parse = value => { const parts = (value.match(/-?\d*\.?\d+(?:e-?\d+)?/g) || []).map(Number); const scale = value.startsWith('color(') ? 255 : 1; return [parts.slice(0, 3).map(part => part * scale), parts.length > 3 ? parts[3] : 1]; };
+      const rgb = value => parse(value)[0];
+      const luminance = ([r, g, b]) => [r, g, b].map(c => { c /= 255; return c <= .03928 ? c / 12.92 : ((c + .055) / 1.055) ** 2.4; })
+        .reduce((sum, c, i) => sum + c * [.2126, .7152, .0722][i], 0);
+      const behind = element => {
+        const layers = [];
+        for (let node = element; node; node = node.parentElement) {
+          const [color, alpha] = parse(getComputedStyle(node).backgroundColor);
+          if (alpha > 0) layers.push([color, alpha]);
+          if (alpha >= 1) break;
+        }
+        return layers.reverse().reduce((under, [color, alpha]) => color.map((c, i) => c * alpha + under[i] * (1 - alpha)), [255, 255, 255]);
+      };
+      const pill = document.querySelector('.history-ref.ref-tone');
+      const row = pill.closest('.history-row');
+      const original = { pill: pill.className, row: row.className };
+      const ratios = [];
+      for (let lane = 0; lane < 8; lane++) {
+        pill.className = pill.className.replace(/graph-lane-\d/, `graph-lane-${lane}`);
+        row.className = row.className.replace(/graph-lane-\d/, `graph-lane-${lane}`);
+        const [x, y] = [luminance(rgb(getComputedStyle(pill).color)), luminance(behind(pill))].sort((m, n) => n - m);
+        ratios.push(+((x + .05) / (y + .05)).toFixed(2));
+      }
+      pill.className = original.pill;
+      row.className = original.row;
+      return ratios;
+    });
+    laneContrast.forEach((ratio, lane) => assert.ok(ratio >= 4.5, `lane ${lane} label text has contrast ${ratio} in a light theme (all: ${laneContrast})`));
     await snap(light, '56-history-origin-labels-light');
     // The Side Bar takes the light theme too, and its text stays readable.
     const sideContrast = await light.sidebar.evaluate(() => {
