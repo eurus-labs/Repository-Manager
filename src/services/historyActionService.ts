@@ -19,7 +19,44 @@ export class HistoryActionService {
     return { sha, branch, parents: ancestry.split(/\s+/).slice(1) };
   }
 
-  async apply(repositoryPath: string, commit: string, operation: HistoryAction, mainline?: number, expectedBranch?: string): Promise<CommandResult> {
+  /**
+   * A branch by name (local first, then remote-tracking such as `origin/x`), as its full ref and tip.
+   * Names that start with `-` or match no branch are refused, so a name never reaches Git as an option.
+   */
+  async resolveBranch(repositoryPath: string, name: string): Promise<{ name: string; ref: string; sha: string }> {
+    if (typeof name !== 'string' || !name || name.startsWith('-') || /[\s\0]/.test(name)) {
+      throw new Error('Invalid branch name.');
+    }
+    const cwd = this.git.resolveRepositoryPath(repositoryPath);
+    for (const ref of [`refs/heads/${name}`, `refs/remotes/${name}`]) {
+      const sha = await this.git.execGit(['rev-parse', '--verify', '--quiet', `${ref}^{commit}`], cwd, 5000).catch(() => '');
+      if (sha) {
+        return { name, ref, sha };
+      }
+    }
+    throw new Error(`Branch ${name} no longer exists.`);
+  }
+
+  /** What merging `sha` into HEAD brings: the first 20 incoming commits and their count. */
+  async previewMerge(repositoryPath: string, sha: string): Promise<{ count: number; commits: { hash: string; subject: string }[]; fastForward: boolean; upToDate: boolean }> {
+    const cwd = this.git.resolveRepositoryPath(repositoryPath);
+    const isAncestor = (ancestor: string, descendant: string) =>
+      this.git.execGit(['merge-base', '--is-ancestor', ancestor, descendant], cwd, 5000).then(() => true, () => false);
+    if (await isAncestor(sha, 'HEAD')) {
+      return { count: 0, commits: [], fastForward: false, upToDate: true };
+    }
+    const count = Number(await this.git.execGit(['rev-list', '--count', `HEAD..${sha}`], cwd, 10000));
+    const log = await this.git.execGit(['log', '--max-count=20', '--format=%H%x1f%s', `HEAD..${sha}`], cwd, 10000);
+    const commits = log.split('\n').filter(Boolean).map(line => {
+      const [hash, ...subject] = line.split('\x1f');
+      return { hash, subject: subject.join('\x1f') };
+    });
+    return { count, commits, fastForward: await isAncestor('HEAD', sha), upToDate: false };
+  }
+
+  /** `mergeBranch` merges by that branch's name (so the merge message names it) after checking its tip is still `commit`. */
+  async apply(repositoryPath: string, commit: string, operation: HistoryAction, mainline?: number, expectedBranch?: string,
+    mergeBranch?: string): Promise<CommandResult> {
     let started = false;
     try {
       if (!['cherry-pick', 'revert', 'merge'].includes(operation)) {
@@ -41,6 +78,16 @@ export class HistoryActionService {
         throw new Error('Choose a parent for the merge commit.');
       }
       await this.assertNoUntrackedCollisions(repositoryPath, sha, operation, parents, mainline);
+      let mergeRef: string | undefined;
+      if (mergeBranch) {
+        const named = await this.resolveBranch(repositoryPath, mergeBranch);
+        if (named.sha !== sha) {
+          throw new Error(`Branch ${mergeBranch} moved while the question was open. Nothing was run; start the merge again.`);
+        }
+        // The plain name gives the merge message "Merge branch 'x'"; a tag of the same name would win, so then the full ref is used.
+        const byName = await this.git.execGit(['rev-parse', '--verify', '--quiet', `${mergeBranch}^{commit}`], cwd, 5000).catch(() => '');
+        mergeRef = byName === sha ? mergeBranch : named.ref;
+      }
       if (expectedBranch) {
         const currentBranch = await this.git.execGit(['symbolic-ref', '--quiet', '--short', 'HEAD'], cwd, 5000);
         if (currentBranch !== expectedBranch) {
@@ -48,7 +95,7 @@ export class HistoryActionService {
         }
       }
       const args = operation === 'merge'
-        ? ['merge', '--no-edit', sha]
+        ? ['merge', '--no-edit', mergeRef ?? sha]
         : [operation, '--no-edit', ...(parents.length > 1 ? ['-m', String(mainline)] : []), sha];
       started = true;
       await this.git.execGit(args, cwd, 120000);

@@ -1163,6 +1163,154 @@ async function main() {
     await page.mouse.click(5, 5);
     await page.locator('#historyContextMenu').waitFor({ state: 'hidden' });
 
+    // Branch labels (plan 14): per-branch merge and rebase in the commit menu, a menu on each label, and drag between labels.
+    // The three posts are caught here: the host side is covered by the handler smoke tests.
+    await page.evaluate(() => {
+      const before = window.__postToHost;
+      window.__branchSent = [];
+      window.__postToHost = m => ['applyHistoryCommit', 'rewriteHistoryCommit', 'checkoutBranch'].includes(m.type) ? window.__branchSent.push(m) : before(m);
+      window.__restoreBranchHost = () => { window.__postToHost = before; };
+    });
+    const branchSent = () => page.evaluate(() => window.__branchSent.slice());
+    const menuTexts = selector => page.locator(`${selector} button`).allTextContents();
+    const linkedRow = page.locator('.history-row', { hasText: 'add linked repositories' });
+    // Commit menu: rebase and merge per other branch on the commit; the commit rebase item is gone.
+    await linkedRow.click({ button: 'right' });
+    await page.locator('#historyContextMenu').waitFor();
+    assert.doesNotMatch(await page.textContent('#historyContextMenu'), /Rebase current branch onto this commit/);
+    assert.deepEqual((await menuTexts('#historyContextBranchActions')).sort(), [
+      'Merge claude/review-dashboard-layout-at-narrow-widths into feature/dashboard…', 'Merge feature/ahead into feature/dashboard…', 'Merge main into feature/dashboard…',
+      'Rebase feature/dashboard onto claude/review-dashboard-layout-at-narrow-widths…', 'Rebase feature/dashboard onto feature/ahead…', 'Rebase feature/dashboard onto main…']);
+    await page.click('#historyContextBranchActions [data-action="contextMergeBranch"][data-branch="main"]');
+    await linkedRow.click({ button: 'right' });
+    await page.click('#historyContextBranchActions [data-action="contextRebaseOntoBranch"][data-branch="feature/ahead"]');
+    assert.deepEqual((await branchSent()).map(m => [m.type, m.payload.branch || m.payload.ontoBranch, m.payload.operation || m.payload.action]),
+      [['applyHistoryCommit', 'main', 'merge'], ['rewriteHistoryCommit', 'feature/ahead', 'rebase']]);
+    // A commit whose labels are separate remote-tracking branches offers them, and no delete.
+    await page.locator('.history-row', { hasText: 'add app' }).click({ button: 'right' });
+    await page.locator('#historyContextMenu').waitFor();
+    assert.deepEqual((await menuTexts('#historyContextBranchActions')).sort(), [
+      'Merge origin/feature/ahead into feature/dashboard…', 'Merge origin/remote-only into feature/dashboard…',
+      'Rebase feature/dashboard onto origin/feature/ahead…', 'Rebase feature/dashboard onto origin/remote-only…']);
+    assert.equal(await page.isHidden('#historyContextBranches'), true);
+    await page.mouse.click(5, 5);
+    // The current branch alone on a commit: no merge or rebase.
+    await page.locator('.history-row', { hasText: 'update app in two places' }).click({ button: 'right' });
+    await page.locator('#historyContextMenu').waitFor();
+    assert.equal(await page.isHidden('#historyContextBranchActions'), true);
+    await page.mouse.click(5, 5);
+
+    // Label menu: right-click, and the keyboard.
+    const branchMenu = page.locator('#historyBranchMenu');
+    await page.locator('.history-ref[data-target="feature/ahead"]').click({ button: 'right' });
+    await branchMenu.waitFor();
+    assert.deepEqual(await menuTexts('#historyBranchMenu'), ['Checkout feature/ahead', 'Merge feature/ahead into feature/dashboard…',
+      'Rebase feature/dashboard onto feature/ahead…', 'Compare with feature/dashboard', 'Delete Branch feature/ahead…']);
+    await snap(page, '60-history-branch-menu');
+    await page.keyboard.press('Escape');
+    await branchMenu.waitFor({ state: 'hidden' });
+    await page.locator('.history-ref[data-target="feature/ahead"]').focus();
+    await page.keyboard.press('Shift+F10');
+    await branchMenu.waitFor();
+    assert.equal((await menuTexts('#historyBranchMenu')).length, 5);
+    await page.click('#historyBranchMenu [data-action="contextMergeBranch"]');
+    await branchMenu.waitFor({ state: 'hidden' });
+    assert.deepEqual((await branchSent()).slice(2).map(m => [m.type, m.payload.branch, m.payload.operation]), [['applyHistoryCommit', 'feature/ahead', 'merge']]);
+    // Compare reuses the branch comparison.
+    await page.locator('.history-ref[data-target="feature/ahead"]').click({ button: 'right' });
+    await page.click('#historyBranchMenu [data-action="branchLabelCompare"]');
+    await page.waitForFunction(() => /Compare: feature\/dashboard → feature\/ahead/.test(document.getElementById('commitCompareStatus').textContent));
+    await page.click('#commitCompareStatus [data-action="clearCommitComparison"]');
+    // The current branch's own label: Compare only (the comparison dialog), and no delete.
+    await page.locator('.history-ref[data-target="feature/dashboard"]').click({ button: 'right' });
+    await branchMenu.waitFor();
+    assert.deepEqual(await menuTexts('#historyBranchMenu'), ['Compare…']);
+    await page.click('#historyBranchMenu [data-action="branchLabelCompareDialog"]');
+    await page.locator('#branchCompareModal.active').waitFor();
+    assert.equal(await page.inputValue('#compareBaseBranch'), 'feature/dashboard');
+    await branchMenu.waitFor({ state: 'hidden' });
+    await page.click('#branchCompareModal .modal-close');
+    await page.waitForFunction(() => !document.getElementById('branchCompareModal').classList.contains('active'));
+    // A merged label (main [origin]) acts on the local main.
+    await page.locator('.history-ref[data-target="main"]').click({ button: 'right' });
+    await branchMenu.waitFor();
+    assert.deepEqual(await menuTexts('#historyBranchMenu'), ['Checkout main', 'Merge main into feature/dashboard…', 'Rebase feature/dashboard onto main…',
+      'Compare with feature/dashboard', 'Delete Branch main…']);
+    await page.keyboard.press('Escape');
+    // A separate origin/feature/ahead label is its own target; Checkout asks for the local branch; no delete.
+    await page.locator('.history-ref[data-target="origin/feature/ahead"]').click({ button: 'right' });
+    await branchMenu.waitFor();
+    assert.deepEqual(await menuTexts('#historyBranchMenu'), ['Checkout origin/feature/ahead', 'Merge origin/feature/ahead into feature/dashboard…',
+      'Rebase feature/dashboard onto origin/feature/ahead…', 'Compare with feature/dashboard']);
+    await page.click('#historyBranchMenu [data-action="branchLabelCheckout"]');
+    await page.waitForFunction(() => window.__branchSent.some(m => m.type === 'checkoutBranch'));
+    const checkoutAsked = await page.evaluate(() => window.__branchSent.find(m => m.type === 'checkoutBranch').payload);
+    assert.equal(checkoutAsked.branch, 'feature/ahead');
+    await page.evaluate(payload => window.dispatchEvent(new MessageEvent('message', { data: { type: 'branchCheckoutResult',
+      payload: { repositoryPath: payload.submodule, branch: payload.branch, success: false, cancelled: true, message: '' } } })), checkoutAsked);
+    await page.waitForFunction(() => !document.querySelector('.checkout-pending'));
+
+    // Drag a label onto a label: a menu of what fits the pair; nothing is posted by the drop itself.
+    const label = name => page.locator(`.history-ref[data-target="${name}"]`);
+    const sentBefore = (await branchSent()).length;
+    await label('feature/ahead').dragTo(label('feature/dashboard'));
+    await branchMenu.waitFor();
+    assert.deepEqual(await menuTexts('#historyBranchMenu'), ['Merge feature/ahead into feature/dashboard…']);
+    assert.equal((await branchSent()).length, sentBefore, 'a drop alone posts nothing');
+    await snap(page, '61-history-branch-drop');
+    await page.keyboard.press('Escape');
+    await branchMenu.waitFor({ state: 'hidden' });
+    assert.equal((await branchSent()).length, sentBefore, 'Escape posts nothing');
+    await label('feature/dashboard').dragTo(label('feature/ahead'));
+    await branchMenu.waitFor();
+    assert.deepEqual(await menuTexts('#historyBranchMenu'), ['Rebase feature/dashboard onto feature/ahead…']);
+    await page.click('#historyBranchMenu [data-action="contextRebaseOntoBranch"]');
+    assert.deepEqual((await branchSent()).slice(sentBefore).map(m => [m.type, m.payload.ontoBranch, m.payload.action]), [['rewriteHistoryCommit', 'feature/ahead', 'rebase']]);
+    // Neither is the current branch: a disabled line, and clicking it does nothing.
+    await label('feature/ahead').dragTo(label('main'));
+    await branchMenu.waitFor();
+    assert.deepEqual(await menuTexts('#historyBranchMenu'), ['Check out feature/ahead or main first']);
+    assert.equal(await page.getAttribute('#historyBranchMenu button', 'aria-disabled'), 'true');
+    await page.click('#historyBranchMenu button', { force: true });
+    assert.equal((await branchSent()).length, sentBefore + 1);
+    await page.mouse.click(5, 5);
+    await branchMenu.waitFor({ state: 'hidden' });
+    // The merged label stands for the local main in a drop.
+    await label('main').dragTo(label('feature/dashboard'));
+    await branchMenu.waitFor();
+    assert.deepEqual(await menuTexts('#historyBranchMenu'), ['Merge main into feature/dashboard…']);
+    await page.keyboard.press('Escape');
+    // A remote-tracking label that stands alone is a target too.
+    await label('origin/feature/ahead').dragTo(label('feature/dashboard'));
+    await branchMenu.waitFor();
+    assert.deepEqual(await menuTexts('#historyBranchMenu'), ['Merge origin/feature/ahead into feature/dashboard…']);
+    await page.keyboard.press('Escape');
+
+    // origin/HEAD, if the graph shows it, is neither draggable nor given a menu: the page is answered with one such commit.
+    await page.evaluate(() => {
+      const before = window.__postToHost;
+      window.__postToHost = m => {
+        if (m.type !== 'getHistory') return before(m);
+        window.dispatchEvent(new MessageEvent('message', { data: { type: 'historyLoaded', payload: { repositoryPath: m.payload.repositoryPath, requestId: m.payload.requestId,
+          offset: 0, nextOffset: null, commits: [{ hash: 'c'.repeat(40), shortHash: 'ccccccc', subject: 'origin head commit', authorName: 'A', authorEmail: 'a@example.com',
+            authoredAt: '2025-01-15T10:00:00Z', parentHashes: [], refs: [{ name: 'origin/HEAD', kind: 'remote-branch' }, { name: 'origin/dev', kind: 'remote-branch' }] }] } } }));
+      };
+      window.__restoreHistoryHost = () => { window.__postToHost = before; };
+    });
+    await page.evaluate(repository => window.dispatchEvent(new MessageEvent('message', { data: { type: 'reloadDashboardHistory', payload: { repositoryPaths: [repository] } } })), claudeContext.repository);
+    const headLabel = page.locator('.history-ref', { hasText: /^origin\/HEAD$/ });
+    await headLabel.waitFor();
+    assert.equal(await headLabel.getAttribute('draggable'), null);
+    assert.equal(await headLabel.getAttribute('data-target'), null);
+    assert.equal(await page.locator('.history-ref[data-target="origin/dev"]').getAttribute('draggable'), 'true');
+    await headLabel.click({ button: 'right' });
+    assert.equal(await branchMenu.isHidden(), true, 'origin/HEAD has no label menu');
+    await page.mouse.click(5, 5);
+    await page.evaluate(() => window.__restoreHistoryHost());
+    await page.evaluate(repository => window.dispatchEvent(new MessageEvent('message', { data: { type: 'reloadDashboardHistory', payload: { repositoryPaths: [repository] } } })), claudeContext.repository);
+    await page.locator('.history-row', { hasText: 'add linked repositories' }).waitFor();
+    await page.evaluate(() => window.__restoreBranchHost());
+
     // Dialogs: focus moves in, Tab stays inside, Escape closes (an open dropdown first), focus returns.
     const activeInside = selector => page.evaluate(sel => document.querySelector(sel).contains(document.activeElement), selector);
     const newBranchButton = page.locator('[data-action="openCreateBranchModal"]');

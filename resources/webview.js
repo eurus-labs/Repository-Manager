@@ -87,6 +87,8 @@
 
   function hideHistoryContextMenu() {
     document.getElementById('historyContextMenu').hidden = true;
+    const branchMenu = document.getElementById('historyBranchMenu');
+    if (branchMenu) branchMenu.hidden = true;
     const changesMenu = document.getElementById('changesContextMenu');
     if (changesMenu) changesMenu.hidden = true;
   }
@@ -337,7 +339,30 @@
     menu.style.top = `${Math.max(0, Math.min(historyContextMenuPoint.y, height - menu.offsetHeight - 8))}px`;
   }
 
-  // The commit's local branches (not the current one) can be deleted from its menu.
+  // The branch a history label stands for in merge and rebase: a local branch, or a remote-tracking one
+  // that is not at the same commit as its local branch (those are folded into one label). origin/HEAD is none.
+  function historyRefTarget(ref, list) {
+    if (!ref || !ref.name) return '';
+    if (ref.kind === 'head' || ref.kind === 'local-branch') return ref.name;
+    if (ref.kind !== 'remote-branch' || /\/HEAD$/.test(ref.name)) return '';
+    const local = ref.name.startsWith('origin/') ? ref.name.slice('origin/'.length) : '';
+    return local && (list || []).some(other => (other.kind === 'head' || other.kind === 'local-branch') && other.name === local) ? '' : ref.name;
+  }
+
+  function currentBranchName() {
+    const repository = getRepository(activeDashboardRepository);
+    return (repository && repository.currentBranch) || '';
+  }
+
+  // Merge and rebase items for one branch: Git acts on HEAD, so the other end is the current branch.
+  function branchActionItems(name, current) {
+    const safe = escapeHtml(name);
+    const now = escapeHtml(current);
+    return `<button type="button" role="menuitem" data-action="contextRebaseOntoBranch" data-branch="${safe}" title="Put ${now}'s own commits on top of ${safe}; you see the commits and the predicted conflicts first">Rebase ${now} onto ${safe}…</button>` +
+      `<button type="button" role="menuitem" data-action="contextMergeBranch" data-branch="${safe}" title="Bring ${safe}'s commits into ${now}; you see them and the predicted conflicts first">Merge ${safe} into ${now}…</button>`;
+  }
+
+  // The commit's other branches can be merged or rebased onto; its local ones (not the current one) can be deleted.
   function fillHistoryBranchItems(commit) {
     const box = document.getElementById('historyContextBranches');
     if (!box) return;
@@ -345,6 +370,81 @@
     const names = (commit.refs || []).filter(ref => ref.kind === 'local-branch' && !ref.isCurrent).map(ref => ref.name);
     box.innerHTML = names.map(name => `<button type="button" role="menuitem" data-action="contextDeleteBranch" data-branch="${escapeHtml(name)}" data-has-remote="${known.get(name) && known.get(name).hasRemote ? 'true' : 'false'}" title="Delete the local branch ${escapeHtml(name)}; you choose whether origin's goes too">Delete Branch '${escapeHtml(name)}'…</button>`).join('');
     box.hidden = !names.length;
+    const actionBox = document.getElementById('historyContextBranchActions');
+    if (!actionBox) return;
+    const current = currentBranchName();
+    const refs = commit.refs || [];
+    const targets = current
+      ? [...new Set(refs.filter(ref => !ref.isCurrent && ref.kind !== 'head').map(ref => historyRefTarget(ref, refs)).filter(name => name && name !== current))]
+      : [];
+    actionBox.innerHTML = targets.map(name => branchActionItems(name, current)).join('');
+    actionBox.hidden = !targets.length;
+  }
+
+  function placeBranchMenu(menu, x, y) {
+    menu.hidden = false;
+    const width = window.innerWidth || document.documentElement.clientWidth;
+    const height = window.innerHeight || document.documentElement.clientHeight;
+    menu.style.left = `${Math.max(0, Math.min(x, width - menu.offsetWidth - 8))}px`;
+    menu.style.top = `${Math.max(0, Math.min(y, height - menu.offsetHeight - 8))}px`;
+    const first = menu.querySelector('button:not([aria-disabled="true"])');
+    (first || menu).focus();
+  }
+
+  // The menu of one branch label (right-click, the context-menu key or Shift+F10): what drag offers, and Checkout.
+  function showBranchLabelMenu(label, x, y) {
+    const row = label.closest('.history-row');
+    const menu = document.getElementById('historyBranchMenu');
+    const target = label.dataset.target;
+    if (!menu || !target) return false;
+    hideHistoryContextMenu();
+    historyContextTarget = { repositoryPath: activeDashboardRepository, hash: row ? row.dataset.commit : '' };
+    const current = currentBranchName();
+    const safe = escapeHtml(target);
+    const now = escapeHtml(current);
+    const known = new Map(((repositoryRefs && repositoryRefs.branches) || []).map(branch => [branch.name, branch]));
+    const items = [];
+    if (label.dataset.current !== 'true') {
+      items.push(`<button type="button" role="menuitem" data-action="branchLabelCheckout" data-branch="${escapeHtml(label.dataset.branch || target)}">Checkout ${safe}</button>`);
+      if (current) {
+        items.push(`<button type="button" role="menuitem" data-action="contextMergeBranch" data-branch="${safe}">Merge ${safe} into ${now}…</button>`);
+        items.push(`<button type="button" role="menuitem" data-action="contextRebaseOntoBranch" data-branch="${safe}">Rebase ${now} onto ${safe}…</button>`);
+        items.push(`<button type="button" role="menuitem" data-action="branchLabelCompare" data-branch="${safe}">Compare with ${now}</button>`);
+      }
+      if (label.dataset.kind === 'local-branch') {
+        const entry = known.get(target);
+        items.push(`<button type="button" role="menuitem" data-action="contextDeleteBranch" data-branch="${safe}" data-has-remote="${entry && entry.hasRemote ? 'true' : 'false'}">Delete Branch ${safe}…</button>`);
+      }
+    } else {
+      // The current branch compared with another: the existing comparison dialog, with it as the base.
+      items.push('<button type="button" role="menuitem" data-action="branchLabelCompareDialog">Compare…</button>');
+    }
+    menu.setAttribute('aria-label', `Actions for ${target}`);
+    menu.innerHTML = items.join('');
+    placeBranchMenu(menu, x, y);
+    return true;
+  }
+
+  // A label dropped on a label: only the actions that fit the pair. Nothing runs until one is chosen.
+  function showBranchDropMenu(source, target, x, y) {
+    const menu = document.getElementById('historyBranchMenu');
+    if (!menu || !source || !target || source.name === target.name) return false;
+    hideHistoryContextMenu();
+    historyContextTarget = { repositoryPath: activeDashboardRepository, hash: '' };
+    const s = escapeHtml(source.name);
+    const t = escapeHtml(target.name);
+    let item;
+    if (target.current) {
+      item = `<button type="button" role="menuitem" data-action="contextMergeBranch" data-branch="${s}">Merge ${s} into ${t}…</button>`;
+    } else if (source.current) {
+      item = `<button type="button" role="menuitem" data-action="contextRebaseOntoBranch" data-branch="${t}">Rebase ${s} onto ${t}…</button>`;
+    } else {
+      item = `<button type="button" role="menuitem" aria-disabled="true" title="Git merges and rebases the checked-out branch">Check out ${s} or ${t} first</button>`;
+    }
+    menu.setAttribute('aria-label', `Actions for ${source.name} and ${target.name}`);
+    menu.innerHTML = item;
+    placeBranchMenu(menu, x, y);
+    return true;
   }
 
   function showHistoryContextMenu(element, x, y) {
@@ -574,11 +674,36 @@
         commit: historyContextTarget.hash, operation: 'merge' });
       hideHistoryContextMenu();
     },
-    contextRebase: () => {
-      if (!historyContextTarget) return;
-      postMessage('rewriteHistoryCommit', { repositoryPath: historyContextTarget.repositoryPath,
-        commit: historyContextTarget.hash, action: 'rebase' });
+    // Merge and rebase of a named branch: the host resolves the name again and asks, with a preview.
+    contextMergeBranch: (el) => {
+      if (!historyContextTarget || !el.dataset.branch) return;
+      postMessage('applyHistoryCommit', { repositoryPath: historyContextTarget.repositoryPath,
+        branch: el.dataset.branch, operation: 'merge' });
       hideHistoryContextMenu();
+    },
+    contextRebaseOntoBranch: (el) => {
+      if (!historyContextTarget || !el.dataset.branch) return;
+      postMessage('rewriteHistoryCommit', { repositoryPath: historyContextTarget.repositoryPath,
+        ontoBranch: el.dataset.branch, action: 'rebase' });
+      hideHistoryContextMenu();
+    },
+    branchLabelCheckout: (el) => {
+      hideHistoryContextMenu();
+      requestBranchCheckout(el.dataset.branch);
+    },
+    branchLabelCompareDialog: () => {
+      hideHistoryContextMenu();
+      actions.openBranchCompareModal();
+    },
+    branchLabelCompare: (el) => {
+      const current = currentBranchName();
+      const other = el.dataset.branch;
+      hideHistoryContextMenu();
+      if (!current || !other) return;
+      const [base, target] = [current, other];
+      commitCompareSelection = [];
+      comparisonRepository = activeDashboardRepository;
+      loadComparison(base, target, 'branches', { base, target });
     },
     contextReset: () => {
       if (!historyContextTarget) return;
@@ -1612,7 +1737,12 @@
       const title = merged
         ? `${ref.name} and origin/${ref.name} are at this commit. Double-click to check out ${ref.name} and update it from origin`
         : `Double-click to checkout ${branch}`;
-      return `<button class="${className}" type="button" data-branch="${escapeHtml(branch)}" title="${escapeHtml(title)}">${escapeHtml(ref.name)}${chip}</button>`;
+      // A label with a target can be dragged onto another and has its own menu (merge, rebase, compare).
+      const target = historyRefTarget(ref, list);
+      const drag = target
+        ? ` draggable="true" data-target="${escapeHtml(target)}" data-kind="${escapeHtml(ref.kind === 'head' ? 'local-branch' : ref.kind)}" data-current="${ref.isCurrent || ref.kind === 'head' ? 'true' : 'false'}"`
+        : '';
+      return `<button class="${className}" type="button" data-branch="${escapeHtml(branch)}"${drag} title="${escapeHtml(title)}">${escapeHtml(ref.name)}${chip}</button>`;
     }).join('');
   }
 
@@ -2693,7 +2823,7 @@
 
   // Event delegation - handle all clicks
   document.body.addEventListener('click', function (e) {
-    if (!e.target.closest('#historyContextMenu, #changesContextMenu')) hideHistoryContextMenu();
+    if (!e.target.closest('#historyContextMenu, #historyBranchMenu, #changesContextMenu')) hideHistoryContextMenu();
     if (!e.target.closest('#reviewBranchMenu, #reviewBranchMenuButton')) hideReviewBranchMenu(false);
     if (!e.target.closest('#copilotSettingsMenu, #copilotSettingsButton')) hideCopilotSettingsMenu(false);
     if (!e.target.closest('#summaryModelMenu, #summaryModelButton')) hideSummaryModelMenu(false);
@@ -2720,6 +2850,11 @@
     const changesElement = e.target.closest('#uncommittedRow, #dashboardChangedFiles .changed-file-item') || workingDiffTarget(e.target);
     if (changesElement) {
       if (showChangesContextMenu(changesElement, e.clientX, e.clientY)) e.preventDefault();
+      return;
+    }
+    const labelElement = e.target.closest('.history-ref[data-target]');
+    if (labelElement) {
+      if (showBranchLabelMenu(labelElement, e.clientX, e.clientY)) e.preventDefault();
       return;
     }
     const commitElement = e.target.closest('.history-row, .graph-node-control[data-commit]');
@@ -2753,12 +2888,55 @@
       e.preventDefault();
       const rect = changesKeyTarget.getBoundingClientRect();
       showChangesContextMenu(changesKeyTarget, rect.left + 10, rect.top + 10);
+    } else if ((e.key === 'ContextMenu' || (e.shiftKey && e.key === 'F10')) && e.target.closest('.history-ref[data-target]')) {
+      e.preventDefault();
+      const label = e.target.closest('.history-ref[data-target]');
+      const rect = label.getBoundingClientRect();
+      showBranchLabelMenu(label, rect.left + 10, rect.bottom);
     } else if ((e.key === 'ContextMenu' || (e.shiftKey && e.key === 'F10')) && e.target.closest('.history-row')) {
       e.preventDefault();
       const rect = e.target.getBoundingClientRect();
       showHistoryContextMenu(e.target.closest('.history-row'), rect.left + 10, rect.top + 10);
     }
   });
+
+  // Drag a branch label onto another: a small menu offers what fits the pair. A drop alone runs nothing.
+  let draggedBranchLabel = null;
+  const labelEnds = label => ({ name: label.dataset.target, current: label.dataset.current === 'true' });
+  const clearBranchDrag = () => {
+    document.querySelectorAll('.history-ref.drop-target, .history-ref.dragging').forEach(item => item.classList.remove('drop-target', 'dragging'));
+    draggedBranchLabel = null;
+  };
+  document.body.addEventListener('dragstart', function (e) {
+    const label = e.target.closest && e.target.closest('.history-ref[data-target]');
+    if (!label) return;
+    draggedBranchLabel = label;
+    label.classList.add('dragging');
+    if (e.dataTransfer) {
+      e.dataTransfer.effectAllowed = 'link';
+      try { e.dataTransfer.setData('text/plain', label.dataset.target); } catch (error) { /* the pair is read from the labels */ }
+    }
+  });
+  document.body.addEventListener('dragover', function (e) {
+    const label = e.target.closest && e.target.closest('.history-ref[data-target]');
+    if (!draggedBranchLabel || !label || label === draggedBranchLabel) return;
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'link';
+    label.classList.add('drop-target');
+  });
+  document.body.addEventListener('dragleave', function (e) {
+    const label = e.target.closest && e.target.closest('.history-ref[data-target]');
+    if (label) label.classList.remove('drop-target');
+  });
+  document.body.addEventListener('drop', function (e) {
+    const label = e.target.closest && e.target.closest('.history-ref[data-target]');
+    const source = draggedBranchLabel;
+    clearBranchDrag();
+    if (!label || !source || label === source) return;
+    e.preventDefault();
+    showBranchDropMenu(labelEnds(source), labelEnds(label), e.clientX, e.clientY);
+  });
+  document.body.addEventListener('dragend', clearBranchDrag);
 
   document.body.addEventListener('dblclick', function (e) {
     // A changed file in the dashboard: its diff in an editor tab, where it has room.

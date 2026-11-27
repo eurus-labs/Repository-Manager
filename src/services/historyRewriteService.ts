@@ -13,6 +13,8 @@ export interface HistoryRewritePreview {
   target: string;
   targetSubject: string;
   affectedCount: number;
+  /** For a rebase: how many of the commits that move are already on a remote (reachable from refs/remotes). */
+  publishedCount: number;
   affected: { hash: string; subject: string }[];
 }
 
@@ -74,11 +76,16 @@ export class HistoryRewriteService {
       const [hash, ...subject] = line.split('\x1f');
       return { hash, subject: subject.join('\x1f') };
     });
-    return { action, branch, head, target, targetSubject, affectedCount, affected };
+    let publishedCount = 0;
+    if (action === 'rebase') {
+      const count = async (...extra: string[]) => Number(await this.git.execGit(['rev-list', '--count', range, ...extra], cwd, 10000));
+      publishedCount = await count() - await count('--not', '--remotes');
+    }
+    return { action, branch, head, target, targetSubject, affectedCount, publishedCount, affected };
   }
 
   async execute(repositoryPath: string, target: string, action: HistoryRewriteAction,
-    expectedBranch: string, expectedHead: string, mode?: ResetMode): Promise<CommandResult> {
+    expectedBranch: string, expectedHead: string, mode?: ResetMode, ontoBranch?: string): Promise<CommandResult> {
     let started = false;
     let backup: string | undefined;
     try {
@@ -97,6 +104,10 @@ export class HistoryRewriteService {
         throw new Error('Finish or abort the current Git operation first.');
       }
       await this.assertRunnable(repositoryPath, target, action, expectedHead, mode);
+      // A rebase onto a named branch goes to the tip the question showed; a branch that moved since is not rebased onto.
+      if (ontoBranch && (await this.historyActions.resolveBranch(repositoryPath, ontoBranch)).sha !== target) {
+        throw new Error(`Branch ${ontoBranch} moved while the question was open. Nothing was run; start the rebase again.`);
+      }
       // Recheck immediately before making a backup or changing the current branch.
       if (await this.git.execGit(['symbolic-ref', '--quiet', '--short', 'HEAD'], cwd, 5000) !== expectedBranch ||
           await this.git.resolveRevision(repositoryPath, 'HEAD') !== expectedHead) {

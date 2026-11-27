@@ -140,6 +140,7 @@ let prevented = false;
 listeners.body_contextmenu({ target: row, clientX: 1180, clientY: 790, preventDefault() { prevented = true; } });
 assert.equal(prevented, true);
 assert.equal(node('historyContextMenu').hidden, false);
+assert.equal(node('historyContextBranchActions').hidden, true, 'a commit with no branch label offers neither merge nor rebase');
 for (const [action, operation] of [
   ['contextCherryPick', 'cherry-pick'], ['contextRevert', 'revert'], ['contextMerge', 'merge']
 ]) {
@@ -149,13 +150,18 @@ for (const [action, operation] of [
   assert.equal(posts.at(-1).payload.operation, operation);
 }
 for (const [action, operation] of [
-  ['contextRebase', 'rebase'], ['contextReset', 'reset'], ['contextDrop', 'drop']
+  ['contextReset', 'reset'], ['contextDrop', 'drop']
 ]) {
   click(action);
   assert.equal(posts.at(-1).type, 'rewriteHistoryCommit');
   assert.equal(posts.at(-1).payload.commit, B);
   assert.equal(posts.at(-1).payload.action, operation);
 }
+// Merge and rebase of a named branch post the branch (the host re-resolves it), not a commit.
+click('contextMergeBranch', { branch: 'feature/x' });
+assert.deepEqual(JSON.parse(JSON.stringify(posts.at(-1))), { type: 'applyHistoryCommit', payload: { repositoryPath: '.', branch: 'feature/x', operation: 'merge' } });
+click('contextRebaseOntoBranch', { branch: 'origin/feature/x' });
+assert.deepEqual(JSON.parse(JSON.stringify(posts.at(-1))), { type: 'rewriteHistoryCommit', payload: { repositoryPath: '.', ontoBranch: 'origin/feature/x', action: 'rebase' } });
 for (const [action, command] of [
   ['contextContinueRebase', 'continue'], ['contextAbortRebase', 'abort']
 ]) {
