@@ -37,11 +37,12 @@
 
   const TONE_COUNT = 8;
 
-  // A stable tone (0-7) for a branch name, so a branch keeps its colour across pages and refreshes.
+  // A stable tone (1-7) for a branch name, so a branch keeps its colour across pages and refreshes.
+  // Tone 0 is HEAD's line: a name never takes it, so no other branch looks checked out.
   function toneForName(name) {
     let hash = 5381;
     for (let index = 0; index < name.length; index += 1) hash = ((hash * 33) + name.charCodeAt(index)) >>> 0;
-    return hash % TONE_COUNT;
+    return 1 + (hash % (TONE_COUNT - 1));
   }
 
   // The branch a label stands for: a local branch's own name, a remote branch's name without its

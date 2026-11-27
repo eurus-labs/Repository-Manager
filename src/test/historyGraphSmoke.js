@@ -40,6 +40,11 @@ const rowOf = (model, commits, hash) => model.rows[commits.findIndex(commit => c
 {
   assert.equal(graph.toneForName('feature/x'), graph.toneForName('feature/x'));
   for (const name of ['a', 'main', 'feature/x', 'release/1.0', 'ü']) assert.ok(graph.toneForName(name) >= 0 && graph.toneForName(name) < 8);
+  // Tone 0 is HEAD's line. A branch name never takes it, or about one branch in eight (feature/x among
+  // them) would look like the checked-out line.
+  for (const name of ['feature/x', 'feature/dashboard', ...Array.from({ length: 200 }, (_, index) => `branch-${index}`)]) {
+    assert.notEqual(graph.toneForName(name), 0, `${name} took HEAD's tone`);
+  }
   assert.equal(graph.branchNameOfRef(remote('origin/feature/x')), 'feature/x');
   assert.equal(graph.branchNameOfRef(local('feature/x')), 'feature/x');
   assert.equal(graph.branchNameOfRef(remote('origin/HEAD')), '', 'origin/HEAD is a pointer');
