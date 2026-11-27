@@ -1,6 +1,6 @@
 # Plan 20 — Compact history rows: one line per commit, initials nodes, tinted rows, icon labels
 
-Status: approved
+Status: implemented
 Date: 2026-11-27
 Branch: `feat/history-rows-compact`
 Baseline: `main` at `cbc08844d8d6826c1139752c029d522adb744e42` (plans 13 and 14 merged)
