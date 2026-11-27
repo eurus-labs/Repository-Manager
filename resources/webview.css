@@ -844,6 +844,7 @@ select {
 .commit-summary-copy p { color: var(--text-secondary); font-size: 10px; }
 .commit-summary > code { justify-self: end; color: var(--text-muted); font-size: 10px; }
 .commit-summary-refs { grid-column: 2 / -1; }
+.commit-summary-contained { grid-column: 2 / -1; }
 /* Narrow: the actions move down to the refs row, so the title keeps its width. */
 @media (max-width: 900px) {
   .commit-header { grid-template-columns: auto minmax(0, 1fr) auto; }
@@ -852,6 +853,7 @@ select {
   .commit-summary > .dashboard-error { grid-column: 1 / -1; }
   .commit-header-actions { grid-column: 3; grid-row: 2; }
   .commit-summary-refs { grid-column: 2; grid-row: 2; }
+  .commit-summary-contained { grid-column: 1 / -1; grid-row: 3; }
 }
 
 .commit-content {
@@ -1842,7 +1844,53 @@ body.vscode-high-contrast .graph-node-control[data-marker="T"] .graph-node-hit {
 /* Pointing at or focusing a commit marks its branch line and dims the others. */
 .graph-edge { transition: opacity .12s; }
 .graph-edge.graph-lane-active { stroke-width: 3.5; }
-.graph-dim { opacity: .22; }
+.graph-dim { opacity: .4; }
+
+/* Contained in: the branches that hold the shown commit. A chip names a branch and carries its line's tone as a
+   bar on its left edge, like a branch label in the history. */
+.commit-summary-contained {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  color: var(--text-secondary);
+  font-size: 10px;
+}
+.contained-label,
+.contained-note { color: var(--text-muted); }
+.contained-error { color: var(--tone-warn, var(--warning)); }
+.contained-chip {
+  position: relative;
+  display: inline-block;
+  max-width: 180px;
+  overflow: hidden;
+  padding: 1px 5px 1px 7px;
+  border: 1px solid currentColor;
+  border-radius: 8px;
+  color: var(--tone-info);
+  background: rgba(139, 167, 240, .12);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.contained-chip .chip-tone {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 3px;
+  background: var(--lane-color);
+}
+.contained-chip .ref-origin {
+  margin-left: 4px;
+  padding: 0 4px;
+  border-radius: 4px;
+  color: var(--ref-origin);
+  background: var(--bg-sunken);
+  font-weight: 500;
+}
+.contained-current { font-weight: 600; }
+.contained-more { padding: 0; border: 0; color: var(--vscode-textLink-foreground, var(--accent)); background: none; font: inherit; text-decoration: underline; cursor: pointer; }
 
 /* The chip sits on a branch label of any colour, so it brings its own background. */
 .history-ref .ref-origin {

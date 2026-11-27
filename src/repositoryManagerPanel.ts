@@ -44,7 +44,7 @@ const REPOSITORY_LIST_KEY = 'repositoryManager.repositoryList';
 const FIRST_FETCH_DELAY_MS = 3000;
 
 const READ_ONLY_MESSAGES = new Set([
-  'getHistory', 'getCommitDetail', 'getFileDiff', 'getRepositoryRefs', 'getWorkingTreeChanges',
+  'getHistory', 'getCommitDetail', 'getCommitBranches', 'getFileDiff', 'getRepositoryRefs', 'getWorkingTreeChanges',
   'getWorkingTreePreview', 'getBranches', 'getCommits', 'getRecordedCommit', 'getBaseBranchesForCreate',
   'getPendingOperation', 'summarizeChanges', 'cancelChangeSummary', 'loadSummaryModels', 'refreshRepositories',
   // Reviews read pinned commits only; they never touch refs a background fetch updates.
