@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **First-parent only** in the history's ⋯ menu, beside Include remote branches. It follows the current line only: the graph shows one column, and each merge is one commit with a "merge" badge and the number of commits it brought in. The choice is remembered for each repository.
+- **First-parent only** in the history's ⋯ menu, beside Include remote branches. It follows the current line only: the graph shows one column, and each merge is one commit with a "merge" badge and the number of commits it brought in. It shows the selected branch, or HEAD, and never every branch, so Include remote branches is greyed out while it is on. The choice is remembered for each repository.
 
 ### Changed
 

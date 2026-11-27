@@ -3223,3 +3223,6 @@ body.sidebar-view { overflow: hidden; background: var(--vscode-sideBar-backgroun
 #commitContent.working-tree { grid-template-columns: minmax(0, 1fr) !important; }
 .sidebar-change-row.shown { background: var(--vscode-list-inactiveSelectionBackground, rgba(127, 127, 127, 0.18)); }
 .sidebar-change-row.shown .sidebar-change-name { font-weight: 600; }
+
+/* Include remote branches keeps its state but is not used while First-parent only is on. */
+#includeRemotesItem[aria-disabled="true"] { opacity: .5; cursor: not-allowed; }

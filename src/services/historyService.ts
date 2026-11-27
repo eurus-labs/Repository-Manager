@@ -81,6 +81,8 @@ function matchesSearch(commit: HistoryCommit, search: string): boolean {
 
 /** Merges that get a commit count per page: each count is a Git process of its own. */
 const MAX_MERGE_COUNTS = 50;
+/** At most this many of those Git processes run at a time (a process costs about 100 ms on Windows). */
+const MERGE_COUNT_WORKERS = 4;
 
 function clamp(value: number | undefined, fallback: number, min: number, max: number): number {
   const normalized = Number.isFinite(value) ? Math.trunc(value as number) : fallback;
@@ -126,7 +128,8 @@ export class HistoryService {
     if (query.branch) {
       tip = await this.gitCmd.resolveRevision(query.repositoryPath, query.branch);
       args.push(tip);
-    } else if (query.includeRemotes) {
+    } else if (query.includeRemotes && !query.firstParent) {
+      // First-parent only shows one line: it never reads every ref.
       // Every ref but the review snapshots and the copies Discard keeps, which are not history.
       args.push(`--exclude=${SNAPSHOT_REF_PREFIX}*`, `--exclude=${DISCARD_REF_PREFIX}*`, '--all');
     } else {
@@ -179,19 +182,24 @@ export class HistoryService {
 
   /**
    * How many commits each merge brought in (`git rev-list --count <merge>^1..<merge>^2`), for the
-   * first MAX_MERGE_COUNTS merges of the page, in one batch. A merge whose count fails, or that is
-   * past the limit, has none.
+   * first MAX_MERGE_COUNTS merges of the page, MERGE_COUNT_WORKERS at a time. A merge whose count
+   * fails, or that is past the limit, has none.
    */
   private async addMergeCounts(commits: HistoryCommit[], repositoryRoot: string): Promise<void> {
     const merges = commits.filter(commit => commit.parentHashes.length > 1).slice(0, MAX_MERGE_COUNTS);
-    await Promise.all(merges.map(async merge => {
-      try {
-        const output = await this.gitCmd.execGit(['rev-list', '--count', `${merge.hash}^1..${merge.hash}^2`], repositoryRoot, 5000);
-        const count = Number.parseInt(output.trim(), 10);
-        if (Number.isFinite(count)) { merge.mergeCount = count; }
-      } catch {
-        // No number for this merge.
+    let next = 0;
+    const worker = async (): Promise<void> => {
+      while (next < merges.length) {
+        const merge = merges[next++];
+        try {
+          const output = await this.gitCmd.execGit(['rev-list', '--count', `${merge.hash}^1..${merge.hash}^2`], repositoryRoot, 5000);
+          const count = Number.parseInt(output.trim(), 10);
+          if (Number.isFinite(count)) { merge.mergeCount = count; }
+        } catch {
+          // No number for this merge.
+        }
       }
-    }));
+    };
+    await Promise.all(Array.from({ length: Math.min(MERGE_COUNT_WORKERS, merges.length) }, worker));
   }
 }

@@ -167,6 +167,12 @@
     const firstParentBox = document.getElementById('dashboardFirstParent');
     const firstParentItem = document.getElementById('firstParentItem');
     if (firstParentBox && firstParentItem) firstParentItem.setAttribute('aria-checked', String(firstParentBox.checked));
+    // First-parent only shows one line, so the remote branches filter keeps its state but does nothing.
+    if (item) {
+      const unused = Boolean(firstParentBox && firstParentBox.checked);
+      if (unused) item.setAttribute('aria-disabled', 'true'); else item.removeAttribute('aria-disabled');
+      item.title = unused ? 'Not used while First-parent only is on' : 'Include remote branches in the graph';
+    }
   }
 
   // Review branch's menu: the changed files (the button's own review) or every file. Nothing is
@@ -1183,6 +1189,8 @@
     toggleIncludeRemotes: () => {
       const box = document.getElementById('dashboardIncludeRemotes');
       if (!box) return;
+      const item = document.getElementById('includeRemotesItem');
+      if (item && item.getAttribute('aria-disabled') === 'true') return;
       box.checked = !box.checked;
       syncIncludeRemotesItem();
       box.dispatchEvent(new Event('change'));

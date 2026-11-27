@@ -67,6 +67,16 @@ async function main() {
       assert.equal(page.commits[1].mergeCount, undefined);
       assert.deepEqual(calls.filter(args => args[0] === 'rev-list').map(args => args.join(' ')),
         [`rev-list --count ${mergeHash}^1..${mergeHash}^2`]);
+      // One line: with remote branches asked for, the log still does not read every ref, so topic's commits stay out.
+      const withRemotes = recorded();
+      const one = await withRemotes.history.getHistory({ repositoryPath: '.', includeRemotes: true, firstParent: true });
+      assert.deepEqual(one.commits.map(item => item.subject), ['Merge topic', 'main work', 'base']);
+      assert.ok(!withRemotes.calls.find(historyLog).includes('--all'), '--all was passed with first-parent only');
+      // A branch filter starts the log from that branch.
+      const onTopic = recorded();
+      const topicPage = await onTopic.history.getHistory({ repositoryPath: '.', includeRemotes: true, firstParent: true, branch: 'topic' });
+      assert.deepEqual(topicPage.commits.map(item => item.subject), ['topic 3', 'topic 2', 'topic 1', 'base']);
+      assert.equal(onTopic.calls.find(historyLog).at(-1), git('rev-parse', 'topic'));
       // A search takes the option too.
       const found = await history.getHistory({ repositoryPath: '.', firstParent: true, search: 'merge' });
       assert.deepEqual(found.commits.map(item => item.subject), ['Merge topic']);
@@ -83,8 +93,18 @@ async function main() {
       }
       git('update-ref', 'refs/heads/main', tip);
       const { history, calls } = recorded();
+      // Count the rev-list processes running together.
+      let running = 0;
+      let peak = 0;
+      const rawGit = history.gitCmd.execGit.bind(history.gitCmd);
+      history.gitCmd.execGit = async (args, ...rest) => {
+        if (args[0] !== 'rev-list') { return rawGit(args, ...rest); }
+        running += 1; peak = Math.max(peak, running);
+        try { return await rawGit(args, ...rest); } finally { running -= 1; }
+      };
       const page = await history.getHistory({ repositoryPath: '.', firstParent: true, limit: 60 });
       assert.equal(calls.filter(args => args[0] === 'rev-list').length, 50, 'more than 50 merges were counted');
+      assert.ok(peak >= 2 && peak <= 4, `${peak} merge counts ran at once`);
       const merges = page.commits.filter(item => item.parentHashes.length > 1);
       assert.equal(merges.length, 56);
       assert.equal(merges.filter(item => item.mergeCount !== undefined).length, 50);

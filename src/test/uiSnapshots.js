@@ -2432,12 +2432,21 @@ async function main() {
     await clear();
 
     // First-parent only: the menu item toggles, reloads with the option, and the merge is one commit.
+    const remotesBefore = await readable.evaluate(() => document.getElementById('dashboardIncludeRemotes').checked);
     await more(readable, '#firstParentItem');
     assert.equal(await readable.getAttribute('#firstParentItem', 'aria-checked'), 'true');
     assert.equal(await readable.isHidden('#dashboardMoreMenu'), false, 'the menu closed after a choice');
     await readable.waitForFunction(() => window.__graphSent.filter(message => message.type === 'getHistory').length >= 2);
     assert.equal(await readable.evaluate(() => window.__graphReply('firstParent').firstParent), true, 'the request did not ask for first-parent only');
     await readable.locator('.history-merge-badge').waitFor();
+    // Include remote branches keeps its state but is unused, and a click on it does nothing.
+    assert.equal(await readable.getAttribute('#includeRemotesItem', 'aria-disabled'), 'true');
+    assert.equal(await readable.getAttribute('#includeRemotesItem', 'title'), 'Not used while First-parent only is on');
+    assert.equal(await readable.getAttribute('#includeRemotesItem', 'aria-checked'), String(remotesBefore), 'the saved state changed');
+    const historyRequests = await readable.evaluate(() => window.__graphSent.filter(message => message.type === 'getHistory').length);
+    await readable.click('#includeRemotesItem', { force: true });
+    assert.equal(await readable.getAttribute('#includeRemotesItem', 'aria-checked'), String(remotesBefore), 'a click changed the disabled item');
+    assert.equal(await readable.evaluate(() => window.__graphSent.filter(message => message.type === 'getHistory').length), historyRequests, 'a click reloaded the history');
     assert.equal(await readable.locator('.history-merge-badge').textContent(), 'merge · 2');
     assert.equal(await readable.locator('.history-merge-badge').count(), 1, 'only the merge has a badge');
     assert.equal(await readable.locator('.history-row').count(), 3);
@@ -2455,6 +2464,7 @@ async function main() {
     assert.equal(await readable.evaluate(() => window.__graphReply('all').firstParent), false);
     await readable.locator('.history-row', { hasText: 'x two' }).waitFor();
     assert.equal(await readable.locator('.history-merge-badge').count(), 0);
+    assert.equal(await readable.getAttribute('#includeRemotesItem', 'aria-disabled'), null, 'the remote item stayed disabled');
     await readable.keyboard.press('Escape');
     await readable.close();
 
