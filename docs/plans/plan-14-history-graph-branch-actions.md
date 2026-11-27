@@ -1,6 +1,6 @@
 # Plan 14 — Merge and rebase between branches from the graph, with a preview
 
-Status: approved
+Status: implemented
 Date: 2026-11-22
 Branch: `feat/history-graph-branch-actions`
 Baseline: `main` at `1c8ecc4fdac80b5ce8887fc4c123fd39e32461ac` (3.10.0). Revised 2026-11-27 on top of plans 16, 17
