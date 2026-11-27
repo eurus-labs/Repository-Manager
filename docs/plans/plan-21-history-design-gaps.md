@@ -1,6 +1,6 @@
 # Plan 21 — Close the gaps between the history and its design
 
-Status: draft
+Status: approved
 Date: 2026-11-27
 Branch: `fix/history-design-gaps`
 Baseline: `main` at `71493464e6f56ddf39b71272f04f1c1c54030d5a` (plans 19 and 20 merged, version 3.12.0)
