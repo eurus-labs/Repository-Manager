@@ -2369,6 +2369,18 @@ async function main() {
     assert.equal(dots.labels['origin/HEAD'].dot, null, 'origin/HEAD has a dot');
     assert.equal(dots.labels['v2.0'].dot, null, 'a tag has a dot');
     assert.equal(await readable.locator('.ref-dot[aria-hidden="true"]').count(), 3);
+    // The tone takes no width: a label is as wide with it as without it, so labels wrap as they did
+    // before and a narrow history row does not grow a line (CI's fonts are wider than this machine's).
+    const widths = await readable.evaluate(() => Array.from(document.querySelectorAll('.history-ref .ref-dot')).map(dot => {
+      const label = dot.parentElement;
+      const withDot = label.getBoundingClientRect().width;
+      const marker = document.createComment('dot');
+      dot.replaceWith(marker);
+      const without = label.getBoundingClientRect().width;
+      marker.replaceWith(dot);
+      return withDot - without;
+    }));
+    assert.ok(widths.length && widths.every(extra => Math.abs(extra) < 0.5), `the tone widens labels by ${JSON.stringify(widths)} px`);
     assert.equal(await readable.locator('.history-ref [onclick], .history-ref [onmouseover], .history-ref a[href^="javascript:"]').count(), 0);
 
     // Pointing at a row marks its branch line and dims the rest.

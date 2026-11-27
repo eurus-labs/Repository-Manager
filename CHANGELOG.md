@@ -16,7 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - A branch keeps its colour in the history graph. The colour comes from the branch's name, so it no longer changes when you load more commits, refresh or filter, and `origin/x` and `x` share one. The current branch's line stays in the first colour.
-- Branch labels in the history show a small dot in their line's colour, so a label names the line it belongs to. Tags and `origin/HEAD` have no dot.
+- Branch labels in the history have a bar of their line's colour along the left edge, so a label names the line it belongs to. Tags and `origin/HEAD` have none.
 - Pointing at or tabbing to a commit, its node or one of its labels highlights that branch's whole line in the loaded history and dims the others.
 
 ## [3.10.0] - 2026-11-26

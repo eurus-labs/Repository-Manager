@@ -1808,16 +1808,17 @@ body.vscode-high-contrast .graph-node-control[data-marker="T"] .graph-node-hit {
 
 .history-ref.ref-tag { color: var(--vscode-charts-purple, #c5b5ff); background: rgba(164, 139, 240, .14); }
 
-/* The dot is the branch's tone in the graph: the label names the line. */
+/* The branch's tone in the graph, as a bar along the label's left edge: the label names the line.
+   It sits in the left padding and takes no width, so labels wrap exactly as they did without it. */
+.history-ref { position: relative; }
+
 .history-ref .ref-dot {
-  display: inline-block;
-  width: 7px;
-  height: 7px;
-  margin-right: 5px;
-  border-radius: 50%;
-  vertical-align: middle;
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 3px;
   background: var(--lane-color);
-  box-shadow: 0 0 0 1px var(--bg-sunken);
 }
 
 /* A merge in the first-parent view: one commit, with the number of commits it brought in. */

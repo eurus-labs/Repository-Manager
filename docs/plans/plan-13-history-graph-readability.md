@@ -37,10 +37,12 @@ After this change:
    - A lane with no label (an unnamed merge line) takes the next tone not used by a neighbouring lane.
    - Rejected: keeping order-based colours. They are the reason colours change.
    - Rejected: a colour per lane index, which is also unstable.
-2. **The legend is the labels.** Each branch label in the history gets a small dot in its lane's tone, before its
-   name. Nothing is added beside the graph. The `origin` chip of a merged label keeps its own colour
-   (`--ref-origin`), after the name. Tags get no dot.
-   - Rejected: a separate legend panel, which takes width the table needs.
+2. **The legend is the labels.** Each branch label in the history gets its lane's tone as a 3 px bar along its
+   left edge, inside its padding. Nothing is added beside the graph. The `origin` chip of a merged label keeps its own
+   colour (`--ref-origin`), after the name. Tags get no bar.
+   - **The tone takes no width.** At first it was a 7 px dot with a 5 px margin. That made each label 12 px wider,
+     and in CI a 600 px row with four labels wrapped to three lines (90 px, over the 80 px limit). Changed after
+     review, 2026-11-27.
 3. **Highlight a branch's line.**
    - Hovering or focusing a commit row, its node, or one of its branch labels marks that lane's segment: from the
      row where the lane starts down to where it merges or ends, within the loaded rows. The class
