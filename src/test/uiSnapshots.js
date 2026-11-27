@@ -985,12 +985,21 @@ async function main() {
     assert.equal(await page.evaluate(() => window.__sent.filter(m => m.type === 'getHistory').length), 1);
     // The graph draws main and origin/main at one commit as a single label with an origin chip.
     const labelsAt = async subject => (await page.locator('.history-row', { hasText: subject }).first().locator('.history-ref').allTextContents());
-    assert.deepEqual(await labelsAt('add linked repositories'), ['1.0.0', 'mainorigin', 'feature/ahead', 'claude/review-dashboard-layout-at-narrow-widths']);
+    // The cloud icon replaced the "origin" text chip, so the label's text is its name alone.
+    assert.deepEqual(await labelsAt('add linked repositories'), ['1.0.0', 'main', 'feature/ahead', 'claude/review-dashboard-layout-at-narrow-widths']);
+    const mainLabel = page.locator('.history-row', { hasText: 'add linked repositories' }).first().locator('.history-ref[data-branch="main"]');
+    assert.equal(await mainLabel.locator('svg.ref-origin[role="img"][aria-label="on origin"]').count(), 1, 'main has no cloud');
+    assert.equal(await mainLabel.locator('svg.ref-local[role="img"][aria-label="on this machine"]').count(), 1, 'main has no monitor');
+    assert.equal(await mainLabel.getByText('origin', { exact: true }).count(), 0, 'main still has an origin text chip');
     assert.equal(await page.locator('.history-ref', { hasText: /^origin\/main$/ }).count(), 0, 'origin/main is drawn beside main');
     // Local ahead of origin keeps two labels at two commits; a branch only here has no chip.
     assert.deepEqual(await labelsAt('add app'), ['origin/remote-only', 'origin/feature/ahead']);
-    assert.equal(await page.locator('.history-row .history-ref[data-branch="feature/ahead"] .ref-origin').count(), 0);
-    assert.equal(await page.locator('.history-ref[data-branch="claude/review-dashboard-layout-at-narrow-widths"] .ref-origin').count(), 0);
+    const remoteLabel = page.locator('.history-ref[data-target="origin/feature/ahead"]').first();
+    assert.equal(await remoteLabel.locator('svg.ref-origin[aria-label="on origin"]').count(), 1, 'origin/feature/ahead has no cloud');
+    assert.equal(await remoteLabel.locator('svg.ref-local').count(), 0, 'origin/feature/ahead has a monitor');
+    // (The local label only: origin/feature/ahead at the other commit shares its data-branch and is on origin.)
+    assert.equal(await page.locator('.history-row .history-ref.ref-local-branch[data-branch="feature/ahead"] .ref-origin').count(), 0);
+    assert.equal(await page.locator('.history-ref.ref-local-branch[data-branch="claude/review-dashboard-layout-at-narrow-widths"] .ref-origin').count(), 0);
     // Double-clicking the merged label checks out the local branch.
     // The host is not asked here: the message is caught and the checkout reported as cancelled.
     await page.evaluate(() => {
@@ -2652,35 +2661,38 @@ async function main() {
     assert.equal(await readable.evaluate(() => window.__graphReply('all').firstParent), false, 'the request asked for first-parent only');
     await readable.locator('.history-row', { hasText: 'x two' }).waitFor();
 
-    // Labels carry their line's tone: main (tone 0, with its origin chip) and feature/x by name.
-    const dots = await readable.evaluate(() => {
+    // Labels carry their line's tone as the border and text: main (tone 0, on origin) and feature/x by name.
+    // Plan 20 removed plan 13's edge bar (.ref-dot): the border carries the tone, so there is one mark.
+    const labelTones = await readable.evaluate(() => {
       const toneOf = name => `graph-lane-${window.RepositoryHistoryGraph.toneForName(name)}`;
+      const edgeStroke = className => { const path = document.querySelector(`.graph-edge.${className}`); return path ? getComputedStyle(path).stroke : null; };
       const labels = {};
       document.querySelectorAll('.history-ref').forEach(label => {
-        const dot = label.querySelector('.ref-dot');
-        labels[label.textContent] = { dot: dot ? dot.className.split(' ').find(name => /^graph-lane-\d$/.test(name)) : null,
-          chipAfterName: Boolean(label.querySelector('.ref-origin')) && label.lastElementChild.classList.contains('ref-origin') };
+        const lane = Array.from(label.classList).find(name => /^graph-lane-\d$/.test(name)) || null;
+        labels[label.querySelector('.ref-name').textContent] = { lane, border: getComputedStyle(label).borderTopColor, edge: lane ? edgeStroke(lane) : null,
+          cloud: label.querySelectorAll('svg.ref-origin[role="img"][aria-label="on origin"]').length, local: label.querySelectorAll('svg.ref-local[aria-label="on this machine"]').length,
+          iconsBeforeName: Boolean(label.firstElementChild && label.firstElementChild.tagName.toLowerCase() === 'svg') };
       });
       return { labels, expected: { x: toneOf('feature/x'), y: toneOf('feature/y') } };
     });
-    assert.deepEqual(dots.labels['mainorigin'], { dot: 'graph-lane-0', chipAfterName: true }, 'main has no tone-0 dot before its name and its origin chip after');
-    assert.deepEqual(dots.labels['feature/xorigin'], { dot: dots.expected.x, chipAfterName: true }, 'the merged feature/x label has another tone');
-    assert.deepEqual(dots.labels['feature/y'], { dot: dots.expected.y, chipAfterName: false });
-    assert.equal(dots.labels['origin/HEAD'].dot, null, 'origin/HEAD has a dot');
-    assert.equal(dots.labels['v2.0'].dot, null, 'a tag has a dot');
-    assert.equal(await readable.locator('.ref-dot[aria-hidden="true"]').count(), 3);
-    // The tone takes no width: a label is as wide with it as without it, so labels wrap as they did
-    // before and a narrow history row does not grow a line (CI's fonts are wider than this machine's).
-    const widths = await readable.evaluate(() => Array.from(document.querySelectorAll('.history-ref .ref-dot')).map(dot => {
-      const label = dot.parentElement;
-      const withDot = label.getBoundingClientRect().width;
-      const marker = document.createComment('dot');
-      dot.replaceWith(marker);
-      const without = label.getBoundingClientRect().width;
-      marker.replaceWith(dot);
-      return withDot - without;
-    }));
-    assert.ok(widths.length && widths.every(extra => Math.abs(extra) < 0.5), `the tone widens labels by ${JSON.stringify(widths)} px`);
+    assert.equal(labelTones.labels['main'].lane, 'graph-lane-0', 'main has the tone of its line');
+    assert.equal(labelTones.labels['feature/x'].lane, labelTones.expected.x, 'the merged feature/x label has another tone');
+    assert.equal(labelTones.labels['feature/y'].lane, labelTones.expected.y);
+    assert.equal(labelTones.labels['origin/HEAD'].lane, null, 'origin/HEAD has a tone');
+    assert.equal(labelTones.labels['v2.0'].lane, null, 'a tag has a tone');
+    for (const name of ['main', 'feature/x', 'feature/y']) {
+      assert.ok(labelTones.labels[name].edge, `${name}: no graph line of its tone is drawn`);
+      assert.equal(labelTones.labels[name].border, labelTones.labels[name].edge, `${name}: the border colour is not the lane tone`);
+    }
+    assert.deepEqual([labelTones.labels['main'].cloud, labelTones.labels['main'].local, labelTones.labels['main'].iconsBeforeName], [1, 1, true], 'main: a cloud and a monitor before its name');
+    assert.deepEqual([labelTones.labels['feature/x'].cloud, labelTones.labels['feature/x'].local], [1, 1]);
+    assert.deepEqual([labelTones.labels['feature/y'].cloud, labelTones.labels['feature/y'].local], [0, 1], 'a local-only branch has a monitor and no cloud');
+    assert.deepEqual([labelTones.labels['origin/HEAD'].cloud, labelTones.labels['origin/HEAD'].local, labelTones.labels['v2.0'].cloud, labelTones.labels['v2.0'].local], [0, 0, 0, 0], 'origin/HEAD and tags have no icon');
+    assert.equal(await readable.locator('.ref-dot').count(), 0, 'plan 13 edge bars are gone');
+    assert.equal(await readable.locator('.history-ref-more:not([hidden])').count(), 0, 'one commit has no folded labels at 1440 px');
+    // The row is as tall as any other with labels: a label never makes it wrap.
+    const rowHeights = await readable.evaluate(() => Array.from(document.querySelectorAll('.history-row')).map(row => Math.round(row.getBoundingClientRect().height)));
+    assert.ok(rowHeights.every(height => height === 30), `history rows are ${JSON.stringify(rowHeights)} px tall`);
     assert.equal(await readable.locator('.history-ref [onclick], .history-ref [onmouseover], .history-ref a[href^="javascript:"]').count(), 0);
 
     // Only a commit node marks its branch line and fades the rest (plan 19). A row, a label and empty graph
@@ -2802,6 +2814,142 @@ async function main() {
     assert.equal(await readable.getAttribute('#includeRemotesItem', 'aria-disabled'), null, 'the remote item stayed disabled');
     await readable.keyboard.press('Escape');
     await readable.close();
+
+    // Compact rows (plan 20): one line per commit, initials in the nodes, tinted rows, icon labels.
+    // A scripted history: the first commit is the checked-out main (1 ahead), the second has six labels.
+    const openCompact = async (width, theme) => {
+      const compact = await openPage(width, 900, theme);
+      await compact.evaluate(() => {
+        const sent = window.__compactSent = [];
+        const toHost = window.__postToHost;
+        window.__postToHost = message => { if (message.type === 'getHistory') { sent.push(message); return Promise.resolve(); } return toHost(message); };
+      });
+      await compact.evaluate(() => document.getElementById('dashboardIncludeRemotes').click());
+      await compact.waitForFunction(() => window.__compactSent.length > 0);
+      await compact.evaluate(() => {
+        const hex = n => n.toString(16).padStart(40, '0');
+        const local = name => ({ name, kind: 'local-branch' });
+        const commit = (n, parent, subject, authorName, refs) => ({ hash: hex(n), shortHash: hex(n).slice(-7), parentHashes: parent ? [hex(parent)] : [],
+          authorName, authorEmail: 'a@x', authoredAt: '2025-01-15T10:00:00Z', subject, refs: refs || [] });
+        const request = window.__compactSent.at(-1).payload;
+        const commits = [
+          commit(10, 9, 'feat: draw every commit on one line', 'Thanh Hoang', [{ name: 'main', kind: 'head', isCurrent: true }, { name: 'origin/main', kind: 'remote-branch' }]),
+          commit(9, 8, 'feat: fold the labels that do not fit', 'Madonna', [local('feature/alpha'), local('feature/beta'), local('feature/gamma'), local('feature/delta'), local('feature/epsilon'), { name: 'v3.0', kind: 'tag' }]),
+          commit(8, 7, 'fix: a plain commit with no label', 'Linus Benedict Torvalds', []),
+          commit(7, 0, 'chore: a commit with no author name', '', [])
+        ];
+        window.dispatchEvent(new MessageEvent('message', { data: { type: 'historyLoaded', payload: { repositoryPath: request.repositoryPath,
+          requestId: request.requestId, offset: 0, commits, nextOffset: null, upstream: null } } }));
+        // The repository's counts arrive after the page: the current branch's label is updated in place.
+        window.dispatchEvent(new MessageEvent('message', { data: { type: 'updateSubmodules', payload: { submodules: window.__initialRepositories
+          .map(repository => repository.path === request.repositoryPath ? Object.assign({}, repository, { ahead: 1, behind: 0 }) : repository) } } }));
+      });
+      await compact.locator('.history-row', { hasText: 'fold the labels' }).waitFor();
+      return compact;
+    };
+    for (const width of [1280, 600]) {
+      const compact = await openCompact(width);
+      const rows = await compact.evaluate(() => Array.from(document.querySelectorAll('.history-row')).map(row => {
+        const first = row.querySelector('.history-ref:not(.ref-folded)');
+        const subject = row.querySelector('.history-subject').getBoundingClientRect();
+        const label = first && first.getBoundingClientRect();
+        return { height: row.getBoundingClientRect().height, labelled: Boolean(first),
+          overlap: label ? Math.min(label.bottom, subject.bottom) - Math.max(label.top, subject.top) : null,
+          beside: label ? label.right <= subject.left + 0.5 : null };
+      }));
+      assert.equal(rows.length, 4);
+      rows.forEach((row, index) => assert.ok(Math.abs(row.height - 30) <= 1, `${width}px: a ${row.labelled ? 'labelled' : 'plain'} row is ${row.height}px tall (row ${index}), not 30`));
+      rows.filter(row => row.labelled).forEach(row => assert.ok(row.overlap > 10 && row.beside, `${width}px: the first label is not on the subject's line (${JSON.stringify(row)})`));
+      // Six labels fold into "+N", whose title names the folded ones.
+      await compact.waitForFunction(() => document.querySelector('.history-row[data-commit$="9"] .history-ref-more:not([hidden])'));
+      const folding = await compact.evaluate(() => {
+        const row = document.querySelector('.history-row[data-commit$="9"]');
+        const message = row.querySelector('.history-message').getBoundingClientRect().width;
+        const visible = Array.from(row.querySelectorAll('.history-ref')).filter(label => label.getClientRects().length > 0);
+        const chip = row.querySelector('.history-ref-more');
+        return { messageWidth: message, refsWidth: row.querySelector('.history-refs').getBoundingClientRect().width, visible: visible.map(label => label.dataset.refName),
+          chip: chip.textContent, title: chip.title };
+      });
+      const names = ['feature/alpha', 'feature/beta', 'feature/gamma', 'feature/delta', 'feature/epsilon', 'v3.0'];
+      assert.ok(folding.refsWidth <= folding.messageWidth * 0.55 + 1, `${width}px: the labels take ${folding.refsWidth} of ${folding.messageWidth}px`);
+      assert.deepEqual(folding.visible, names.slice(0, folding.visible.length), `${width}px: labels fold from the end`);
+      assert.equal(folding.chip, `+${6 - folding.visible.length}`);
+      assert.equal(folding.title, names.slice(folding.visible.length).join(', '), `${width}px: the chip's title does not name the folded labels`);
+      if (width === 600) {
+        assert.ok(folding.messageWidth < 360, `600px: the message column is ${folding.messageWidth}px, so the narrow rule is not under test`);
+        assert.deepEqual([folding.visible.length, folding.chip], [1, '+5'], '600px shows one label and +5');
+      } else {
+        assert.ok(folding.visible.length > 1 && folding.visible.length < 6, `1280px shows ${folding.visible.length} of 6 labels`);
+        // The checked-out branch: a cloud, a monitor and its ahead count; the other labels have no count.
+        const head = compact.locator('.history-ref.ref-head');
+        assert.equal(await head.locator('.ref-counts').textContent(), '↑1');
+        assert.equal(await compact.locator('.ref-counts').count(), 1, 'only the current branch shows counts');
+        // Counts that are not whole numbers never reach the page as markup: no element, no handler, no count.
+        await compact.evaluate(() => window.dispatchEvent(new MessageEvent('message', { data: { type: 'updateSubmodules', payload: {
+          submodules: window.__initialRepositories.map(repository => Object.assign({}, repository,
+            { ahead: '<img src="x" onerror="window.__countsInjected = true">', behind: '2<b>x</b>' })) } } })));
+        await compact.waitForTimeout(200);
+        assert.equal(await compact.evaluate(() => document.querySelectorAll('#dashboardHistory .history-ref img, #dashboardHistory .history-ref b').length), 0, 'counts were inserted as markup');
+        assert.equal(await compact.evaluate(() => window.__countsInjected === true), false, 'a count ran a handler');
+        assert.equal(await compact.locator('.ref-counts').count(), 0, 'a count that is not a number was shown');
+        // A real count afterwards shows again.
+        await compact.evaluate(() => window.dispatchEvent(new MessageEvent('message', { data: { type: 'updateSubmodules', payload: {
+          submodules: window.__initialRepositories.map(repository => Object.assign({}, repository, { ahead: 1, behind: 0 })) } } })));
+        await compact.waitForFunction(() => document.querySelector('.history-ref.ref-head .ref-counts'));
+        assert.equal(await head.locator('.ref-counts').textContent(), '↑1');
+        assert.equal(await head.locator('svg.ref-origin[aria-label="on origin"]').count(), 1);
+        assert.equal(await head.locator('svg.ref-local[aria-label="on this machine"]').count(), 1);
+        // Nodes: initials of the first two words; one word is one letter; no name is "?".
+        assert.deepEqual(await compact.locator('.graph-node-initials').allTextContents(), ['TH', 'M', 'LB', '?']);
+        // The B/T selection still toggles from the node and shows its marker on top of the initials.
+        await compact.locator('.graph-node-control').nth(2).click();
+        await compact.locator('.graph-node-control').nth(0).click({ modifiers: ['Shift'] });
+        assert.deepEqual([await compact.locator('.graph-node-control').nth(2).getAttribute('data-marker'), await compact.locator('.graph-node-control').nth(0).getAttribute('data-marker')], ['B', 'T']);
+        assert.equal(await compact.locator('.graph-node-control[data-marker="B"] .graph-node-marker').evaluate(marker => getComputedStyle(marker).display), 'block');
+        await compact.locator('[data-action="clearCommitComparison"]').click();
+        // Rows: tinted with their line's tone, the checked-out tip outlined, the selected row stronger.
+        const tones = await compact.evaluate(() => {
+          const channels = value => (value.match(/-?\d*\.?\d+(e-?\d+)?/g) || []).map(Number);
+          const rgb = value => { const parts = channels(value); return value.startsWith('color(') ? parts.slice(0, 3).map(part => part * 255) : parts.slice(0, 3); };
+          const alpha = value => { const parts = channels(value); return value.startsWith('color(') ? parts[parts.length - 1] : parts.length > 3 ? parts[3] : 1; };
+          // The first row is selected when the history opens, so the 5% tint is read on a plain row.
+          const tip = document.querySelector('.history-row[data-commit$="a"]');
+          const row = document.querySelector('.history-row[data-commit$="8"]');
+          const lane = Array.from(row.classList).find(name => /^graph-lane-\d$/.test(name));
+          const stroke = getComputedStyle(document.querySelector(`.graph-node.${lane}`)).stroke;
+          return { lane, stroke: rgb(stroke), background: rgb(getComputedStyle(row).backgroundColor), alpha: alpha(getComputedStyle(row).backgroundColor),
+            tip: { width: getComputedStyle(tip, '::after').borderTopWidth, content: getComputedStyle(tip, '::after').content },
+            plainTip: getComputedStyle(row, '::after').content };
+        });
+        assert.ok(tones.lane, 'a row has no lane tone');
+        tones.background.forEach((channel, index) => assert.ok(Math.abs(channel - tones.stroke[index]) <= 2, `the row's background ${tones.background} is not its tone ${tones.stroke}`));
+        assert.ok(Math.abs(tones.alpha - 0.05) < 0.01, `the row tint is ${tones.alpha}, not 5%`);
+        assert.equal(tones.tip.width, '1px');
+        assert.notEqual(tones.tip.content, 'none', 'the checked-out tip has no outline');
+        assert.equal(tones.plainTip, 'none', 'a row that is not the checked-out tip has an outline');
+        await compact.locator('.history-row[data-commit$="9"]').click();
+        await compact.waitForFunction(() => document.querySelector('.history-row[data-commit$="9"].active'));
+        const selected = await compact.evaluate(() => {
+          const value = getComputedStyle(document.querySelector('.history-row[data-commit$="9"]')).backgroundColor;
+          const parts = (value.match(/-?\d*\.?\d+(e-?\d+)?/g) || []).map(Number);
+          return value.startsWith('color(') ? parts[parts.length - 1] : parts.length > 3 ? parts[3] : 1;
+        });
+        assert.ok(Math.abs(selected - 0.2) < 0.01, `the selected row is ${selected}, not 20%`);
+        // The scripted hashes are not in the repository, so the detail pane would show Git's error: show the working changes instead.
+        await compact.locator('#uncommittedRow').click();
+        await compact.waitForFunction(() => document.querySelector('#uncommittedRow.active'));
+        await compact.mouse.move(2, 2);
+        await snap(compact, '63-history-compact-rows');
+      }
+      await compact.close();
+    }
+    {
+      const compactLight = await openCompact(1280, 'light');
+      await compactLight.waitForFunction(() => document.querySelector('.history-row[data-commit$="9"] .history-ref-more:not([hidden])'));
+      await compactLight.mouse.move(2, 2);
+      await snap(compactLight, '63-history-compact-rows-light');
+      await compactLight.close();
+    }
 
     // A reply for an older request or another repository does not replace the rows shown. The page's
     // own getHistory requests are held back, so no real reply can land at any timing: only the replies
@@ -2973,18 +3121,62 @@ async function main() {
       if (name !== 'body') assert.ok(value >= 4.5, `${name} text has contrast ${value} in a light theme`);
     }
     await snap(light, '14-light-theme');
-    // The origin chip stays readable on a branch label in the light theme.
-    assert.ok(await light.locator('.history-ref .ref-origin').count() > 0, 'no origin chip in the light theme');
-    const chipContrast = await light.evaluate(() => {
-      const rgb = value => (value.match(/\d+(\.\d+)?/g) || []).slice(0, 3).map(Number);
+    // A branch label stays readable in the light theme: its tone-coloured text is at least 4.5:1 on its own fill.
+    // (Plan 16's origin text chip is the cloud icon now; the icon is as readable as the text beside it.)
+    assert.ok(await light.locator('.history-ref .ref-origin[aria-label="on origin"]').count() > 0, 'no origin icon in the light theme');
+    const pillContrast = await light.evaluate(() => {
+      // Chromium writes a colour-mix() result as color(srgb 0.4 0.2 0.1 / 0.12): channels in 0..1.
+      const parse = value => { const parts = (value.match(/-?\d*\.?\d+(?:e-?\d+)?/g) || []).map(Number); const scale = value.startsWith('color(') ? 255 : 1; return [parts.slice(0, 3).map(part => part * scale), parts.length > 3 ? parts[3] : 1]; };
+      const rgb = value => parse(value)[0];
       const luminance = ([r, g, b]) => [r, g, b].map(c => { c /= 255; return c <= .03928 ? c / 12.92 : ((c + .055) / 1.055) ** 2.4; })
         .reduce((sum, c, i) => sum + c * [.2126, .7152, .0722][i], 0);
-      const chip = document.querySelector('.history-ref .ref-origin');
-      const style = getComputedStyle(chip);
-      const [x, y] = [luminance(rgb(style.color)), luminance(rgb(style.backgroundColor))].sort((m, n) => n - m);
-      return +((x + .05) / (y + .05)).toFixed(2);
+      const behind = element => {
+        const layers = [];
+        for (let node = element; node; node = node.parentElement) {
+          const [color, alpha] = parse(getComputedStyle(node).backgroundColor);
+          if (alpha > 0) layers.push([color, alpha]);
+          if (alpha >= 1) break;
+        }
+        return layers.reverse().reduce((under, [color, alpha]) => color.map((c, i) => c * alpha + under[i] * (1 - alpha)), [255, 255, 255]);
+      };
+      return Array.from(document.querySelectorAll('.history-ref.ref-tone')).map(pill => {
+        const [x, y] = [luminance(rgb(getComputedStyle(pill).color)), luminance(behind(pill))].sort((m, n) => n - m);
+        return { name: pill.dataset.refName, ratio: +((x + .05) / (y + .05)).toFixed(2) };
+      });
     });
-    assert.ok(chipContrast >= 3, `the origin chip has contrast ${chipContrast} in a light theme`);
+    assert.ok(pillContrast.length > 0, 'no tone-coloured label in the light theme');
+    for (const pill of pillContrast) assert.ok(pill.ratio >= 4.5, `${pill.name} text has contrast ${pill.ratio} in a light theme`);
+    // Every one of the eight lane tones, not only the one the fixture draws: the pill is put on each in turn.
+    const laneContrast = await light.evaluate(() => {
+      // Chromium writes a colour-mix() result as color(srgb 0.4 0.2 0.1 / 0.12): channels in 0..1.
+      const parse = value => { const parts = (value.match(/-?\d*\.?\d+(?:e-?\d+)?/g) || []).map(Number); const scale = value.startsWith('color(') ? 255 : 1; return [parts.slice(0, 3).map(part => part * scale), parts.length > 3 ? parts[3] : 1]; };
+      const rgb = value => parse(value)[0];
+      const luminance = ([r, g, b]) => [r, g, b].map(c => { c /= 255; return c <= .03928 ? c / 12.92 : ((c + .055) / 1.055) ** 2.4; })
+        .reduce((sum, c, i) => sum + c * [.2126, .7152, .0722][i], 0);
+      const behind = element => {
+        const layers = [];
+        for (let node = element; node; node = node.parentElement) {
+          const [color, alpha] = parse(getComputedStyle(node).backgroundColor);
+          if (alpha > 0) layers.push([color, alpha]);
+          if (alpha >= 1) break;
+        }
+        return layers.reverse().reduce((under, [color, alpha]) => color.map((c, i) => c * alpha + under[i] * (1 - alpha)), [255, 255, 255]);
+      };
+      const pill = document.querySelector('.history-ref.ref-tone');
+      const row = pill.closest('.history-row');
+      const original = { pill: pill.className, row: row.className };
+      const ratios = [];
+      for (let lane = 0; lane < 8; lane++) {
+        pill.className = pill.className.replace(/graph-lane-\d/, `graph-lane-${lane}`);
+        row.className = row.className.replace(/graph-lane-\d/, `graph-lane-${lane}`);
+        const [x, y] = [luminance(rgb(getComputedStyle(pill).color)), luminance(behind(pill))].sort((m, n) => n - m);
+        ratios.push(+((x + .05) / (y + .05)).toFixed(2));
+      }
+      pill.className = original.pill;
+      row.className = original.row;
+      return ratios;
+    });
+    laneContrast.forEach((ratio, lane) => assert.ok(ratio >= 4.5, `lane ${lane} label text has contrast ${ratio} in a light theme (all: ${laneContrast})`));
     await snap(light, '56-history-origin-labels-light');
     // The Side Bar takes the light theme too, and its text stays readable.
     const sideContrast = await light.sidebar.evaluate(() => {
@@ -3159,7 +3351,7 @@ async function main() {
         await snap(narrow, `${name}-compare`);
         await narrow.click('[data-action="clearCommitComparison"]');
       }
-      assert.ok(layout.tallestRow <= 80,`${width}px: a history row is ${layout.tallestRow}px tall`);
+      assert.ok(layout.tallestRow <= 32, `${width}px: a history row is ${layout.tallestRow}px tall`);
       assert.ok(layout.messageWidth >= 150, `${width}px: the message column is only ${layout.messageWidth}px`);
       assert.equal(layout.pageOverflow, 0, `${width}px: the page scrolls horizontally`);
       await snap(narrow, name);

@@ -3,7 +3,7 @@
   if (typeof module === 'object' && module.exports) module.exports = api;
   root.RepositoryHistoryGraph = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
-  const ROW_HEIGHT = 32;
+  const ROW_HEIGHT = 30;
   const LANE_GAP = 18;
   const LANE_INSET = 18;
   const MIN_GRAPH_WIDTH = 76;
@@ -261,7 +261,29 @@
     };
   }
 
+  /**
+   * How many labels of a row show before the rest fold into a "+N" chip. Labels show in order while
+   * they fit the budget; once one would not fit, room is kept for the chip. `limit` caps the count
+   * (one label in a narrow column).
+   */
+  function visibleRefCount(widths, budget, limit, gap, moreWidth) {
+    // All of them fit: no chip, so no room is kept for one.
+    const total = widths.reduce((sum, width, index) => sum + width + (index ? gap : 0), 0);
+    if (widths.length <= limit && total <= budget) return widths.length;
+    let used = 0;
+    let visible = 0;
+    for (let index = 0; index < widths.length; index += 1) {
+      const more = widths.length - index - 1 > 0 ? gap + moreWidth : 0;
+      const next = used + (visible ? gap : 0) + widths[index];
+      if (visible >= limit || (visible >= 1 && next + more > budget)) break;
+      used = next;
+      visible += 1;
+    }
+    return visible;
+  }
+
   return {
+    visibleRefCount,
     ROW_HEIGHT,
     laneX,
     toneForName,

@@ -1755,22 +1755,75 @@
     return '';
   }
 
-  function renderHistoryRefs(refs, interactive, tone) {
+  // The icons on a branch label: a cloud when it is on origin, a monitor when it is on this machine.
+  const REF_ICON_ATTRS = 'width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"';
+  const REF_ICON_CLOUD = `<svg class="ref-icon ref-origin" ${REF_ICON_ATTRS} role="img" aria-label="on origin"><path d="M4.5 12.5h7.2a2.8 2.8 0 0 0 .3-5.6 4 4 0 0 0-7.7-.8A3.2 3.2 0 0 0 4.5 12.5z"/></svg>`;
+  const REF_ICON_LOCAL = `<svg class="ref-icon ref-local" ${REF_ICON_ATTRS} role="img" aria-label="on this machine"><rect x="2" y="3" width="12" height="8" rx="1"/><path d="M6 14h4M8 11v3"/></svg>`;
+
+  // The first letters of the first two words of a name ("Thanh Hoang" is "TH"), "?" without one.
+  // Initials only cue the author; no avatar is fetched and no email leaves the page.
+  function authorInitials(name) {
+    const words = String(name || '').split(/\s+/).filter(Boolean).slice(0, 2);
+    return words.length ? words.map(word => Array.from(word)[0]).join('').toUpperCase() : '?';
+  }
+
+  // The repository's ahead and behind, on the current branch's label only: another branch's
+  // numbers would need a Git process each.
+  // Only whole positive numbers are shown: anything else in a message is ignored, never inserted.
+  function refCountsText(counts) {
+    const count = value => {
+      const number = typeof value === 'number' ? value : NaN;
+      return Number.isInteger(number) && number > 0 ? number : 0;
+    };
+    const ahead = count(counts && counts.ahead);
+    const behind = count(counts && counts.behind);
+    return [ahead ? `↑${ahead}` : '', behind ? `↓${behind}` : ''].filter(Boolean).join(' ');
+  }
+
+  function refCountsHtml(counts) {
+    const text = refCountsText(counts);
+    return text ? `<span class="ref-counts">${escapeHtml(text)}</span>` : '';
+  }
+
+  // The counts change without a new history page (a fetch, a push): the label is updated in place.
+  function syncHistoryBranchCounts(repository) {
+    const labels = document.querySelectorAll('#dashboardHistory .history-ref.ref-head, #dashboardHistory .history-ref[data-current="true"]');
+    labels.forEach(label => {
+      const existing = label.querySelector('.ref-counts');
+      if (existing) existing.remove();
+      // Built as text, not markup: the counts come from a message.
+      const text = refCountsText(repository);
+      if (text) {
+        const counts = document.createElement('span');
+        counts.className = 'ref-counts';
+        counts.textContent = text;
+        label.appendChild(counts);
+      }
+    });
+    if (labels.length) scheduleFoldHistoryRefs();
+  }
+
+  // counts: { ahead, behind } of the repository the history shows.
+  function renderHistoryRefs(refs, interactive, tone, counts) {
     const list = refs || [];
-    // origin/x at the commit where x is also drawn reads as one label with an origin chip.
+    // origin/x at the commit where x is also drawn reads as one label with a cloud icon.
     const isLocal = ref => ref.kind === 'head' || ref.kind === 'local-branch';
     const localNames = new Set(list.filter(isLocal).map(ref => ref.name));
     const mergedRemote = ref => ref.kind === 'remote-branch' && ref.name.startsWith('origin/') && localNames.has(ref.name.slice('origin/'.length));
     const mergedNames = new Set(list.filter(mergedRemote).map(ref => ref.name.slice('origin/'.length)));
-    return list.filter(ref => !mergedRemote(ref)).map(ref => {
-      const className = `history-ref ref-${escapeHtml(ref.kind)}`;
-      const branch = interactive ? checkoutBranchFromRef(ref) : '';
+    const shown = list.filter(ref => !mergedRemote(ref));
+    const pills = shown.map(ref => {
       const merged = isLocal(ref) && mergedNames.has(ref.name);
-      const chip = merged ? '<span class="ref-origin">origin</span>' : '';
-      // A branch label carries its lane's tone as a dot; tags and the origin/HEAD pointer have none.
+      // A branch label carries its line's tone as its border and text; tags and the origin/HEAD pointer have none.
       const isBranch = isLocal(ref) || (ref.kind === 'remote-branch' && !/(^|\/)HEAD$/.test(ref.name));
-      const dot = isBranch && Number.isInteger(tone) ? `<span class="ref-dot graph-lane-${tone % 8}" aria-hidden="true"></span>` : '';
-      if (!branch) return `<span class="${className}" title="${escapeHtml(ref.name)}">${dot}${escapeHtml(ref.name)}${chip}</span>`;
+      const toned = isBranch && Number.isInteger(tone);
+      const className = `history-ref ref-${escapeHtml(ref.kind)}${toned ? ` ref-tone graph-lane-${tone % 8}` : ''}${ref.kind === 'remote-branch' && !isBranch ? ' ref-plain' : ''}`;
+      const cloud = merged || (ref.kind === 'remote-branch' && isBranch && ref.name.startsWith('origin/')) ? REF_ICON_CLOUD : '';
+      const monitor = isLocal(ref) ? REF_ICON_LOCAL : '';
+      const isCurrent = ref.isCurrent || ref.kind === 'head';
+      const inner = `${cloud}${monitor}<span class="ref-name">${escapeHtml(ref.name)}</span>${isCurrent ? refCountsHtml(counts) : ''}`;
+      const branch = interactive ? checkoutBranchFromRef(ref) : '';
+      if (!branch) return `<span class="${className}" data-ref-name="${escapeHtml(ref.name)}" title="${escapeHtml(ref.name)}">${inner}</span>`;
       const title = merged
         ? `${ref.name} and origin/${ref.name} are at this commit. Double-click to check out ${ref.name} and update it from origin`
         : `Double-click to checkout ${branch}`;
@@ -1779,8 +1832,59 @@
       const drag = target
         ? ` draggable="true" data-target="${escapeHtml(target)}" data-kind="${escapeHtml(ref.kind === 'head' ? 'local-branch' : ref.kind)}" data-current="${ref.isCurrent || ref.kind === 'head' ? 'true' : 'false'}"`
         : '';
-      return `<button class="${className}" type="button" data-branch="${escapeHtml(branch)}"${drag} title="${escapeHtml(title)}">${dot}${escapeHtml(ref.name)}${chip}</button>`;
-    }).join('');
+      return `<button class="${className}" type="button" data-branch="${escapeHtml(branch)}" data-ref-name="${escapeHtml(ref.name)}"${drag} title="${escapeHtml(title)}">${inner}</button>`;
+    });
+    // Labels never wrap: the ones that do not fit fold into this chip (see foldHistoryRefs).
+    return pills.join('') + (pills.length > 1 ? '<span class="history-ref-more" hidden></span>' : '');
+  }
+
+  // Labels share at most 55% of the message column; the rest fold into a "+N" chip whose title lists
+  // them. In a column under 360px only the first label shows. Writes, one read pass, then writes, so
+  // 2000 rows do not lay out twice per row.
+  const HISTORY_REF_SHARE = .55;
+  const HISTORY_REF_NARROW = 360;
+  const HISTORY_REF_GAP = 3;
+  const HISTORY_REF_MORE_WIDTH = 30;
+  const HISTORY_REF_MAX_WIDTH = 170;
+  let historyRefFoldFrame = 0;
+  function foldHistoryRefs() {
+    const history = document.getElementById('dashboardHistory');
+    if (!history) return;
+    const chips = Array.from(history.querySelectorAll('.history-ref-more'));
+    chips.forEach(chip => {
+      chip.hidden = true;
+      // Measured at natural width: neither the share limit nor shrinking applies while measuring.
+      chip.parentElement.classList.add('ref-measuring');
+      chip.parentElement.querySelectorAll('.ref-folded').forEach(pill => pill.classList.remove('ref-folded'));
+    });
+    const plans = chips.map(chip => {
+      const container = chip.parentElement;
+      const pills = Array.from(container.querySelectorAll('.history-ref'));
+      const widths = pills.map(pill => {
+        return Math.min(pill.offsetWidth, HISTORY_REF_MAX_WIDTH);
+      });
+      const badge = container.querySelector('.history-merge-badge');
+      return { chip, pills, widths, messageWidth: container.parentElement.clientWidth, extra: badge ? badge.offsetWidth + HISTORY_REF_GAP : 0 };
+    });
+    plans.forEach(plan => {
+      const budget = Math.floor(plan.messageWidth * HISTORY_REF_SHARE) - plan.extra;
+      const limit = plan.messageWidth < HISTORY_REF_NARROW ? 1 : plan.pills.length;
+      const visible = window.RepositoryHistoryGraph.visibleRefCount(plan.widths, budget, limit, HISTORY_REF_GAP, HISTORY_REF_MORE_WIDTH);
+      const folded = plan.pills.slice(visible);
+      folded.forEach(pill => pill.classList.add('ref-folded'));
+      plan.chip.parentElement.classList.remove('ref-measuring');
+      plan.chip.hidden = folded.length === 0;
+      plan.chip.textContent = folded.length ? `+${folded.length}` : '';
+      plan.chip.title = folded.map(pill => pill.dataset.refName || pill.textContent).join(', ');
+    });
+  }
+
+  function scheduleFoldHistoryRefs() {
+    if (historyRefFoldFrame) return;
+    historyRefFoldFrame = requestAnimationFrame(() => {
+      historyRefFoldFrame = 0;
+      foldHistoryRefs();
+    });
   }
 
   function setBranchCheckoutPending(isPending) {
@@ -2215,12 +2319,8 @@
           : `<path class="graph-edge ${tone(edgeColor)}"${seg(edgeSegment)} d="${laneCurve(currentX, middle, parentX, bottom)}"/>`);
       });
 
-      const decorated = (commit.refs || []).length > 0 || layout.isMerge;
-      nodes.push(layout.isHead
-        ? `<circle class="graph-node graph-node-head ${tone(color)}"${seg(layout.segment)} cx="${currentX}" cy="${middle}" r="6"/>`
-        : decorated
-          ? `<circle class="graph-node ${tone(color)}"${seg(layout.segment)} cx="${currentX}" cy="${middle}" r="5.5"/><circle class="graph-node-core ${tone(color)}"${seg(layout.segment)} cx="${currentX}" cy="${middle}" r="2.3"/>`
-          : `<circle class="graph-node-core ${tone(color)}"${seg(layout.segment)} cx="${currentX}" cy="${middle}" r="4"/>`);
+      // Every commit is one filled circle in its line's tone with the author's initials; HEAD's is heavier.
+      nodes.push(`<circle class="graph-node${layout.isHead ? ' graph-node-head' : ''} ${tone(color)}"${seg(layout.segment)} cx="${currentX}" cy="${middle}" r="8"/><text class="graph-node-core graph-node-initials"${seg(layout.segment)} x="${currentX}" y="${middle}" text-anchor="middle" dominant-baseline="central">${escapeHtml(authorInitials(commit.authorName))}</text>`);
       controls.push(`<g class="graph-node-control"${seg(layout.segment)} data-action="toggleCommitCompareNode" data-commit="${escapeHtml(commit.hash)}" transform="translate(${currentX} ${middle})" role="button" tabindex="0" aria-label="Select commit ${escapeHtml(commit.shortHash)} for comparison" aria-pressed="false" data-marker=""><title>Select ${escapeHtml(commit.shortHash)} for comparison</title><circle class="graph-node-hit" r="12"/><circle class="graph-node-selection" r="10"/><text class="graph-node-marker" text-anchor="middle" dominant-baseline="central"></text></g>`);
       top = bottom;
     });
@@ -2317,11 +2417,16 @@
     const historyRegion = history.closest('.history-region');
     historyGraphWidth = graphModel.width;
     if (historyRegion) historyRegion.style.setProperty('--graph-width', `${graphModel.width}px`);
+    const currentRepository = getRepository(activeDashboardRepository);
+    const branchCounts = currentRepository ? { ahead: currentRepository.ahead || 0, behind: currentRepository.behind || 0 } : null;
     const renderRows = (commits, firstIndex = 0) => commits.map((commit, index) => {
       const layout = graphModel.rows[firstIndex + index] || {};
-      const refs = renderHistoryRefs(commit.refs, true, layout.color) + renderMergeBadge(commit, firstParent);
+      const refs = renderHistoryRefs(commit.refs, true, layout.color, branchCounts) + renderMergeBadge(commit, firstParent);
       const segment = layout.segment === undefined ? '' : ` data-segment="${layout.segment}"`;
-      return `<div class="history-row" data-action="selectHistoryCommit" data-commit="${escapeHtml(commit.hash)}"${segment} tabindex="0" title="Ctrl+click or Shift+click to compare">
+      // The row is tinted with its line's tone; the checked-out branch's tip is outlined.
+      const tint = Number.isInteger(layout.color) ? ` row-tint graph-lane-${layout.color % 8}` : '';
+      const tip = (commit.refs || []).some(ref => ref.kind === 'head') ? ' row-head' : '';
+      return `<div class="history-row${tint}${tip}" data-action="selectHistoryCommit" data-commit="${escapeHtml(commit.hash)}"${segment} tabindex="0" title="Ctrl+click or Shift+click to compare">
         ${renderGraphCell()}
         <span class="history-message">${refs ? `<span class="history-refs">${refs}</span>` : ''}<button class="history-subject" type="button" data-action="selectHistoryCommit" data-commit="${escapeHtml(commit.hash)}">${escapeHtml(commit.subject)}</button></span>
         <span class="history-author" title="${escapeHtml(commit.authorEmail)}">${escapeHtml(commit.authorName)}</span>
@@ -2357,6 +2462,7 @@
       history.scrollTop = anchor ? Math.max(0, anchor.offsetTop - viewport.offset) : 0;
     }
     updateCommitCompareUI();
+    scheduleFoldHistoryRefs();
     // Once, for repositoryManager.debug.timings: when the first history page is on screen.
     if (!historyDrawnReported && shownCommits.length) {
       historyDrawnReported = true;
@@ -3617,6 +3723,7 @@
   function updateRepositoryRows(repositories) {
     repositories.forEach(repository => {
       if (repository.path === activeDashboardRepository) {
+        syncHistoryBranchCounts({ ahead: repository.ahead || 0, behind: repository.behind || 0 });
         const behindCount = document.getElementById('dashboardBehindCount');
         const aheadCount = document.getElementById('dashboardAheadCount');
         if (behindCount) {
@@ -3996,6 +4103,7 @@
       region.style.setProperty(`--history-${name}-column-width`, `${next[index]}px`);
     });
     scheduleHistoryGraphGeometry();
+    scheduleFoldHistoryRefs();
   }
 
   function setupHistoryColumnResizers() {

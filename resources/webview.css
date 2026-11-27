@@ -1656,7 +1656,7 @@ button.reference-detail-item:hover { background: var(--bg-hover); }
   pointer-events: none;
 }
 
-.graph-edge { fill: none; stroke-width: 2; stroke-linecap: round; }
+.graph-edge { fill: none; stroke-width: 2.5; stroke-linecap: round; }
 .graph-lane-0 { stroke: var(--warning); --lane-color: var(--warning); }
 .graph-lane-1 { stroke: var(--accent); --lane-color: var(--accent); }
 .graph-lane-2 { stroke: #a48bf0; --lane-color: #a48bf0; }
@@ -1665,17 +1665,31 @@ button.reference-detail-item:hover { background: var(--bg-hover); }
 .graph-lane-5 { stroke: #d48fd5; --lane-color: #d48fd5; }
 .graph-lane-6 { stroke: #6fc2e8; --lane-color: #6fc2e8; }
 .graph-lane-7 { stroke: #a9c36b; --lane-color: #a9c36b; }
-.graph-node { fill: var(--bg-primary); stroke-width: 2; }
-/* HEAD: a hollow, heavier ring, as in Git Graph. */
-.graph-node-head { fill: var(--bg-primary); stroke-width: 3; }
-.graph-node-core.graph-lane-0 { fill: var(--warning); }
-.graph-node-core.graph-lane-1 { fill: var(--accent); }
-.graph-node-core.graph-lane-2 { fill: #a48bf0; }
-.graph-node-core.graph-lane-3 { fill: var(--info); }
-.graph-node-core.graph-lane-4 { fill: var(--error); }
-.graph-node-core.graph-lane-5 { fill: #d48fd5; }
-.graph-node-core.graph-lane-6 { fill: #6fc2e8; }
-.graph-node-core.graph-lane-7 { fill: #a9c36b; }
+/* A commit: a filled circle (18px with its ring) in its line's tone, holding the author's initials. */
+.graph-node { fill: color-mix(in srgb, var(--lane-color) 85%, transparent); stroke-width: 2; }
+/* HEAD: a heavier ring. */
+.graph-node-head { stroke-width: 3; }
+.graph-node-initials {
+  fill: #14161a;
+  font-size: 8.5px;
+  font-weight: 600;
+  pointer-events: none;
+  user-select: none;
+}
+/* Each row carries its line's tone at 5%, 20% when selected; the checked-out tip is outlined. */
+.history-row.row-tint { background: color-mix(in srgb, var(--lane-color) 5%, transparent); }
+.history-row.row-tint:hover { background: color-mix(in srgb, var(--lane-color) 10%, transparent); }
+.history-row.row-tint.active { background: color-mix(in srgb, var(--lane-color) 20%, transparent); }
+.history-row.row-head::after {
+  position: absolute;
+  inset: 0;
+  border: 1px solid var(--lane-color);
+  content: '';
+  pointer-events: none;
+}
+body.vscode-high-contrast .history-row.row-tint,
+body.vscode-high-contrast .history-row.row-tint:hover,
+body.vscode-high-contrast .history-row.row-tint.active { background: transparent; }
 .history-row.compare-base { background: rgba(139, 167, 240, .06); }
 .history-row.compare-target { background: rgba(60, 199, 166, .06); }
 .history-message { gap: 8px; }
@@ -1815,19 +1829,6 @@ body.vscode-high-contrast .graph-node-control[data-marker="T"] .graph-node-hit {
 
 .history-ref.ref-tag { color: var(--vscode-charts-purple, #c5b5ff); background: rgba(164, 139, 240, .14); }
 
-/* The branch's tone in the graph, as a bar along the label's left edge: the label names the line.
-   It sits in the left padding and takes no width, so labels wrap exactly as they did without it. */
-.history-ref { position: relative; }
-
-.history-ref .ref-dot {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  left: 0;
-  width: 3px;
-  background: var(--lane-color);
-}
-
 /* A merge in the first-parent view: one commit, with the number of commits it brought in. */
 .history-merge-badge {
   flex: none;
@@ -1892,20 +1893,11 @@ body.vscode-high-contrast .graph-node-control[data-marker="T"] .graph-node-hit {
 .contained-current { font-weight: 600; }
 .contained-more { padding: 0; border: 0; color: var(--vscode-textLink-foreground, var(--accent)); background: none; font: inherit; text-decoration: underline; cursor: pointer; }
 
-/* The chip sits on a branch label of any colour, so it brings its own background. */
-.history-ref .ref-origin {
-  margin-left: 4px;
-  padding: 0 4px;
-  border-radius: 4px;
-  color: var(--ref-origin);
-  background: var(--bg-sunken);
-  font-weight: 500;
-}
-
 .sidebar-ref-item small.ref-origin { color: var(--ref-origin); }
 .sidebar-ref-item.remote-only > span:nth-child(2) { opacity: 0.65; }
 .history-ref.ref-remote-branch { color: var(--ref-origin); background: rgba(60, 199, 166, .10); }
 .history-ref.ref-local-branch { color: var(--tone-info); background: rgba(139, 167, 240, .12); }
+.history-refs .history-ref.ref-plain { color: var(--text-secondary); background: transparent; }
 
 
 .commit-detail-region { background: var(--bg-sunken); }
@@ -2273,31 +2265,33 @@ body.vscode-high-contrast .graph-node-control[data-marker="T"] .graph-node-hit {
   outline: 0;
 }
 
+/* One line per commit: the labels, then the subject. A row is 30px at any width, so a wider font
+   (CI's) cannot grow it; labels never wrap, the ones that do not fit fold into a "+N" chip. */
 .history-row {
-  height: auto;
-  min-height: 32px;
-  padding-top: 4px;
-  padding-bottom: 4px;
+  height: 30px;
+  min-height: 30px;
+  padding-top: 0;
+  padding-bottom: 0;
 }
 
 .history-message {
-  flex-direction: column;
-  align-items: stretch;
-  gap: 0;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
   overflow: hidden;
   padding-right: 0;
 }
 
 .history-refs {
-  flex: 0 0 auto;
-  flex-wrap: wrap;
-  width: 100%;
+  flex: 0 1 auto;
+  flex-wrap: nowrap;
+  align-items: center;
+  max-width: 55%;
   min-width: 0;
-  max-width: 100%;
+  overflow: hidden;
 }
 
-/* Pills can wrap onto a second line together, but each stays on one line and truncates;
-   breaking inside a pill made narrow rows grow one word per line. The full name is in the tooltip. */
+/* Labels elsewhere (the commit summary) keep the earlier look. */
 .history-ref {
   max-width: 100%;
   min-width: 0;
@@ -2308,9 +2302,78 @@ body.vscode-high-contrast .graph-node-control[data-marker="T"] .graph-node-hit {
   white-space: nowrap;
 }
 
-.history-message .history-subject {
+/* A label in a history row is an outlined pill: its border and text carry the line's tone, with a 12% fill. */
+.history-refs .history-ref {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 170px;
+  min-width: 0;
+  height: 20px;
   flex: 0 0 auto;
-  width: 100%;
+  padding: 0 6px;
+  border: 1px solid currentColor;
+  border-radius: 5px;
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 18px;
+  text-align: left;
+  white-space: nowrap;
+}
+
+/* Only the first label may shrink (to an ellipsis) when it alone is wider than the labels' share. */
+.history-refs > .history-ref:first-child { flex-shrink: 1; }
+
+.history-ref .ref-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.history-ref .ref-icon { flex: none; }
+
+.history-ref .ref-counts {
+  flex: none;
+  padding-left: 5px;
+  border-left: 1px solid color-mix(in srgb, currentColor 40%, transparent);
+  color: var(--text-secondary);
+  font-size: 10.5px;
+}
+
+.history-refs .history-ref.ref-tone {
+  color: var(--lane-color);
+  border-color: var(--lane-color);
+  background: color-mix(in srgb, var(--lane-color) 12%, transparent);
+}
+
+.history-refs .history-ref.ref-head { font-weight: 700; }
+
+/* On a light background the pale tones cannot carry text: the text and icons take the theme colour, the tone stays on the border and fill. */
+body.vscode-light .history-refs .history-ref.ref-tone { color: var(--text-primary); }
+
+.history-refs .history-ref.ref-folded { display: none; }
+.history-refs.ref-measuring { max-width: none; }
+.history-refs.ref-measuring > .history-ref:first-child { flex-shrink: 0; }
+
+.history-ref-more {
+  flex: none;
+  padding: 0 5px;
+  border-radius: 5px;
+  color: var(--text-secondary);
+  background: var(--bg-hover);
+  font-size: 10.5px;
+  line-height: 20px;
+}
+
+.history-ref-more[hidden] { display: none; }
+
+.history-refs .history-ref:focus-visible { outline-offset: -2px; }
+
+.history-message .history-subject {
+  flex: 1 1 0;
+  width: auto;
+  min-width: 0;
 }
 
 .history-graph-cell {
