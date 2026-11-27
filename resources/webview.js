@@ -1750,7 +1750,7 @@
 
   // The icons on a branch label: a cloud when it is on origin, a monitor when it is on this machine.
   const REF_ICON_ATTRS = 'width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"';
-  const REF_ICON_CLOUD = label => `<svg class="ref-icon ref-origin" ${REF_ICON_ATTRS} role="img" aria-label="${label}"><path d="M4.5 12.5h7.2a2.8 2.8 0 0 0 .3-5.6 4 4 0 0 0-7.7-.8A3.2 3.2 0 0 0 4.5 12.5z"/></svg>`;
+  const REF_ICON_CLOUD = `<svg class="ref-icon ref-origin" ${REF_ICON_ATTRS} role="img" aria-label="on origin"><path d="M4.5 12.5h7.2a2.8 2.8 0 0 0 .3-5.6 4 4 0 0 0-7.7-.8A3.2 3.2 0 0 0 4.5 12.5z"/></svg>`;
   const REF_ICON_LOCAL = `<svg class="ref-icon ref-local" ${REF_ICON_ATTRS} role="img" aria-label="on this machine"><rect x="2" y="3" width="12" height="8" rx="1"/><path d="M6 14h4M8 11v3"/></svg>`;
 
   // The first letters of the first two words of a name ("Thanh Hoang" is "TH"), "?" without one.
@@ -1793,8 +1793,7 @@
       const isBranch = isLocal(ref) || (ref.kind === 'remote-branch' && !/(^|\/)HEAD$/.test(ref.name));
       const toned = isBranch && Number.isInteger(tone);
       const className = `history-ref ref-${escapeHtml(ref.kind)}${toned ? ` ref-tone graph-lane-${tone % 8}` : ''}${ref.kind === 'remote-branch' && !isBranch ? ' ref-plain' : ''}`;
-      const remote = ref.kind === 'remote-branch' && isBranch;
-      const cloud = merged || remote ? REF_ICON_CLOUD(merged || ref.name.startsWith('origin/') ? 'on origin' : 'on a remote') : '';
+      const cloud = merged || (ref.kind === 'remote-branch' && isBranch && ref.name.startsWith('origin/')) ? REF_ICON_CLOUD : '';
       const monitor = isLocal(ref) ? REF_ICON_LOCAL : '';
       const isCurrent = ref.isCurrent || ref.kind === 'head';
       const inner = `${cloud}${monitor}<span class="ref-name">${escapeHtml(ref.name)}</span>${isCurrent ? refCountsHtml(counts) : ''}`;
