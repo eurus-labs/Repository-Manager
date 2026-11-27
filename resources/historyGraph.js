@@ -3,7 +3,7 @@
   if (typeof module === 'object' && module.exports) module.exports = api;
   root.RepositoryHistoryGraph = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
-  const ROW_HEIGHT = 32;
+  const ROW_HEIGHT = 30;
   const LANE_GAP = 18;
   const LANE_INSET = 18;
   const MIN_GRAPH_WIDTH = 76;
