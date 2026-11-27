@@ -104,14 +104,14 @@ const page = (state, repositoryPath, extra) => Object.assign({ repositoryPath, r
 {
   const saved = { [A]: { branch: 'feature/x', includeRemotes: false, search: 'fix' }, [B]: { branch: 7, includeRemotes: 'yes', search: null } };
   const state = make(saved);
-  assert.deepEqual(state.getFilters(A), { branch: 'feature/x', includeRemotes: false, search: 'fix' });
-  assert.deepEqual(state.getFilters(B), { branch: '', includeRemotes: true, search: '' }, 'unknown values were not normalized');
-  assert.deepEqual(state.getFilters('/unknown'), { branch: '', includeRemotes: true, search: '' });
+  assert.deepEqual(state.getFilters(A), { branch: 'feature/x', includeRemotes: false, search: 'fix', firstParent: false });
+  assert.deepEqual(state.getFilters(B), { branch: '', includeRemotes: true, search: '', firstParent: false }, 'unknown values were not normalized');
+  assert.deepEqual(state.getFilters('/unknown'), { branch: '', includeRemotes: true, search: '', firstParent: false });
   state.setFilters(A, { includeRemotes: true, search: 'new' });
-  assert.deepEqual(state.getFilters(A), { branch: 'feature/x', includeRemotes: true, search: 'new' }, 'setting the page filters lost the revision');
+  assert.deepEqual(state.getFilters(A), { branch: 'feature/x', includeRemotes: true, search: 'new', firstParent: false }, 'setting the page filters lost the revision');
   state.setRevision(B, 'main');
   state.setRevision(A, '');
-  assert.deepEqual(state.getFilters(B), { branch: 'main', includeRemotes: true, search: '' });
+  assert.deepEqual(state.getFilters(B), { branch: 'main', includeRemotes: true, search: '', firstParent: false });
   assert.equal(state.getFilters(A).branch, '');
   state.startLoad({ repositoryPath: A });
   state.acceptPage(page(state, A), A);
@@ -121,12 +121,24 @@ const page = (state, repositoryPath, extra) => Object.assign({ repositoryPath, r
   assert.equal(state.canLoadMore(), false);
   assert.equal(state.getFilters(B).branch, 'main', 'a reset dropped the filters');
   assert.deepEqual(Object.keys(state.snapshot()).sort(), [A, B].sort());
-  assert.deepEqual(JSON.parse(JSON.stringify(state.snapshot()[B])), { branch: 'main', includeRemotes: true, search: '' });
+  assert.deepEqual(JSON.parse(JSON.stringify(state.snapshot()[B])), { branch: 'main', includeRemotes: true, search: '', firstParent: false });
   state.clearFilters();
   assert.deepEqual(state.snapshot(), {});
-  assert.deepEqual(state.getFilters(B), { branch: '', includeRemotes: true, search: '' });
+  assert.deepEqual(state.getFilters(B), { branch: '', includeRemotes: true, search: '', firstParent: false });
   assert.deepEqual(make(null).snapshot(), {});
   assert.deepEqual(make('x').snapshot(), {});
+  // First parent only: kept per repository, read as off from a state saved before it existed.
+  const withFirstParent = make({ [A]: { branch: '', includeRemotes: true, search: '', firstParent: true }, [B]: { branch: 'main', includeRemotes: true, search: '' } });
+  assert.equal(withFirstParent.getFilters(A).firstParent, true);
+  assert.equal(withFirstParent.getFilters(B).firstParent, false, 'an older saved state did not read as off');
+  withFirstParent.setFilters(B, { includeRemotes: true, search: '', firstParent: true });
+  assert.equal(withFirstParent.getFilters(B).firstParent, true);
+  assert.equal(withFirstParent.getFilters(A).firstParent, true, 'another repository changed');
+  withFirstParent.setFilters(A, { includeRemotes: true, search: '' });
+  assert.equal(withFirstParent.getFilters(A).firstParent, false, 'a missing value did not turn it off');
+  withFirstParent.setRevision(B, 'topic');
+  assert.equal(withFirstParent.getFilters(B).firstParent, true, 'changing the revision lost the option');
+  assert.equal(JSON.parse(JSON.stringify(withFirstParent.snapshot()))[B].firstParent, true, 'the option is not in the saved state');
 }
 
 // g) two instances share nothing; the factory reads historyGraph.js's normalizer from the global when none is passed.

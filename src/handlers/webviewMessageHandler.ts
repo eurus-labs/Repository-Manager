@@ -51,7 +51,8 @@ export async function handleGetHistory(ctx: MessageHandlerContext, payload: unkn
     offset: typeof request.offset === 'number' ? request.offset : undefined,
     search: typeof request.search === 'string' ? request.search : undefined,
     branch: typeof request.branch === 'string' ? request.branch : undefined,
-    includeRemotes: request.includeRemotes === true
+    includeRemotes: request.includeRemotes === true,
+    firstParent: request.firstParent === true
   };
 
   try {

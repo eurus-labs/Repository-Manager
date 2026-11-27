@@ -7,7 +7,7 @@
   if (typeof module === 'object' && module.exports) module.exports = api;
   root.RepositoryDashboardHistory = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this, function (root) {
-  // savedFilters: the value restored from the webview state ({ [repositoryPath]: { branch, includeRemotes, search } }).
+  // savedFilters: the value restored from the webview state ({ [repositoryPath]: { branch, includeRemotes, search, firstParent } }).
   // normalizeFilters defaults to historyGraph.js's, read when called (that script loads first, but not at this one's load).
   function createHistoryState({ savedFilters, normalizeFilters } = {}) {
     const normalize = value => (normalizeFilters || root.RepositoryHistoryGraph.normalizeHistoryFilters)(value);
@@ -87,8 +87,8 @@
       filters[repositoryPath] = Object.assign({}, getFilters(repositoryPath), { branch: revision || '' });
     }
     // The filters read from the page; the revision is kept.
-    function setFilters(repositoryPath, { includeRemotes, search }) {
-      filters[repositoryPath] = { branch: getFilters(repositoryPath).branch, includeRemotes: Boolean(includeRemotes), search: typeof search === 'string' ? search : '' };
+    function setFilters(repositoryPath, { includeRemotes, search, firstParent }) {
+      filters[repositoryPath] = { branch: getFilters(repositoryPath).branch, includeRemotes: Boolean(includeRemotes), search: typeof search === 'string' ? search : '', firstParent: firstParent === true };
     }
     function clearFilters() { filters = {}; }
     // The value for saveState, in the shape restored from it.

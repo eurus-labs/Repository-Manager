@@ -300,6 +300,8 @@ export interface HistoryCommit {
   authoredAt: string;
   subject: string;
   refs: GitRefLabel[];
+  /** First-parent view only: for a merge commit, how many commits it brought in (`^1..^2`). Unset when not counted. */
+  mergeCount?: number;
 }
 
 export interface HistoryQuery {
@@ -309,6 +311,8 @@ export interface HistoryQuery {
   search?: string;
   branch?: string;
   includeRemotes?: boolean;
+  /** Follow only each commit's first parent, and count the commits each merge brought in. */
+  firstParent?: boolean;
 }
 
 export interface HistoryPage {

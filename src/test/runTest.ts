@@ -32,7 +32,7 @@ const historyGraph = require('../../resources/historyGraph.js') as {
   transitionCompareSelection: (
     selection: string[], commitHash: string, comparisonActive: boolean
   ) => { selection: string[]; action: 'compare' | 'parent' | 'none' };
-  normalizeHistoryFilters: (saved: unknown) => { branch: string; includeRemotes: boolean; search: string };
+  normalizeHistoryFilters: (saved: unknown) => { branch: string; includeRemotes: boolean; search: string; firstParent: boolean };
 };
 
 function testParsers(): void {
@@ -217,12 +217,12 @@ function testHistoryGraph(): void {
     selection: ['c'], action: 'parent'
   });
   assert.deepEqual(historyGraph.normalizeHistoryFilters(undefined), {
-    branch: '', includeRemotes: true, search: ''
+    branch: '', includeRemotes: true, search: '', firstParent: false
   });
   assert.deepEqual(historyGraph.normalizeHistoryFilters({
     branch: 'origin/main', includeRemotes: false, search: 'merge'
   }), {
-    branch: 'origin/main', includeRemotes: false, search: 'merge'
+    branch: 'origin/main', includeRemotes: false, search: 'merge', firstParent: false
   });
 }
 
