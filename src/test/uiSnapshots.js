@@ -2912,7 +2912,7 @@ async function main() {
           const channels = value => (value.match(/-?\d*\.?\d+(e-?\d+)?/g) || []).map(Number);
           const rgb = value => { const parts = channels(value); return value.startsWith('color(') ? parts.slice(0, 3).map(part => part * 255) : parts.slice(0, 3); };
           const alpha = value => { const parts = channels(value); return value.startsWith('color(') ? parts[parts.length - 1] : parts.length > 3 ? parts[3] : 1; };
-          // The first row is selected when the history opens, so the 5% tint is read on a plain row.
+          // The first row is selected when the history opens, so the 9% tint is read on a plain row.
           const tip = document.querySelector('.history-row[data-commit$="a"]');
           const row = document.querySelector('.history-row[data-commit$="8"]');
           const lane = Array.from(row.classList).find(name => /^graph-lane-\d$/.test(name));
@@ -2923,7 +2923,7 @@ async function main() {
         });
         assert.ok(tones.lane, 'a row has no lane tone');
         tones.background.forEach((channel, index) => assert.ok(Math.abs(channel - tones.stroke[index]) <= 2, `the row's background ${tones.background} is not its tone ${tones.stroke}`));
-        assert.ok(Math.abs(tones.alpha - 0.05) < 0.01, `the row tint is ${tones.alpha}, not 5%`);
+        assert.ok(Math.abs(tones.alpha - 0.09) < 0.01, `the row tint is ${tones.alpha}, not 9%`);
         assert.equal(tones.tip.width, '1px');
         assert.notEqual(tones.tip.content, 'none', 'the checked-out tip has no outline');
         assert.equal(tones.plainTip, 'none', 'a row that is not the checked-out tip has an outline');
@@ -2934,7 +2934,7 @@ async function main() {
           const parts = (value.match(/-?\d*\.?\d+(e-?\d+)?/g) || []).map(Number);
           return value.startsWith('color(') ? parts[parts.length - 1] : parts.length > 3 ? parts[3] : 1;
         });
-        assert.ok(Math.abs(selected - 0.2) < 0.01, `the selected row is ${selected}, not 20%`);
+        assert.ok(Math.abs(selected - 0.22) < 0.01, `the selected row is ${selected}, not 22%`);
         // The scripted hashes are not in the repository, so the detail pane would show Git's error: show the working changes instead.
         await compact.locator('#uncommittedRow').click();
         await compact.waitForFunction(() => document.querySelector('#uncommittedRow.active'));
@@ -2950,6 +2950,171 @@ async function main() {
       await snap(compactLight, '63-history-compact-rows-light');
       await compactLight.close();
     }
+
+    // PLAN21-BEGIN
+    // The history against its design (plan 21): visible tints, whole branch names, an author avatar, no row tooltip.
+    // A scripted history with three lanes, a long branch name and several authors, newest first.
+    const rowOf = n => `.history-row[data-commit="${n.toString(16).padStart(40, '0')}"]`;
+    const openDesign = async (width, theme, height = 900) => {
+      const design = await openPage(width, height, theme);
+      await design.evaluate(() => {
+        const sent = window.__designSent = [];
+        const toHost = window.__postToHost;
+        window.__postToHost = message => { if (message.type === 'getHistory') { sent.push(message); return Promise.resolve(); } return toHost(message); };
+      });
+      await design.evaluate(() => document.getElementById('dashboardIncludeRemotes').click());
+      await design.waitForFunction(() => window.__designSent.length > 0);
+      await design.evaluate(() => {
+        const hex = n => n.toString(16).padStart(40, '0');
+        const local = name => ({ name, kind: 'local-branch' });
+        const commit = (n, parents, subject, authorName, refs) => ({ hash: hex(n), shortHash: hex(n).slice(-7), parentHashes: parents.map(hex),
+          authorName, authorEmail: `${authorName.split(' ')[0].toLowerCase()}@example.com`, authoredAt: '2025-01-15T10:00:00Z', subject, refs: refs || [] });
+        const request = window.__designSent.at(-1).payload;
+        const longName = `release/${'very-long-branch-segment-'.repeat(4)}end`;
+        const commits = [
+          commit(20, [19, 17], 'Merge pull request #45 from fix/lane-tones', 'Eurus Unit'),
+          commit(19, [18], 'test(graph): cover stable lane colours', 'Eurus Unit', [{ name: 'feature/history-graph-contained-in', kind: 'head', isCurrent: true }, { name: 'origin/feature/history-graph-contained-in', kind: 'remote-branch' }]),
+          commit(18, [15], 'chore(config): add the project mapping', 'Thanh Hoang'),
+          commit(17, [16], 'fix(graph): keep name tones off HEAD', 'Eurus Unit', [local('fix/lane-tones')]),
+          commit(16, [15], 'fix: update uv.lock', 'Thanh Hoang'),
+          commit(15, [14], 'chore: bump version to 3.8.0', 'Maria Lopez', [local(longName)]),
+          commit(14, [13, 12], 'Merge branch hotfix/pypi-repo', 'Thanh Hoang'),
+          commit(13, [10], 'fix: correct action naming', 'Maria Lopez'),
+          commit(12, [11], 'fix: remove comparison with CET', 'Thanh Hoang', [local('hotfix/pypi-repo')]),
+          commit(11, [10], 'fix: change pypi repo name', 'Thanh Hoang'),
+          commit(10, [], 'chore: first commit', 'Maria Lopez')
+        ];
+        window.dispatchEvent(new MessageEvent('message', { data: { type: 'historyLoaded', payload: { repositoryPath: request.repositoryPath,
+          requestId: request.requestId, offset: 0, commits, nextOffset: null, upstream: null } } }));
+      });
+      await design.locator('.history-row', { hasText: 'update uv.lock' }).waitFor();
+      return design;
+    };
+    {
+      // Tall, so the history shows every row of the fixture (the detail pane shows Git's error: the scripted hashes are not in the repository).
+      const design = await openDesign(1440, undefined, 1500);
+      const problems = [];
+      const measured = {};
+      const alphaOf = value => { const parts = (value.match(/-?\d*\.?\d+(e-?\d+)?/g) || []).map(Number); return value.startsWith('color(') ? parts[parts.length - 1] : parts.length > 3 ? parts[3] : 1; };
+      const longName = `release/${'very-long-branch-segment-'.repeat(4)}end`;
+      // Tint: a plain row, then a selected one.
+      await design.mouse.move(2, 2);
+      measured.plainAlpha = alphaOf(await design.locator(rowOf(16)).evaluate(row => getComputedStyle(row).backgroundColor));
+      await design.locator(rowOf(18)).click();
+      await design.waitForFunction(selector => document.querySelector(`${selector}.active`), rowOf(18));
+      await design.mouse.move(2, 2);
+      measured.selectedAlpha = alphaOf(await design.locator(rowOf(18)).evaluate(row => getComputedStyle(row).backgroundColor));
+      if (!(measured.plainAlpha >= 0.09 - 0.005)) problems.push(`a tinted row has alpha ${measured.plainAlpha}, under 0.09`);
+      if (!(Math.abs(measured.selectedAlpha - 0.22) < 0.01)) problems.push(`the selected row has alpha ${measured.selectedAlpha}, not 0.22`);
+      // Labels: the whole name at 1440 px; a name past 320 px is cut and says its name in the title.
+      const labels = await design.evaluate(longName => {
+        const read = ref => { const pill = document.querySelector(`.history-ref[data-ref-name="${ref}"]`);
+          const name = pill && pill.querySelector('.ref-name');
+          return pill ? { width: Math.round(pill.getBoundingClientRect().width), cut: name.scrollWidth > name.clientWidth + 1, text: name.textContent, title: pill.title, shown: pill.getClientRects().length > 0 } : null; };
+        return { short: read('feature/history-graph-contained-in'), long: read(longName) };
+      }, longName);
+      measured.labels = labels;
+      if (!labels.short || labels.short.cut || labels.short.text !== 'feature/history-graph-contained-in') problems.push(`the 34-character label is cut: ${JSON.stringify(labels.short)}`);
+      if (!labels.long || !labels.long.cut || labels.long.width > 320 || !labels.long.title.includes(longName)) problems.push(`the long label is not cut at 320px with its name in the title: ${JSON.stringify(labels.long)}`);
+      // Author: initials avatar then the name, one colour per person, the email in the title.
+      const authors = await design.evaluate(() => Array.from(document.querySelectorAll('.history-row')).map(row => {
+        const cell = row.querySelector('.history-author'); const avatar = cell.querySelector('.author-avatar');
+        return { initials: avatar && avatar.textContent, name: cell.querySelector('.history-author-name') && cell.querySelector('.history-author-name').textContent,
+          color: avatar && getComputedStyle(avatar).backgroundColor, title: cell.title, order: avatar && avatar.nextElementSibling && avatar.nextElementSibling.className }; }));
+      measured.authors = authors.slice(0, 3);
+      const colours = {};
+      authors.forEach(author => { if (!author.initials) return; (colours[author.name] = colours[author.name] || new Set()).add(author.color); });
+      if (authors.some(author => !author.initials || author.order !== 'history-author-name')) problems.push('a row has no initials avatar before the name');
+      if (JSON.stringify(authors.slice(0, 3).map(author => author.initials)) !== '["EU","EU","TH"]') problems.push(`initials are ${authors.slice(0, 3).map(author => author.initials)}`);
+      if (Object.values(colours).some(set => set.size !== 1) || new Set(Object.values(colours).map(set => Array.from(set)[0])).size < 2) problems.push('one author does not keep one colour, or all authors share one');
+      if (authors[0].title !== 'eurus@example.com') problems.push(`the author's title is ${authors[0].title}`);
+      // No tooltip on rows; the hint is on the GRAPH header.
+      measured.rowTitles = await design.locator('.history-row[title]').count();
+      if (measured.rowTitles !== 0) problems.push(`${measured.rowTitles} rows still have a title`);
+      const hint = await design.locator('#historyTableHeader .graph-column').getAttribute('title');
+      if (hint !== 'Click a node, or Ctrl+click or Shift+click a row, to compare') problems.push(`the Graph header's title is ${hint}`);
+      // Untrusted text stays text: no handler, no element from a name.
+      assert.equal(await design.locator('#dashboardHistory [onclick], #dashboardHistory [onmouseover], #dashboardHistory [onerror]').count(), 0);
+      console.log('plan 21 design measurements:', JSON.stringify(measured));
+      assert.deepEqual(problems, [], 'the history does not match its design');
+      // The screenshot: the selected commit on a line of three, the long label and several authors.
+      await design.locator('#uncommittedRow').click();
+      await design.waitForFunction(() => document.querySelector('#uncommittedRow.active'));
+      await design.locator(rowOf(18)).click();
+      await design.waitForFunction(selector => document.querySelector(`${selector}.active`), rowOf(18));
+      await design.mouse.move(2, 2);
+      await snap(design, '64-history-design-match');
+      await design.close();
+    }
+    {
+      // In a light theme the text over the strongest tint (a selected row) stays readable for every line colour.
+      const light = await openDesign(1440, 'light');
+      const contrast = await light.evaluate(rowSelector => {
+        const channels = value => (value.match(/-?\d*\.?\d+(e-?\d+)?/g) || []).map(Number);
+        const rgb = value => { const parts = channels(value); return value.startsWith('color(') ? parts.slice(0, 3).map(part => part * 255) : parts.slice(0, 3); };
+        const alpha = value => { const parts = channels(value); return value.startsWith('color(') ? parts[parts.length - 1] : parts.length > 3 ? parts[3] : 1; };
+        const luminance = ([r, g, b]) => { const f = c => { c /= 255; return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4; }; return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b); };
+        const ratio = (a, b) => { const [x, y] = [luminance(a), luminance(b)].sort((m, n) => n - m); return (x + 0.05) / (y + 0.05); };
+        const backdrop = row => { const layers = [];
+          for (let node = row; node; node = node.parentElement) { const color = getComputedStyle(node).backgroundColor; const a = alpha(color); if (a > 0) layers.push([rgb(color), a]); if (a >= 1) break; }
+          return layers.reverse().reduce((under, [color, a]) => color.map((c, i) => c * a + under[i] * (1 - a)), [255, 255, 255]); };
+        const row = document.querySelector(rowSelector);
+        const result = [];
+        for (let lane = 0; lane < 8; lane++) {
+          row.className = row.className.replace(/graph-lane-\d/, `graph-lane-${lane}`);
+          row.classList.add('active', 'row-tint');
+          const under = backdrop(row);
+          result.push({ lane, subject: +ratio(rgb(getComputedStyle(row.querySelector('.history-subject')).color), under).toFixed(2),
+            author: +ratio(rgb(getComputedStyle((row.querySelector('.history-author-name') || row.querySelector('.history-author'))).color), under).toFixed(2) });
+        }
+        return result;
+      }, rowOf(19));
+      console.log('plan 21 light contrast at 22%:', JSON.stringify(contrast));
+      contrast.forEach(item => { assert.ok(item.subject >= 4.5, `the subject over a selected lane-${item.lane} row has contrast ${item.subject}`); assert.ok(item.author >= 4.5, `the author over a selected lane-${item.lane} row has contrast ${item.author}`); });
+      await light.close();
+    }
+    // The commit details never overlap: the header grows to hold "Contained in", at 1 and at 12 chips, in a short window
+    // (a short pane makes the files row's 150px minimum compete with the header for height).
+    {
+      const boxes = [];
+      const overlapProblems = [];
+      for (const width of [1440, 1100, 820]) {
+        const narrow = await openPage(width, 560);
+        while (!isHostIdle()) await narrow.waitForTimeout(20);
+        await narrow.evaluate(() => {
+          const sent = window.__overlapSent = [];
+          const toHost = window.__postToHost;
+          window.__postToHost = message => { if (message.type === 'getCommitBranches') { sent.push(message); return Promise.resolve(); } return toHost(message); };
+        });
+        let requests = 0;
+        for (const [subject, count] of [['add linked repositories', 1], ['add app', 12]]) {
+          await narrow.locator('.history-row', { hasText: subject }).click();
+          await narrow.waitForFunction(total => window.__overlapSent.length === total, ++requests);
+          await narrow.evaluate(([index, total]) => { const request = window.__overlapSent[index].payload;
+            const branches = Array.from({ length: total }, (_, i) => ({ name: i ? `feature/branch-number-${i}` : 'main', kind: 'local', current: !i, onOrigin: !i }));
+            window.dispatchEvent(new MessageEvent('message', { data: { type: 'commitBranchesLoaded', payload: { repositoryPath: request.repositoryPath,
+              commitHash: request.commitHash, requestId: request.requestId, branches } } })); }, [requests - 1, count]);
+          await narrow.locator('#dashboardCommitSummary .contained-chip').first().waitFor();
+          await narrow.waitForFunction(total => document.querySelectorAll('#dashboardCommitSummary .contained-chip').length === total, count);
+          await narrow.locator('#dashboardChangedFiles .changed-file-item').first().waitFor();
+          await narrow.waitForTimeout(150);
+          const found = await narrow.evaluate(() => {
+            const box = selector => { const r = document.querySelector(selector).getBoundingClientRect(); return { top: Math.round(r.top), bottom: Math.round(r.bottom), left: Math.round(r.left), right: Math.round(r.right) }; };
+            const line = box('#dashboardCommitSummary .commit-summary-contained');
+            const hits = ['.changed-files-panel .panel-title', '#dashboardChangedFiles'].filter(selector => { const other = box(selector);
+              return line.top < other.bottom - 0.5 && other.top < line.bottom - 0.5 && line.left < other.right && other.left < line.right; });
+            return { line, header: box('.commit-header'), title: box('.changed-files-panel .panel-title'), hits };
+          });
+          boxes.push(`${width}px, ${count} chip${count > 1 ? 's' : ''}: ${JSON.stringify(found)}`);
+          if (found.hits.length) overlapProblems.push(`${width}px with ${count} chips: Contained in overlaps ${found.hits}`);
+          if (found.line.bottom > found.header.bottom + 0.5) overlapProblems.push(`${width}px with ${count} chips: Contained in sticks out of the header`);
+        }
+        await narrow.close();
+      }
+      console.log('plan 21 overlap boxes:\n' + boxes.join('\n'));
+      assert.deepEqual(overlapProblems, []);
+    }
+    // PLAN21-END
 
     // A reply for an older request or another repository does not replace the rows shown. The page's
     // own getHistory requests are held back, so no real reply can land at any timing: only the replies

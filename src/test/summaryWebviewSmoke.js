@@ -20,6 +20,7 @@ const document = { documentElement: { clientWidth: 1200, clientHeight: 800 }, bo
 const window = { __initialRepositories: [], innerWidth: 1200, innerHeight: 800,
   addEventListener(type, cb) { listeners[`window_${type}`] = cb; }, setTimeout() {}, requestAnimationFrame() {},
   RepositoryHistoryGraph: { normalizeHistoryFilters: require('../../resources/historyGraph.js').normalizeHistoryFilters,
+    toneForName: require('../../resources/historyGraph.js').toneForName,
     laneX() { return 25; }, buildGraphModel(commits) { return {
     width: 76, rowHeight: 32, rows: commits.map(() => ({ lane: 0, before: [], after: [], startsHere: true, parentLanes: [], isMerge: false }))
   }; } } };
