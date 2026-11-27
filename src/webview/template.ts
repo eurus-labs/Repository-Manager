@@ -508,7 +508,7 @@ export function getHtmlForWebview(repositories: RepositoryInfo[], resourceUris: 
     <button type="button" role="menuitem" data-action="contextRevert">Revert…</button>
     <button type="button" role="menuitem" data-action="contextMerge">Merge into current branch…</button>
     <div class="history-context-separator" role="separator"></div>
-    <button type="button" role="menuitem" data-action="contextRebase">Rebase current branch onto this commit…</button>
+    <div class="history-context-branches" id="historyContextBranchActions" hidden></div>
     <button type="button" role="menuitem" data-action="contextReset">Reset current branch to this commit…</button>
     <button type="button" role="menuitem" data-action="contextDrop">Drop this commit…</button>
     <div class="history-context-branches" id="historyContextBranches" hidden></div>
@@ -522,7 +522,9 @@ export function getHtmlForWebview(repositories: RepositoryInfo[], resourceUris: 
     <button type="button" role="menuitem" data-action="contextReviewSnapshot" title="Review every file as committed at this commit; uncommitted changes are not included">Review branch at this commit</button>
   </div>
 
-  <div class="history-context-menu" id="changesContextMenu" role="menu" aria-label="Changed file actions" hidden>
+  <div class="history-context-menu" id="historyBranchMenu" role="menu" aria-label="Branch actions" tabindex="-1" hidden></div>
+
+  <div class="history-context-menu" id="changesContextMenu"role="menu" aria-label="Changed file actions" hidden>
     <button type="button" role="menuitem" data-action="contextSuggestResolution" title="Ask Copilot to resolve this file's conflicts. You see the result as a diff first; applying writes the file only, without staging it or continuing" hidden>Suggest Resolution…</button>
     <button type="button" role="menuitem" data-action="contextOpenInEditor" title="Open this file's diff in an editor tab, in VS Code's diff editor">Open Changes</button>
     <button type="button" role="menuitem" data-action="contextReviewFile" title="Review only this file's changes with Copilot; the model may still read other files for context">Review Changes in This File</button>

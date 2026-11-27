@@ -19,7 +19,64 @@ export class HistoryActionService {
     return { sha, branch, parents: ancestry.split(/\s+/).slice(1) };
   }
 
-  async apply(repositoryPath: string, commit: string, operation: HistoryAction, mainline?: number, expectedBranch?: string): Promise<CommandResult> {
+  /**
+   * A branch by name (local first, then remote-tracking such as `origin/x`), as its full ref and tip.
+   * Names that start with `-` or match no branch are refused, so a name never reaches Git as an option.
+   */
+  async resolveBranch(repositoryPath: string, name: string, kind?: 'local' | 'remote'): Promise<{ name: string; ref: string; sha: string }> {
+    if (typeof name !== 'string' || !name || name.startsWith('-') || /[\s\0]/.test(name)) {
+      throw new Error('Invalid branch name.');
+    }
+    const cwd = this.git.resolveRepositoryPath(repositoryPath);
+    // A label's kind keeps its namespace: a local branch may be called origin/topic beside refs/remotes/origin/topic.
+    const refs = kind === 'local' ? [`refs/heads/${name}`] : kind === 'remote' ? [`refs/remotes/${name}`] : [`refs/heads/${name}`, `refs/remotes/${name}`];
+    for (const ref of refs) {
+      const sha = await this.git.execGit(['rev-parse', '--verify', '--quiet', `${ref}^{commit}`], cwd, 5000).catch(() => '');
+      if (sha) {
+        return { name, ref, sha };
+      }
+    }
+    throw new Error(`Branch ${name} no longer exists.`);
+  }
+
+  /** What merging `sha` into HEAD brings: the first 20 incoming commits and their count. */
+  async previewMerge(repositoryPath: string, sha: string): Promise<{ count: number; commits: { hash: string; subject: string }[]; fastForward: boolean; upToDate: boolean;
+    ffSetting?: 'no' | 'only'; ffSource?: string; noFastForward?: boolean }> {
+    const cwd = this.git.resolveRepositoryPath(repositoryPath);
+    const isAncestor = (ancestor: string, descendant: string) =>
+      this.git.execGit(['merge-base', '--is-ancestor', ancestor, descendant], cwd, 5000).then(() => true, () => false);
+    if (await isAncestor(sha, 'HEAD')) {
+      return { count: 0, commits: [], fastForward: false, upToDate: true };
+    }
+    const count = Number(await this.git.execGit(['rev-list', '--count', `HEAD..${sha}`], cwd, 10000));
+    const log = await this.git.execGit(['log', '--max-count=20', '--format=%H%x1f%s', `HEAD..${sha}`], cwd, 10000);
+    const commits = log.split('\n').filter(Boolean).map(line => {
+      const [hash, ...subject] = line.split('\x1f');
+      return { hash, subject: subject.join('\x1f') };
+    });
+    const canFastForward = await isAncestor('HEAD', sha);
+    // The branch's own merge options win over merge.ff: --no-ff and --ff-only decide what Git will do.
+    const setting = async (key: string) => this.git.execGit(['config', '--get', key], cwd, 5000).catch(() => '');
+    const branch = await this.git.execGit(['symbolic-ref', '--quiet', '--short', 'HEAD'], cwd, 5000).catch(() => '');
+    const options = branch ? (await setting(`branch.${branch}.mergeOptions`)).split(/\s+/) : [];
+    const global = (await setting('merge.ff')).trim().toLowerCase();
+    let ffSetting: 'no' | 'only' | undefined;
+    let ffSource: string | undefined;
+    const last = [...options].reverse().find(option => option === '--no-ff' || option === '--ff-only' || option === '--ff');
+    if (last) {
+      ffSetting = last === '--no-ff' ? 'no' : last === '--ff-only' ? 'only' : undefined;
+      ffSource = `branch.${branch}.mergeOptions=${last}`;
+    } else if (['false', 'no', 'off', '0'].includes(global)) {
+      ffSetting = 'no'; ffSource = 'merge.ff=false';
+    } else if (global === 'only') {
+      ffSetting = 'only'; ffSource = 'merge.ff=only';
+    }
+    return { count, commits, fastForward: canFastForward && ffSetting !== 'no', upToDate: false, ffSetting, ffSource, noFastForward: canFastForward && ffSetting === 'no' };
+  }
+
+  /** `mergeBranch` merges by that branch's name (so the merge message names it) after checking its tip is still `commit`. */
+  async apply(repositoryPath: string, commit: string, operation: HistoryAction, mainline?: number, expectedBranch?: string,
+    mergeBranch?: string, mergeKind?: 'local' | 'remote'): Promise<CommandResult> {
     let started = false;
     try {
       if (!['cherry-pick', 'revert', 'merge'].includes(operation)) {
@@ -41,6 +98,16 @@ export class HistoryActionService {
         throw new Error('Choose a parent for the merge commit.');
       }
       await this.assertNoUntrackedCollisions(repositoryPath, sha, operation, parents, mainline);
+      let mergeRef: string | undefined;
+      if (mergeBranch) {
+        const named = await this.resolveBranch(repositoryPath, mergeBranch, mergeKind);
+        if (named.sha !== sha) {
+          throw new Error(`Branch ${mergeBranch} moved while the question was open. Nothing was run; start the merge again.`);
+        }
+        // The plain name gives the merge message "Merge branch 'x'"; a tag of the same name would win, so then the full ref is used.
+        const byName = await this.git.execGit(['rev-parse', '--verify', '--quiet', `${mergeBranch}^{commit}`], cwd, 5000).catch(() => '');
+        mergeRef = byName === sha ? mergeBranch : named.ref;
+      }
       if (expectedBranch) {
         const currentBranch = await this.git.execGit(['symbolic-ref', '--quiet', '--short', 'HEAD'], cwd, 5000);
         if (currentBranch !== expectedBranch) {
@@ -48,7 +115,7 @@ export class HistoryActionService {
         }
       }
       const args = operation === 'merge'
-        ? ['merge', '--no-edit', sha]
+        ? ['merge', '--no-edit', mergeRef ?? sha]
         : [operation, '--no-edit', ...(parents.length > 1 ? ['-m', String(mainline)] : []), sha];
       started = true;
       await this.git.execGit(args, cwd, 120000);

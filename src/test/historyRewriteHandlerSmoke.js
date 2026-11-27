@@ -103,6 +103,115 @@ async function main() {
     assert.match(shown[0], /Changes to tracked files must be committed or stashed first; untracked files stay as they are\./);
     assert.equal(run('rev-parse', 'HEAD'), added);
     assert.equal(readFileSync(path.join(root, 'notes.local'), 'utf8'), 'mine\n');
+
+    // Rebase onto a named branch: the question names it, lists the commits that move, and predicts conflicts.
+    run('reset', '--hard', '-q');
+    rmSync(path.join(root, 'notes.local'), { force: true });
+    const fork = run('rev-parse', 'HEAD');
+    const commitFile = (file, subject) => { writeFileSync(path.join(root, file), `${subject}\n`); run('add', file); run('commit', '-qm', subject); };
+    run('switch', '-q', '-c', 'feature/x');
+    commitFile('x1.txt', 'x one');
+    commitFile('x2.txt', 'x two');
+    const xTip = run('rev-parse', 'HEAD');
+    run('switch', '-q', branch);
+    commitFile('own.txt', 'own commit');
+    const ownBefore = run('rev-parse', 'HEAD');
+    const asked = [];
+    fakeVscode.window.showWarningMessage = async (message, options, button) => { asked.push({ message, detail: options.detail }); return button; };
+    const reloadsBefore = reloads;
+    await handleRewriteHistoryCommit(ctx, { repositoryPath: '.', action: 'rebase', ontoBranch: 'feature/x' });
+    assert.equal(asked.length, 1);
+    assert.equal(asked[0].message, `Rebase ${branch} onto feature/x?`);
+    assert.match(asked[0].detail, /Onto: feature\/x, at [0-9a-f]{40} x two/);
+    assert.match(asked[0].detail, /Commits affected \(1\):\n[0-9a-f]{12} own commit/);
+    assert.match(asked[0].detail, /Predicted by Git: no conflicts/);
+    assert.equal(run('rev-parse', 'HEAD~1'), xTip, "main's own commit sits on feature/x's tip");
+    assert.equal(run('log', '-1', '--format=%s'), 'own commit');
+    assert.equal(reloads, reloadsBefore + 1);
+
+    // The branch moves while the question is open: nothing runs, and the message says so.
+    run('reset', '--hard', '-q', ownBefore);
+    asked.length = 0;
+    const moved = [];
+    fakeVscode.window.showErrorMessage = message => moved.push(message);
+    fakeVscode.window.showWarningMessage = async (message, options, button) => {
+      asked.push(message);
+      const tree = run('rev-parse', `${xTip}^{tree}`);
+      run('update-ref', 'refs/heads/feature/x', run('commit-tree', tree, '-p', xTip, '-m', 'x moved'));
+      return button;
+    };
+    await handleRewriteHistoryCommit(ctx, { repositoryPath: '.', action: 'rebase', ontoBranch: 'feature/x' });
+    assert.equal(asked.length, 1);
+    assert.equal(run('rev-parse', 'HEAD'), ownBefore, 'a moved branch must not be rebased onto');
+    assert.equal(moved.length, 1, 'a moved branch reports an error');
+    assert.match(moved[0], /Branch feature\/x moved while the question was open\. Nothing was run; start the rebase again\./);
+    run('update-ref', 'refs/heads/feature/x', xTip);
+
+    // Commits already on origin: the question warns and the button says so; unpushed commits get neither.
+    const origin = path.join(root, '..', `${path.basename(root)}-origin.git`);
+    execFileSync('git', ['init', '-q', '--bare', origin]);
+    run('remote', 'add', 'origin', origin);
+    run('switch', '-q', '-c', 'pub', fork);
+    commitFile('pub1.txt', 'pub one');
+    run('push', '-q', 'origin', 'pub');
+    commitFile('pub2.txt', 'pub two');
+    const pubBefore = run('rev-parse', 'HEAD');
+    const buttons = [];
+    fakeVscode.window.showWarningMessage = async (message, options, ...items) => { buttons.push({ detail: options.detail, items }); return undefined; };
+    await handleRewriteHistoryCommit(ctx, { repositoryPath: '.', action: 'rebase', ontoBranch: 'feature/x' });
+    assert.equal(buttons.length, 1);
+    assert.match(buttons[0].detail, /^1 of these commits are already on origin\. Rebasing rewrites them: you will have to force-push pub, and anyone who built on them must rebase too\.\n\n/);
+    assert.match(buttons[0].detail, /Commits affected \(2\)/);
+    assert.deepEqual(buttons[0].items, ['Rebase anyway']);
+    assert.equal(run('rev-parse', 'HEAD'), pubBefore, 'declining runs nothing');
+    run('switch', '-q', branch);
+    buttons.length = 0;
+    await handleRewriteHistoryCommit(ctx, { repositoryPath: '.', action: 'rebase', ontoBranch: 'feature/x' });
+    assert.equal(buttons.length, 1);
+    assert.doesNotMatch(buttons[0].detail, /already on origin/);
+    assert.deepEqual(buttons[0].items, ['Rebase']);
+    rmSync(origin, { recursive: true, force: true });
+    run('remote', 'remove', 'origin');
+
+    // A label's kind keeps its namespace: a local branch called origin/topic beside refs/remotes/origin/topic.
+    run('switch', '-q', '-c', 'tmp-a', fork);
+    commitFile('topic-a.txt', 'topic a');
+    const topicA = run('rev-parse', 'HEAD');
+    run('switch', '-q', '-c', 'tmp-b', fork);
+    commitFile('topic-b.txt', 'topic b');
+    const topicB = run('rev-parse', 'HEAD');
+    run('switch', '-q', branch);
+    run('branch', 'origin/topic', topicA);
+    run('update-ref', 'refs/remotes/origin/topic', topicB);
+    fakeVscode.window.showWarningMessage = async (message, options, button) => button;
+    for (const [ontoKind, expected] of [['remote', topicB], ['local', topicA], [undefined, topicA]]) {
+      run('reset', '-q', '--hard', ownBefore);
+      await handleRewriteHistoryCommit(ctx, { repositoryPath: '.', action: 'rebase', ontoBranch: 'origin/topic', ontoKind });
+      assert.equal(run('rev-parse', 'HEAD~1'), expected, `rebase onto a ${ontoKind} label used the wrong ref`);
+    }
+    run('reset', '-q', '--hard', ownBefore);
+
+    // A branch tip that adds a file which is untracked here is refused before the question, with the file named.
+    run('switch', '-q', '-c', 'feature/y', fork);
+    commitFile('clash2.txt', 'y adds clash2');
+    run('switch', '-q', branch);
+    writeFileSync(path.join(root, 'clash2.txt'), 'mine\n');
+    asked.length = 0;
+    moved.length = 0;
+    fakeVscode.window.showWarningMessage = async (message, options, button) => { asked.push(message); return button; };
+    await handleRewriteHistoryCommit(ctx, { repositoryPath: '.', action: 'rebase', ontoBranch: 'feature/y' });
+    assert.equal(asked.length, 0, 'no question for a refused rebase');
+    assert.match(moved[0], /These untracked files would be overwritten by rebase: clash2\.txt\./);
+    assert.equal(run('rev-parse', 'HEAD'), ownBefore);
+    rmSync(path.join(root, 'clash2.txt'));
+
+    // A branch that does not exist, or a name that looks like an option, is refused too.
+    moved.length = 0;
+    await handleRewriteHistoryCommit(ctx, { repositoryPath: '.', action: 'rebase', ontoBranch: 'no/such' });
+    await handleRewriteHistoryCommit(ctx, { repositoryPath: '.', action: 'rebase', ontoBranch: '--abort' });
+    assert.match(moved[0], /Branch no\/such no longer exists\./);
+    assert.match(moved[1], /Invalid branch name\./);
+    assert.equal(asked.length, 0);
     console.log('History rewrite handler smoke passed');
   } finally {
     rmSync(root, { recursive: true, force: true });

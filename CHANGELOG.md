@@ -12,12 +12,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **First-parent only** in the history's ⋯ menu, beside Include remote branches. It follows the current line only: the graph shows one column, and each merge is one commit with a "merge" badge and the number of commits it brought in. It shows the selected branch, or HEAD, and never every branch, so Include remote branches is greyed out while it is on. The choice is remembered for each repository.
+- Right-click a branch label in the history, or press the context-menu key or Shift+F10 on it, for **Checkout**, **Merge**, **Rebase**, **Compare with the current branch** and **Delete Branch…**. On the checked-out branch's own label the menu offers **Compare…**, which opens the branch comparison with that branch as the base. A label such as `main` with an `origin` chip acts on the local `main`, and `origin/x` at another commit is a merge and rebase target of its own, without Delete.
+- Drag a branch label onto another to see what fits the pair: **Merge `S` into `T`** when `T` is the checked-out branch, **Rebase `S` onto `T`** when `S` is, and a note to check one out first when neither is. A drop only opens that small menu; Escape closes it and nothing runs until you choose and confirm.
+- The merge question for a branch lists the incoming commits (the first 20 and their count), says when it is a fast-forward, and says "Nothing to merge" when the branch is already in the current one. The merge commit names the branch.
+- The merge question follows your fast-forward setting (`merge.ff`, or the branch's `mergeOptions`). With `--no-ff` it says a merge commit will be made instead of "Fast-forward", and with `--ff-only` a merge that cannot fast-forward is refused before the question.
 
 ### Changed
 
 - A branch keeps its colour in the history graph. The colour comes from the branch's name, so it no longer changes when you load more commits, refresh or filter, and `origin/x` and `x` share one. The current branch's line stays in the first colour.
 - Branch labels in the history have a bar of their line's colour along the left edge, so a label names the line it belongs to. Tags and `origin/HEAD` have none.
 - Pointing at or tabbing to a commit, its node or one of its labels highlights that branch's whole line in the loaded history and dims the others.
+- **Rebase current branch onto this commit…** is gone from the commit menu, because people rebase a branch onto another branch. A commit with branch labels now offers **Rebase `<current>` onto `<branch>`…** and **Merge `<branch>` into `<current>`…** for each branch on it that is not checked out. **Merge into current branch…** on a commit, Cherry Pick, Revert, Reset and Drop stay as they were.
+- The rebase question names the branch and, as before, lists the commits that move and the conflicts Git predicts. If the branch moves while the question is open, nothing runs and the message says so.
+- A rebase of commits that are already on origin now warns first: "N of these commits are already on origin. Rebasing rewrites them: you will have to force-push, and anyone who built on them must rebase too." The button reads **Rebase anyway**. This applies to every rebase, not only the new ones; it is a warning, not a block.
 
 ## [3.10.0] - 2026-11-26
 

@@ -1362,6 +1362,11 @@ body {
 .sidebar-ref-row.has-delete:focus-within .sidebar-ref-actions { background: linear-gradient(90deg, transparent, var(--bg-secondary) 14px); }
 .sidebar-ref-row.has-delete .sidebar-ref-item { padding-right: 30px; }
 .history-context-branches[hidden] { display: none; }
+#historyBranchMenu { min-width: 240px; }
+#historyBranchMenu button[aria-disabled="true"] { opacity: .65; cursor: default; }
+#historyBranchMenu button[aria-disabled="true"]:hover { background: transparent; color: inherit; }
+.history-ref[data-target].drop-target { outline: 2px solid var(--accent, var(--vscode-focusBorder, #3794ff)); outline-offset: 1px; }
+.history-ref[data-target].dragging { opacity: .6; }
 
 .sidebar-ref-origin-action,
 .sidebar-ref-delete-action {

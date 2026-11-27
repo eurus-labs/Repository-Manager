@@ -97,6 +97,130 @@ async function main() {
     assert.match(details[0], /Changes to tracked files must be committed or stashed first; untracked files stay as they are\. Conflicts can be resolved in Source Control\./);
     assert.notEqual(run('rev-parse', 'HEAD'), targetHead);
     assert.equal(readFileSync(path.join(root, 'notes.local'), 'utf8'), 'mine\n');
+
+    // Merging a named branch: the question lists the incoming commits (first 20 and the count), says fast-forward
+    // when it is one, and the merge message names the branch.
+    const targetName = run('symbolic-ref', '--short', 'HEAD');
+    run('switch', '-q', '-c', 'inc');
+    for (let n = 1; n <= 22; n++) {
+      writeFileSync(path.join(root, `inc${n}.txt`), `${n}\n`);
+      run('add', '.');
+      run('commit', '-qm', `inc ${n}`);
+    }
+    const incTip = run('rev-parse', 'HEAD');
+    run('switch', '-q', targetName);
+    const seen = [];
+    override = (message, options) => { seen.push({ message, detail: options.detail }); return 'Merge'; };
+    errors = [];
+    await handleApplyHistoryCommit(ctx, { repositoryPath: '.', operation: 'merge', branch: 'inc' });
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0].message, `Merge inc into ${targetName} in .?`);
+    assert.match(seen[0].detail, /^Fast-forward: no merge commit is made\. Incoming commits \(22\):\n/);
+    assert.equal(seen[0].detail.split('\n').filter(line => /^[0-9a-f]{12} inc \d+$/.test(line)).length, 20, 'the first 20 are listed');
+    assert.match(seen[0].detail, /\n… and 2 more\n/);
+    assert.equal(run('rev-parse', 'HEAD'), incTip, 'a fast-forward moves to the branch tip');
+
+    // Already in HEAD: nothing to merge, no question, nothing runs.
+    seen.length = 0;
+    await handleApplyHistoryCommit(ctx, { repositoryPath: '.', operation: 'merge', branch: 'inc' });
+    assert.equal(seen.length, 0);
+    assert.match(errors.at(-1), new RegExp(`Nothing to merge: inc is already in ${targetName}\\.`));
+
+    // A real merge: one incoming commit, no fast-forward, and the merge commit names the branch.
+    run('switch', '-q', '-c', 'div', base);
+    writeFileSync(path.join(root, 'div.txt'), 'div\n');
+    run('add', '.');
+    run('commit', '-qm', 'div commit');
+    const divTip = run('rev-parse', 'HEAD');
+    run('switch', '-q', targetName);
+    await handleApplyHistoryCommit(ctx, { repositoryPath: '.', operation: 'merge', branch: 'div' });
+    assert.equal(seen.length, 1);
+    assert.match(seen[0].detail, /^Incoming commits \(1\):\n[0-9a-f]{12} div commit\n/);
+    assert.doesNotMatch(seen[0].detail, /Fast-forward/);
+    assert.equal(run('log', '-1', '--format=%s'), `Merge branch 'div' into ${targetName}`);
+    assert.equal(run('rev-parse', 'HEAD^2'), divTip);
+
+    // The branch moves while the question is open: nothing runs.
+    run('branch', 'div2', base);
+    run('switch', '-q', 'div2');
+    writeFileSync(path.join(root, 'div2.txt'), 'div2\n');
+    run('add', '.');
+    run('commit', '-qm', 'div2 commit');
+    const div2Tip = run('rev-parse', 'HEAD');
+    run('switch', '-q', targetName);
+    const headBeforeMove = run('rev-parse', 'HEAD');
+    errors = [];
+    override = () => {
+      run('update-ref', 'refs/heads/div2', run('commit-tree', run('rev-parse', `${div2Tip}^{tree}`), '-p', div2Tip, '-m', 'div2 moved'));
+      return 'Merge';
+    };
+    await handleApplyHistoryCommit(ctx, { repositoryPath: '.', operation: 'merge', branch: 'div2' });
+    assert.equal(errors.length, 1);
+    assert.match(errors[0], /Branch div2 moved while the question was open\. Nothing was run; start the merge again\./);
+    assert.equal(run('rev-parse', 'HEAD'), headBeforeMove);
+
+    // Untracked files that the branch would write are refused before the question, with the file named.
+    run('switch', '-q', '-c', 'clasher', base);
+    writeFileSync(path.join(root, 'clash3.txt'), 'tracked\n');
+    run('add', '.');
+    run('commit', '-qm', 'clasher adds clash3');
+    run('switch', '-q', targetName);
+    writeFileSync(path.join(root, 'clash3.txt'), 'mine\n');
+    seen.length = 0;
+    errors = [];
+    override = (message, options) => { seen.push(options.detail); return 'Merge'; };
+    await handleApplyHistoryCommit(ctx, { repositoryPath: '.', operation: 'merge', branch: 'clasher' });
+    assert.equal(seen.length, 0);
+    assert.match(errors[0], /These untracked files would be overwritten by merge: clash3\.txt\./);
+    rmSync(path.join(root, 'clash3.txt'));
+    await handleApplyHistoryCommit(ctx, { repositoryPath: '.', operation: 'merge', branch: '--abort' });
+    assert.match(errors.at(-1), /Invalid branch name\./);
+
+    // A label's kind keeps its namespace: a local branch called origin/topic beside refs/remotes/origin/topic.
+    const commitOn = (name, file, from) => {
+      run('switch', '-q', '-c', name, from);
+      writeFileSync(path.join(root, file), `${name}\n`);
+      run('add', file);
+      run('commit', '-qm', `${name} commit`);
+      const sha = run('rev-parse', 'HEAD');
+      run('switch', '-q', targetName);
+      return sha;
+    };
+    const topicA = commitOn('tmp-a', 'topic-a.txt', base);
+    const topicB = commitOn('tmp-b', 'topic-b.txt', base);
+    run('branch', 'origin/topic', topicA);
+    run('update-ref', 'refs/remotes/origin/topic', topicB);
+    const beforeTopic = run('rev-parse', 'HEAD');
+    override = () => 'Merge';
+    for (const [kind, expected] of [['remote', topicB], ['local', topicA], [undefined, topicA]]) {
+      run('reset', '-q', '--hard', beforeTopic);
+      await handleApplyHistoryCommit(ctx, { repositoryPath: '.', operation: 'merge', branch: 'origin/topic', kind });
+      assert.equal(run('rev-parse', 'HEAD^2'), expected, `merge of a ${kind} label used the wrong ref`);
+    }
+    run('reset', '-q', '--hard', beforeTopic);
+
+    // merge.ff=false: the question says a merge commit is made, and it is.
+    const aheadTip = commitOn('ahead', 'ahead.txt', targetName);
+    seen.length = 0;
+    override = (message, options) => { seen.push(options.detail); return 'Merge'; };
+    run('config', 'merge.ff', 'false');
+    await handleApplyHistoryCommit(ctx, { repositoryPath: '.', operation: 'merge', branch: 'ahead', kind: 'local' });
+    assert.equal(seen.length, 1);
+    assert.doesNotMatch(seen[0], /Fast-forward/);
+    assert.match(seen[0], /^A merge commit will be made \(merge\.ff=false\)\. Incoming commits \(1\):/);
+    assert.equal(run('rev-parse', 'HEAD^2'), aheadTip, 'merge.ff=false makes a two-parent commit');
+
+    // merge.ff=only with a diverged branch: refused before the question, nothing runs.
+    run('reset', '-q', '--hard', beforeTopic);
+    commitOn('diverged', 'diverged.txt', base);
+    run('config', 'merge.ff', 'only');
+    seen.length = 0;
+    errors = [];
+    await handleApplyHistoryCommit(ctx, { repositoryPath: '.', operation: 'merge', branch: 'diverged', kind: 'local' });
+    assert.equal(seen.length, 0);
+    assert.match(errors[0], new RegExp(`^merge\\.ff=only: diverged cannot be fast-forwarded into ${targetName}, so Git would refuse this merge\\.`));
+    assert.equal(run('rev-parse', 'HEAD'), beforeTopic);
+    run('config', '--unset', 'merge.ff');
     console.log('History action handler smoke passed');
   } finally {
     rmSync(root, { recursive: true, force: true });
