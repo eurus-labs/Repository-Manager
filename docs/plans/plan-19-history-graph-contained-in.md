@@ -1,6 +1,6 @@
 # Plan 19 — Light a line only on its commit node, and show which branches contain a selected commit
 
-Status: draft
+Status: approved
 Date: 2026-11-27
 Branch: `feat/history-graph-contained-in`
 Baseline: `main` at `cbc08844d8d6826c1139752c029d522adb744e42` (3.11.0 content: plans 13 and 14 merged)
@@ -78,7 +78,7 @@ Decisions 1 to 3 are the user's (2026-11-27). The rest are the planner's.
    - The cache is cleared on `repositoryRefsLoaded`, which follows a fetch, a checkout, a merge or a branch change.
 7. **Comparison mode** (Base and Target selected): the line is shown for the Target commit. The working-changes row
    gets none.
-8. **Version: the next minor**, 3.12.0 if 3.11.0 has been released by merge time. Plan 20 may share it; the second to
+8. **Version: 3.12.0** (3.11.0 is released). Plan 20 may share it; the second to
    merge keeps one heading. CHANGELOG:
    - `### Changed`: the highlight rule;
    - `### Added`: Contained in.
