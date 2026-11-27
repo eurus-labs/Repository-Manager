@@ -68,13 +68,28 @@
     return remote || '';
   }
 
+  // The branch a merge commit's subject says it merged, without its remote or owner; '' when it says none.
+  function mergedBranchName(subject) {
+    const text = typeof subject === 'string' ? subject : '';
+    const stripFirst = value => { const separator = value.indexOf('/'); return separator >= 0 ? value.slice(separator + 1) : value; };
+    let match = /^Merge branch '([^']+)'/.exec(text);
+    if (match) return match[1];
+    match = /^Merge remote-tracking branch '([^']+)'/.exec(text);
+    if (match) return stripFirst(match[1]);
+    match = /^Merge pull request #\d+ from (\S+)/.exec(text);
+    return match ? stripFirst(match[1]) : '';
+  }
+
   /**
    * Lays commits (newest first) out in lanes, Git Graph style: the current branch's first-parent
    * chain stays in column 0, and every branch path keeps one column and one colour from its tip
    * until it merges or ends. Freed columns are reused. A lane's colour comes from the name of the
    * branch label where it starts (see toneForName), so it does not depend on what is loaded above;
-   * an unnamed lane takes a tone its neighbouring lanes do not use. With `options.firstParent`
-   * only each commit's first parent is followed (one column).
+   * an unnamed lane takes a tone its neighbouring lanes do not use. A lane a merge opens for its
+   * second or later parent is named by the merge's subject (`Merge branch 'x'`), else by the
+   * parent's hash, never by labels that may not be loaded. With `options.firstParent` only each
+   * commit's first parent is followed (one column), and column 0 holds the chain from the first
+   * commit of the list, not HEAD's.
    *
    * Per row: `lane`/`color` of the commit; `before`/`after` the hash each lane expects above and
    * below the row, with `beforeColors`/`afterColors`; `incomingLanes`, other lanes that end at this
@@ -87,13 +102,15 @@
     const byHash = new Map(list.map(commit => [commit.hash, commit]));
     const headHash = (options && options.headHash) || findHeadHash(list);
     const headChain = new Set();
-    const chainTip = findUpstreamTip(list, byHash, headHash, options && options.upstream) || headHash;
+    const firstParentOnly = Boolean(options && options.firstParent);
+    const chainTip = firstParentOnly && list.length
+      ? list[0].hash
+      : findUpstreamTip(list, byHash, headHash, options && options.upstream) || headHash;
     for (let hash = chainTip; hash && byHash.has(hash) && !headChain.has(hash);) {
       headChain.add(hash);
       hash = (byHash.get(hash).parentHashes || [])[0];
     }
     const reserved = headChain.size > 0;
-    const firstParentOnly = Boolean(options && options.firstParent);
     const lanes = [];
     const colors = [];
     const segments = [];
@@ -107,6 +124,8 @@
       const candidates = [1, 2, 3, 4, 5, 6, 7, 0];
       return candidates.find(tone => !used.has(tone) && (tone !== 0 || !reserved)) ?? candidates.find(tone => !used.has(tone)) ?? 1;
     };
+    // Column 0's tone: 0 when the chain holds HEAD, else its tip's label.
+    const chainColor = headChain.has(headHash) || !list.length ? 0 : toneFor(list[0], 0);
     const freeLane = () => {
       for (let index = reserved ? 1 : 0; ; index += 1) if (!lanes[index]) return index;
     };
@@ -123,7 +142,7 @@
       const lane = onHead ? 0 : expecting.length ? expecting[0] : freeLane();
       const startsHere = !expecting.includes(lane);
       if (startsHere) {
-        colors[lane] = onHead ? 0 : toneFor(commit, lane);
+        colors[lane] = onHead ? chainColor : toneFor(commit, lane);
         segments[lane] = nextSegment++;
       }
       const before = lanes.slice();
@@ -162,7 +181,7 @@
             // Even a commit of the current branch opens its own lane here; when its row comes it
             // is drawn in column 0 and this lane curves into it.
             parentLane = freeLane();
-            open(parentLane, parentHash, toneFor(byHash.get(parentHash), parentLane));
+            open(parentLane, parentHash, toneForName(mergedBranchName(commit.subject) || parentHash));
           }
           parentLanes.push(parentLane);
           parentColors.push(colors[parentLane]);

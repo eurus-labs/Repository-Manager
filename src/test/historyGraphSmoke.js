@@ -36,6 +36,26 @@ const rowOf = (model, commits, hash) => model.rows[commits.findIndex(commit => c
   assert.deepEqual(graph.buildGraphModel(base).rows.filter(row => row.lane === 0).map(row => row.color), [0, 0]);
 }
 
+// A lane a merge opens keeps its tone when Load more brings the merged parent into the list.
+{
+  const merge = subject => ({ hash: 'm3', parentHashes: ['m2', 'x2'], subject, refs: [head] });
+  const mainRest = [{ hash: 'm2', parentHashes: ['m1'] }, { hash: 'm1', parentHashes: [] }];
+  const edgeTone = commits => graph.buildGraphModel(commits).rows[0].parentColors[1];
+  const firstPage = subject => [merge(subject), ...mainRest];
+  const bothPages = subject => [merge(subject), ...mainRest.slice(0, 1), { hash: 'x2', parentHashes: ['m1'], refs: [local('feature/x')] }, mainRest[1]];
+  const named = "Merge branch 'feature/x' into main";
+  assert.equal(edgeTone(firstPage(named)), graph.toneForName('feature/x'), 'a merge lane is not named by its subject');
+  assert.equal(edgeTone(bothPages(named)), edgeTone(firstPage(named)), 'the merge lane changed tone after Load more');
+  for (const [subject, name] of [["Merge remote-tracking branch 'origin/feature/x'", 'feature/x'], ['Merge pull request #12 from alice/feature/x', 'feature/x'], ["Merge branch 'feature/x'", 'feature/x']]) {
+    assert.equal(edgeTone(firstPage(subject)), graph.toneForName(name), subject);
+  }
+  // A subject that names nothing: the parent's hash, the same on both pages, and never tone 0.
+  const custom = 'Integrate the work';
+  assert.equal(edgeTone(firstPage(custom)), graph.toneForName('x2'));
+  assert.equal(edgeTone(bothPages(custom)), edgeTone(firstPage(custom)), 'a merge lane with a custom subject changed tone after Load more');
+  assert.notEqual(edgeTone(firstPage(custom)), 0);
+}
+
 // Tone helpers: stable, within 0-7; origin/HEAD and tags are not branches.
 {
   assert.equal(graph.toneForName('feature/x'), graph.toneForName('feature/x'));
@@ -121,6 +141,24 @@ const rowOf = (model, commits, hash) => model.rows[commits.findIndex(commit => c
   assert.deepEqual(model.rows[0].parentLanes, [0]);
   assert.deepEqual(model.rows[2].after.filter(Boolean), [], 'a lane was left dangling');
   assert.equal(graph.buildGraphModel(commits).laneCount, 2, 'without the option the merge still opens a second lane');
+}
+
+// First parent only: a selected branch ahead of HEAD is one lane, not a second column curving into HEAD's.
+{
+  const commits = [
+    { hash: 'tip', parentHashes: ['head'], refs: [local('feature/tip')] },
+    { hash: 'head', parentHashes: ['base'], refs: [{ name: 'main', kind: 'head', isCurrent: true }] },
+    { hash: 'base', parentHashes: [] }
+  ];
+  const model = graph.buildGraphModel(commits, { firstParent: true });
+  assert.deepEqual(model.rows.map(row => row.lane), [0, 0, 0], 'the selected branch is not in column 0');
+  assert.equal(model.laneCount, 1);
+  assert.equal(new Set(model.rows.map(row => row.segment)).size, 1, 'the branch has more than one segment');
+  assert.deepEqual(model.rows.map(row => row.color), [0, 0, 0], 'a chain holding HEAD lost tone 0');
+  // A chain without HEAD takes its tip's tone.
+  const away = graph.buildGraphModel([{ hash: 't', parentHashes: ['u'], refs: [local('feature/t')] }, { hash: 'u', parentHashes: [] }], { firstParent: true });
+  assert.deepEqual(away.rows.map(row => row.color), [graph.toneForName('feature/t'), graph.toneForName('feature/t')]);
+  assert.equal(graph.buildGraphModel(commits).laneCount, 2, 'the normal view changed');
 }
 
 // The saved filter: a new field; older saved states read as off.

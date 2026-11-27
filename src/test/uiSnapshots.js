@@ -2327,14 +2327,14 @@ async function main() {
       window.__graphCommits = {
         all: [
           full(9, [5], 'y work', [local('feature/y')]),
-          full(8, [5, 7], 'merge feature/x', [{ name: 'main', kind: 'head', isCurrent: true }, remote('origin/main'), remote('origin/HEAD'), { name: 'v2.0', kind: 'tag' }], { mergeCount: 2 }),
+          full(8, [5, 7], "Merge branch 'feature/x'", [{ name: 'main', kind: 'head', isCurrent: true }, remote('origin/main'), remote('origin/HEAD'), { name: 'v2.0', kind: 'tag' }], { mergeCount: 2 }),
           full(7, [6], 'x two', [local('feature/x'), remote('origin/feature/x')]),
           full(6, [5], 'x one'),
           full(5, [1], 'main work'),
           full(1, [], 'base')
         ],
         firstParent: [
-          full(8, [5, 7], 'merge feature/x', [{ name: 'main', kind: 'head', isCurrent: true }, remote('origin/main')], { mergeCount: 2 }),
+          full(8, [5, 7], "Merge branch 'feature/x'", [{ name: 'main', kind: 'head', isCurrent: true }, remote('origin/main')], { mergeCount: 2 }),
           full(5, [1], 'main work'),
           full(1, [], 'base')
         ]
@@ -2398,7 +2398,7 @@ async function main() {
     assert.equal(atRest.active + atRest.dimmed, 0, 'a highlight at rest');
     assert.ok(atRest.total > 0);
     const xSegment = await segmentOf('x two');
-    assert.notEqual(xSegment, await segmentOf('merge feature/x'), 'feature/x and main share a segment');
+    assert.notEqual(xSegment, await segmentOf("Merge branch 'feature/x'"), 'feature/x and main share a segment');
     assert.notEqual(xSegment, await segmentOf('y work'));
     assert.equal(await segmentOf('x one'), xSegment, 'a branch line has two segments');
     await readable.locator('.history-row', { hasText: 'x one' }).hover();
