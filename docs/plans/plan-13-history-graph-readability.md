@@ -51,9 +51,19 @@ After this change:
 4. **First-parent only.**
    - A new item in the history's ⋯ menu, beside **Include remote branches**: **First-parent only**, a
      `menuitemcheckbox`.
-   - When on, `historyService.getHistory` adds `--first-parent` (`src/services/historyService.ts:98`), and the
-     graph shows one column. A merge commit shows a "merge" badge with the number of commits it brought in, from
-     `git rev-list --count <merge>^1..<merge>^2`, read for at most 50 merges per page.
+   - When on, `historyService.getHistory` adds `--first-parent` and the graph shows one column.
+   - **It shows one line, not every ref's first-parent chain.** With **Include remote branches** on, `--all
+     --first-parent` still lists every branch tip, and the lines are not one column. Added after implementation
+     review, 2026-11-27.
+     - While First-parent only is on, the log starts from the selected revision (the branch filter), or from HEAD
+       when none is selected. It never uses `--all`.
+     - **Include remote branches** stays checked as saved, but it is disabled (`aria-disabled="true"`) with the
+       title "Not used while First-parent only is on".
+   - **Merge badges.** A merge commit shows a "merge" badge with the number of commits it brought in, from
+     `git rev-list --count <merge>^1..<merge>^2`.
+     - Counts are read for at most 50 merges per page.
+     - **At most 4 count processes run at a time.** 50 Git processes at once is what plan 18 measured as the cost on
+       Windows.
    - It is saved per repository with the other filters, as a new optional field `firstParent` in the existing
      `dashboardHistoryState` shape (plan 1 kept the shape; older saved states read as off).
    - This replaces "collapse merged branches". Folding one merge at a time is out of scope.
@@ -117,6 +127,12 @@ Default (`AGENTS.md`); the graph scripts stay UMD with no module state, as `hist
   merge commits (at most 50 per page). With `firstParent` off, the args are byte-identical to today's. Checked by
   `node src/test/dashboardHistorySmoke.js` and the history service tests (a temporary repository with one merge
   of 3 commits gives a count of 3).
+- [ ] **One line with remotes on.** A temporary repository has `topic` (3 commits) merged into `main`, with `topic` kept.
+  `getHistory` with `includeRemotes: true, firstParent: true` returns only `main`'s first-parent commits: the merge and
+  `main`'s own commits, none of `topic`'s. The args contain no `--all`. With a branch filter, the log starts from that
+  branch. Checked by `historyFirstParentSmoke.js`. **Failing first:** on `61e51ef` this case fails.
+- [ ] **Concurrency.** With 55 merges, at most 4 `rev-list --count` processes are ever running at once, and exactly
+  50 run in total. Checked by `historyFirstParentSmoke.js`.
 - [ ] **Saved filter.** `firstParent` is kept per repository. A saved state without it reads as off. Checked by
   `node src/test/dashboardHistorySmoke.js`.
 - [ ] **Page.**
@@ -143,7 +159,7 @@ Default (`AGENTS.md`); the graph scripts stay UMD with no module state, as `hist
 | Risk | How it is handled |
 | --- | --- |
 | Two neighbouring branches hash to the same tone | Unnamed lanes avoid neighbours' tones; a clash of named ones is accepted; the label names it |
-| Merge counts slow a page | At most 50 `rev-list --count` per page, in one batch; skipped with no badge on error |
+| Merge counts slow a page | At most 50 `rev-list --count` per page, at most 4 at a time, only while First-parent only is on; skipped with no badge on error |
 | The highlight is costly on many rows | Class toggles on paths with one `data-segment` selector; no re-render |
 | A changed saved-state shape drops filters | The field is optional and read as off; test with an old state |
 
