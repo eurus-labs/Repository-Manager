@@ -86,7 +86,22 @@ After this change:
    - A background branch update (plan 18) never moves a branch that a merge or rebase has changed in the meantime.
      Its fast-forward is `--ff-only`, and its guards recheck HEAD and pending operations. No new handling is
      needed; the Risks table records it.
-7. **Version: 3.11.0.** Plan 13 is built at the same time and also targets 3.11.0. Whichever merges second keeps
+7. **A warning before rebasing commits that are already on origin** (the user's choice, 2026-11-27).
+   - **What counts.** Before the rebase confirm, the host counts the commits that would move (`<merge-base>..HEAD`)
+     and that are already on a remote: they are reachable from `refs/remotes/*`. Count them with
+     `git rev-list --count <merge-base>..HEAD` minus `git rev-list --count <merge-base>..HEAD --not --remotes`.
+   - **When the count is above 0,** the modal shows the warning first:
+
+     "<N> of these commits are already on origin. Rebasing rewrites them: you will have to force-push `<current>`,
+     and anyone who built on them must rebase too."
+
+     The confirm button reads **Rebase anyway** instead of **Rebase**.
+   - **When it is 0,** the modal is as before.
+   - **It warns and does not block.** Rebasing a branch only you push to is common and safe. Drop keeps its
+     existing block on published commits.
+   - **It applies to every rebase this extension runs** (`HistoryRewriteService`, action `rebase`), not only the new
+     menu and drag.
+8. **Version: 3.11.0.** Plan 13 is built at the same time and also targets 3.11.0. Whichever merges second keeps
    both entries under one `## [3.11.0]` heading and does not bump again. CHANGELOG:
    - `### Changed`: the rebase item;
    - `### Added`: label menus, drag, and merge preview commits.
@@ -174,6 +189,13 @@ Default (`AGENTS.md`): no `confirm()` in the webview, and approvals stay host mo
   - an `origin/HEAD` label, if the fixture shows one, has no menu.
 
   A separate `origin/feature/ahead` label offers Merge and Rebase, but not Delete.
+- [ ] **Published commits warning** (`historyRewriteHandlerSmoke.js`).
+  - `main` has 2 commits of its own since the merge-base with `feature/x`, and 1 of them is pushed to a bare
+    origin. Rebasing `main` onto `feature/x` shows a modal whose message says "1 of these commits are already on
+    origin" and whose button is **Rebase anyway**.
+  - With no commit pushed, the modal has no warning and the button is **Rebase**.
+  - Declining the warned modal runs nothing.
+  - **Failing first:** without the count, the first case fails.
 - [ ] **Untracked files** (`historyRewriteHandlerSmoke.js` or `untrackedGuardSmoke.js`). Rebasing onto a branch whose
   tip adds `clash.txt`, while `clash.txt` is untracked here, is refused before the confirm, with the file named.
 - [ ] **Failure first.** With the moved-branch recheck removed, the "branch moved" case runs the rebase. The test
@@ -193,7 +215,7 @@ Default (`AGENTS.md`): no `confirm()` in the webview, and approvals stay host mo
 | --- | --- |
 | A drop runs something by accident | A drop only opens a menu; every action then asks through the host modal with a preview |
 | A branch moves between preview and run | Re-resolved before running; it stops if it changed, as for HEAD |
-| A rebase of a published branch surprises others | The confirm already lists the commits that move; a backup branch is created for rewrites as today |
+| A rebase of a published branch surprises others | Decision 7: the modal says how many of the moving commits are on origin, that a force-push follows, and the button reads **Rebase anyway**. The confirm also lists the commits, and a backup branch is created for rewrites as today |
 | Drag is not accessible | The label menu offers every drag action by keyboard |
 | Remote labels (`origin/x`) as targets | Allowed for merge and rebase (read-only refs); Delete stays local-only |
 | A plan 18 background update lands while a merge or rebase from the graph runs | Its fast-forward is `--ff-only` and rechecks HEAD and pending operations just before it; at worst it reports `blocked` and moves nothing |
