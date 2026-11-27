@@ -169,4 +169,18 @@ const rowOf = (model, commits, hash) => model.rows[commits.findIndex(commit => c
   assert.equal(graph.normalizeHistoryFilters({ firstParent: 'yes' }).firstParent, false);
 }
 
+{
+  // Labels that all fit show, with no room kept for a "+N" chip that would not be needed: 88, 88 and
+  // 24 px with two 3 px gaps take 206 of 209 px.
+  const count = (widths, budget, limit = widths.length) => graph.visibleRefCount(widths, budget, limit, 3, 30);
+  assert.equal(count([88, 88, 24], 209), 3, 'labels that fit were folded to make room for an unneeded chip');
+  // When they do not all fit, room is kept for the chip: 100 + 3 + 100 + 3 + 30 > 209.
+  assert.equal(count([100, 100, 100], 209), 1);
+  assert.equal(count([60, 60, 60, 60], 209), 2);
+  // The narrow limit and the first label, which always shows.
+  assert.equal(count([88, 88, 24], 209, 1), 1);
+  assert.equal(count([400], 209), 1);
+  assert.equal(count([], 209), 0);
+}
+
 console.log('History graph smoke passed');

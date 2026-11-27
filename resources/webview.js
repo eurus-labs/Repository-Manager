@@ -1769,9 +1769,20 @@
 
   // The repository's ahead and behind, on the current branch's label only: another branch's
   // numbers would need a Git process each.
+  // Only whole positive numbers are shown: anything else in a message is ignored, never inserted.
+  function refCountsText(counts) {
+    const count = value => {
+      const number = typeof value === 'number' ? value : NaN;
+      return Number.isInteger(number) && number > 0 ? number : 0;
+    };
+    const ahead = count(counts && counts.ahead);
+    const behind = count(counts && counts.behind);
+    return [ahead ? `↑${ahead}` : '', behind ? `↓${behind}` : ''].filter(Boolean).join(' ');
+  }
+
   function refCountsHtml(counts) {
-    const text = [counts && counts.ahead > 0 ? `↑${counts.ahead}` : '', counts && counts.behind > 0 ? `↓${counts.behind}` : ''].filter(Boolean).join(' ');
-    return text ? `<span class="ref-counts">${text}</span>` : '';
+    const text = refCountsText(counts);
+    return text ? `<span class="ref-counts">${escapeHtml(text)}</span>` : '';
   }
 
   // The counts change without a new history page (a fetch, a push): the label is updated in place.
@@ -1780,7 +1791,14 @@
     labels.forEach(label => {
       const existing = label.querySelector('.ref-counts');
       if (existing) existing.remove();
-      label.insertAdjacentHTML('beforeend', refCountsHtml(repository));
+      // Built as text, not markup: the counts come from a message.
+      const text = refCountsText(repository);
+      if (text) {
+        const counts = document.createElement('span');
+        counts.className = 'ref-counts';
+        counts.textContent = text;
+        label.appendChild(counts);
+      }
     });
     if (labels.length) scheduleFoldHistoryRefs();
   }
@@ -1851,15 +1869,7 @@
     plans.forEach(plan => {
       const budget = Math.floor(plan.messageWidth * HISTORY_REF_SHARE) - plan.extra;
       const limit = plan.messageWidth < HISTORY_REF_NARROW ? 1 : plan.pills.length;
-      let used = 0;
-      let visible = 0;
-      for (let index = 0; index < plan.pills.length; index += 1) {
-        const more = plan.pills.length - index - 1 > 0 ? HISTORY_REF_GAP + HISTORY_REF_MORE_WIDTH : 0;
-        const next = used + (visible ? HISTORY_REF_GAP : 0) + plan.widths[index];
-        if (visible >= limit || (visible >= 1 && next + more > budget)) break;
-        used = next;
-        visible += 1;
-      }
+      const visible = window.RepositoryHistoryGraph.visibleRefCount(plan.widths, budget, limit, HISTORY_REF_GAP, HISTORY_REF_MORE_WIDTH);
       const folded = plan.pills.slice(visible);
       folded.forEach(pill => pill.classList.add('ref-folded'));
       plan.chip.parentElement.classList.remove('ref-measuring');
