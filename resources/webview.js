@@ -349,17 +349,21 @@
     return local && (list || []).some(other => (other.kind === 'head' || other.kind === 'local-branch') && other.name === local) ? '' : ref.name;
   }
 
+  // The namespace a label's branch lives in, sent with its name: a local branch can be called origin/x too.
+  const branchKindOf = refKind => (refKind === 'remote-branch' || refKind === 'remote') ? 'remote' : 'local';
+
   function currentBranchName() {
     const repository = getRepository(activeDashboardRepository);
     return (repository && repository.currentBranch) || '';
   }
 
   // Merge and rebase items for one branch: Git acts on HEAD, so the other end is the current branch.
-  function branchActionItems(name, current) {
+  function branchActionItems(name, current, kind) {
     const safe = escapeHtml(name);
+    const kindAttr = ` data-kind="${kind}"`;
     const now = escapeHtml(current);
-    return `<button type="button" role="menuitem" data-action="contextRebaseOntoBranch" data-branch="${safe}" title="Put ${now}'s own commits on top of ${safe}; you see the commits and the predicted conflicts first">Rebase ${now} onto ${safe}…</button>` +
-      `<button type="button" role="menuitem" data-action="contextMergeBranch" data-branch="${safe}" title="Bring ${safe}'s commits into ${now}; you see them and the predicted conflicts first">Merge ${safe} into ${now}…</button>`;
+    return `<button type="button" role="menuitem" data-action="contextRebaseOntoBranch" data-branch="${safe}"${kindAttr} title="Put ${now}'s own commits on top of ${safe}; you see the commits and the predicted conflicts first">Rebase ${now} onto ${safe}…</button>` +
+      `<button type="button" role="menuitem" data-action="contextMergeBranch" data-branch="${safe}"${kindAttr} title="Bring ${safe}'s commits into ${now}; you see them and the predicted conflicts first">Merge ${safe} into ${now}…</button>`;
   }
 
   // The commit's other branches can be merged or rebased onto; its local ones (not the current one) can be deleted.
@@ -375,9 +379,10 @@
     const current = currentBranchName();
     const refs = commit.refs || [];
     const targets = current
-      ? [...new Set(refs.filter(ref => !ref.isCurrent && ref.kind !== 'head').map(ref => historyRefTarget(ref, refs)).filter(name => name && name !== current))]
+      ? refs.filter(ref => !ref.isCurrent && ref.kind !== 'head').map(ref => ({ name: historyRefTarget(ref, refs), kind: branchKindOf(ref.kind) }))
+        .filter((item, index, all) => item.name && item.name !== current && all.findIndex(other => other.name === item.name && other.kind === item.kind) === index)
       : [];
-    actionBox.innerHTML = targets.map(name => branchActionItems(name, current)).join('');
+    actionBox.innerHTML = targets.map(item => branchActionItems(item.name, current, item.kind)).join('');
     actionBox.hidden = !targets.length;
   }
 
@@ -402,13 +407,14 @@
     const current = currentBranchName();
     const safe = escapeHtml(target);
     const now = escapeHtml(current);
+    const kindAttr = ` data-kind="${branchKindOf(label.dataset.kind)}"`;
     const known = new Map(((repositoryRefs && repositoryRefs.branches) || []).map(branch => [branch.name, branch]));
     const items = [];
     if (label.dataset.current !== 'true') {
       items.push(`<button type="button" role="menuitem" data-action="branchLabelCheckout" data-branch="${escapeHtml(label.dataset.branch || target)}">Checkout ${safe}</button>`);
       if (current) {
-        items.push(`<button type="button" role="menuitem" data-action="contextMergeBranch" data-branch="${safe}">Merge ${safe} into ${now}…</button>`);
-        items.push(`<button type="button" role="menuitem" data-action="contextRebaseOntoBranch" data-branch="${safe}">Rebase ${now} onto ${safe}…</button>`);
+        items.push(`<button type="button" role="menuitem" data-action="contextMergeBranch" data-branch="${safe}"${kindAttr}>Merge ${safe} into ${now}…</button>`);
+        items.push(`<button type="button" role="menuitem" data-action="contextRebaseOntoBranch" data-branch="${safe}"${kindAttr}>Rebase ${now} onto ${safe}…</button>`);
         items.push(`<button type="button" role="menuitem" data-action="branchLabelCompare" data-branch="${safe}">Compare with ${now}</button>`);
       }
       if (label.dataset.kind === 'local-branch') {
@@ -433,11 +439,13 @@
     historyContextTarget = { repositoryPath: activeDashboardRepository, hash: '' };
     const s = escapeHtml(source.name);
     const t = escapeHtml(target.name);
+    const sk = ` data-kind="${branchKindOf(source.kind)}"`;
+    const tk = ` data-kind="${branchKindOf(target.kind)}"`;
     let item;
     if (target.current) {
-      item = `<button type="button" role="menuitem" data-action="contextMergeBranch" data-branch="${s}">Merge ${s} into ${t}…</button>`;
+      item = `<button type="button" role="menuitem" data-action="contextMergeBranch" data-branch="${s}"${sk}>Merge ${s} into ${t}…</button>`;
     } else if (source.current) {
-      item = `<button type="button" role="menuitem" data-action="contextRebaseOntoBranch" data-branch="${t}">Rebase ${s} onto ${t}…</button>`;
+      item = `<button type="button" role="menuitem" data-action="contextRebaseOntoBranch" data-branch="${t}"${tk}>Rebase ${s} onto ${t}…</button>`;
     } else {
       item = `<button type="button" role="menuitem" aria-disabled="true" title="Git merges and rebases the checked-out branch">Check out ${s} or ${t} first</button>`;
     }
@@ -678,13 +686,13 @@
     contextMergeBranch: (el) => {
       if (!historyContextTarget || !el.dataset.branch) return;
       postMessage('applyHistoryCommit', { repositoryPath: historyContextTarget.repositoryPath,
-        branch: el.dataset.branch, operation: 'merge' });
+        branch: el.dataset.branch, kind: el.dataset.kind, operation: 'merge' });
       hideHistoryContextMenu();
     },
     contextRebaseOntoBranch: (el) => {
       if (!historyContextTarget || !el.dataset.branch) return;
       postMessage('rewriteHistoryCommit', { repositoryPath: historyContextTarget.repositoryPath,
-        ontoBranch: el.dataset.branch, action: 'rebase' });
+        ontoBranch: el.dataset.branch, ontoKind: el.dataset.kind, action: 'rebase' });
       hideHistoryContextMenu();
     },
     branchLabelCheckout: (el) => {
@@ -2902,7 +2910,7 @@
 
   // Drag a branch label onto another: a small menu offers what fits the pair. A drop alone runs nothing.
   let draggedBranchLabel = null;
-  const labelEnds = label => ({ name: label.dataset.target, current: label.dataset.current === 'true' });
+  const labelEnds = label => ({ name: label.dataset.target, kind: label.dataset.kind, current: label.dataset.current === 'true' });
   const clearBranchDrag = () => {
     document.querySelectorAll('.history-ref.drop-target, .history-ref.dragging').forEach(item => item.classList.remove('drop-target', 'dragging'));
     draggedBranchLabel = null;

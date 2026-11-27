@@ -158,10 +158,10 @@ for (const [action, operation] of [
   assert.equal(posts.at(-1).payload.action, operation);
 }
 // Merge and rebase of a named branch post the branch (the host re-resolves it), not a commit.
-click('contextMergeBranch', { branch: 'feature/x' });
-assert.deepEqual(JSON.parse(JSON.stringify(posts.at(-1))), { type: 'applyHistoryCommit', payload: { repositoryPath: '.', branch: 'feature/x', operation: 'merge' } });
-click('contextRebaseOntoBranch', { branch: 'origin/feature/x' });
-assert.deepEqual(JSON.parse(JSON.stringify(posts.at(-1))), { type: 'rewriteHistoryCommit', payload: { repositoryPath: '.', ontoBranch: 'origin/feature/x', action: 'rebase' } });
+click('contextMergeBranch', { branch: 'feature/x', kind: 'local' });
+assert.deepEqual(JSON.parse(JSON.stringify(posts.at(-1))), { type: 'applyHistoryCommit', payload: { repositoryPath: '.', branch: 'feature/x', kind: 'local', operation: 'merge' } });
+click('contextRebaseOntoBranch', { branch: 'origin/feature/x', kind: 'remote' });
+assert.deepEqual(JSON.parse(JSON.stringify(posts.at(-1))), { type: 'rewriteHistoryCommit', payload: { repositoryPath: '.', ontoBranch: 'origin/feature/x', ontoKind: 'remote', action: 'rebase' } });
 for (const [action, command] of [
   ['contextContinueRebase', 'continue'], ['contextAbortRebase', 'abort']
 ]) {

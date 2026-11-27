@@ -173,6 +173,24 @@ async function main() {
     rmSync(origin, { recursive: true, force: true });
     run('remote', 'remove', 'origin');
 
+    // A label's kind keeps its namespace: a local branch called origin/topic beside refs/remotes/origin/topic.
+    run('switch', '-q', '-c', 'tmp-a', fork);
+    commitFile('topic-a.txt', 'topic a');
+    const topicA = run('rev-parse', 'HEAD');
+    run('switch', '-q', '-c', 'tmp-b', fork);
+    commitFile('topic-b.txt', 'topic b');
+    const topicB = run('rev-parse', 'HEAD');
+    run('switch', '-q', branch);
+    run('branch', 'origin/topic', topicA);
+    run('update-ref', 'refs/remotes/origin/topic', topicB);
+    fakeVscode.window.showWarningMessage = async (message, options, button) => button;
+    for (const [ontoKind, expected] of [['remote', topicB], ['local', topicA], [undefined, topicA]]) {
+      run('reset', '-q', '--hard', ownBefore);
+      await handleRewriteHistoryCommit(ctx, { repositoryPath: '.', action: 'rebase', ontoBranch: 'origin/topic', ontoKind });
+      assert.equal(run('rev-parse', 'HEAD~1'), expected, `rebase onto a ${ontoKind} label used the wrong ref`);
+    }
+    run('reset', '-q', '--hard', ownBefore);
+
     // A branch tip that adds a file which is untracked here is refused before the question, with the file named.
     run('switch', '-q', '-c', 'feature/y', fork);
     commitFile('clash2.txt', 'y adds clash2');

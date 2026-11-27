@@ -1009,18 +1009,19 @@ async function suggestForConflictedFiles(ctx: MessageHandlerContext, repositoryP
 }
 
 export async function handleApplyHistoryCommit(ctx: MessageHandlerContext, payload: {
-  repositoryPath: string; commit?: string; operation: HistoryAction; branch?: string
+  repositoryPath: string; commit?: string; operation: HistoryAction; branch?: string; kind?: 'local' | 'remote'
 }): Promise<void> {
   const named = payload && payload.operation === 'merge' && typeof payload.branch === 'string' ? payload.branch : undefined;
   if (!payload || typeof payload.repositoryPath !== 'string' || (typeof payload.commit !== 'string' && !named) ||
       !['cherry-pick', 'revert', 'merge'].includes(payload.operation)) {
     return;
   }
+  const kind = payload && (payload.kind === 'local' || payload.kind === 'remote') ? payload.kind : undefined;
   // A merge of a named branch goes to that branch's tip now, and runs on its name so the merge message names it.
   let namedTip: string | undefined;
   if (named) {
     try {
-      namedTip = (await new HistoryActionService(new GitCommandService(ctx.workspaceRoot)).resolveBranch(payload.repositoryPath, named)).sha;
+      namedTip = (await new HistoryActionService(new GitCommandService(ctx.workspaceRoot)).resolveBranch(payload.repositoryPath, named, kind)).sha;
     } catch (error) {
       showResult(false, error instanceof Error ? error.message : String(error));
       return;
@@ -1054,9 +1055,13 @@ export async function handleApplyHistoryCommit(ctx: MessageHandlerContext, paylo
       showResult(false, `Nothing to merge: ${named} is already in ${branch}.`);
       return;
     }
+    if (merge.ffSetting === 'only' && !merge.fastForward) {
+      showResult(false, `${merge.ffSource}: ${named} cannot be fast-forwarded into ${branch}, so Git would refuse this merge.`);
+      return;
+    }
     const shown = merge.commits.map(item => `${item.hash.slice(0, 12)} ${item.subject}`).join('\n');
     const more = merge.count > merge.commits.length ? `\n… and ${merge.count - merge.commits.length} more` : '';
-    incoming = `${merge.fastForward ? 'Fast-forward: no merge commit is made. ' : ''}Incoming commits (${merge.count}):\n${shown}${more}\n`;
+    incoming = `${merge.fastForward ? 'Fast-forward: no merge commit is made. ' : merge.noFastForward ? `A merge commit will be made (${merge.ffSource}). ` : ''}Incoming commits (${merge.count}):\n${shown}${more}\n`;
   }
   const predicted = await predictConflicts(ctx, payload.repositoryPath, payload.operation, sha, mainline);
   const approved = await confirmHistoryAction(ctx, payload.repositoryPath,
@@ -1073,7 +1078,7 @@ export async function handleApplyHistoryCommit(ctx: MessageHandlerContext, paylo
     showResult(false, `${branch} moved while the question was open, so the predicted conflicts no longer apply. Nothing was run; start the ${payload.operation} again.`);
     return;
   }
-  const result = await ctx.gitOps.applyHistoryCommit(payload.repositoryPath, sha, payload.operation, mainline, branch, named);
+  const result = await ctx.gitOps.applyHistoryCommit(payload.repositoryPath, sha, payload.operation, mainline, branch, named, kind);
   const pending = (result.data as { pending?: HistoryAction } | undefined)?.pending;
   if (pending) {
     const choice = await vscode.window.showWarningMessage(result.message, ...(ctx.conflictExplainer ? [SUGGEST_RESOLUTION] : []), 'Abort operation');
@@ -1094,17 +1099,18 @@ export async function handleApplyHistoryCommit(ctx: MessageHandlerContext, paylo
 }
 
 export async function handleRewriteHistoryCommit(ctx: MessageHandlerContext, payload: {
-  repositoryPath: string; commit?: string; action: HistoryRewriteAction; mode?: ResetMode; ontoBranch?: string
+  repositoryPath: string; commit?: string; action: HistoryRewriteAction; mode?: ResetMode; ontoBranch?: string; ontoKind?: 'local' | 'remote'
 }): Promise<void> {
   const ontoBranch = payload && payload.action === 'rebase' && typeof payload.ontoBranch === 'string' ? payload.ontoBranch : undefined;
   if (!payload || typeof payload.repositoryPath !== 'string' || (typeof payload.commit !== 'string' && !ontoBranch) ||
       !['rebase', 'reset', 'drop'].includes(payload.action)) {
     return;
   }
+  const ontoKind = payload.ontoKind === 'local' || payload.ontoKind === 'remote' ? payload.ontoKind : undefined;
   try {
     // A rebase onto a named branch goes to that branch's tip now; the run checks it has not moved since.
     const commit = ontoBranch
-      ? (await new HistoryActionService(new GitCommandService(ctx.workspaceRoot)).resolveBranch(payload.repositoryPath, ontoBranch)).sha
+      ? (await new HistoryActionService(new GitCommandService(ctx.workspaceRoot)).resolveBranch(payload.repositoryPath, ontoBranch, ontoKind)).sha
       : payload.commit!;
     const preview = await ctx.gitOps.previewHistoryRewrite(payload.repositoryPath, commit, payload.action);
     // A mode already chosen (a plain-language undo the user approved) skips the picker; a hard reset
@@ -1154,7 +1160,7 @@ export async function handleRewriteHistoryCommit(ctx: MessageHandlerContext, pay
       }
     }
     const result = await ctx.gitOps.executeHistoryRewrite(payload.repositoryPath, preview.target, payload.action,
-      preview.branch, preview.head, mode, ontoBranch);
+      preview.branch, preview.head, mode, ontoBranch, ontoKind);
     const pending = (result.data as { pending?: string } | undefined)?.pending;
     let resolved = false;
     if (pending === 'rebase') {
@@ -1394,8 +1400,8 @@ export const messageHandlers: Record<string, (ctx: MessageHandlerContext, payloa
   'createBranchFromCommit': (ctx, payload) => handleCreateBranchFromCommit(ctx, payload as { repositoryPath: string; branchName: string; commit: string; checkout: boolean }),
   'copyHistoryCommit': (ctx, payload) => handleCopyHistoryCommit(ctx, payload as { repositoryPath: string; commit: string; field: 'hash' | 'subject' }),
   'createTagFromCommit': (ctx, payload) => handleCreateTagFromCommit(ctx, payload as { repositoryPath: string; commit: string }),
-  'applyHistoryCommit': (ctx, payload) => handleApplyHistoryCommit(ctx, payload as { repositoryPath: string; commit?: string; operation: HistoryAction; branch?: string }),
-  'rewriteHistoryCommit': (ctx, payload) => handleRewriteHistoryCommit(ctx, payload as { repositoryPath: string; commit?: string; action: HistoryRewriteAction; ontoBranch?: string }),
+  'applyHistoryCommit': (ctx, payload) => handleApplyHistoryCommit(ctx, payload as { repositoryPath: string; commit?: string; operation: HistoryAction; branch?: string; kind?: 'local' | 'remote' }),
+  'rewriteHistoryCommit': (ctx, payload) => handleRewriteHistoryCommit(ctx, payload as { repositoryPath: string; commit?: string; action: HistoryRewriteAction; ontoBranch?: string; ontoKind?: 'local' | 'remote' }),
   'resolveHistoryRebase': (ctx, payload) => handleResolveHistoryRebase(ctx, payload as { repositoryPath: string; command: 'continue' | 'abort' }),
   'getPendingOperation': (ctx, payload) => handleGetPendingOperation(ctx, payload),
   'discardChanges': (ctx, payload) => handleDiscardChanges(ctx, payload as { repositoryPath: string; paths?: string[]; all?: boolean }),

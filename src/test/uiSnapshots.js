@@ -1184,8 +1184,8 @@ async function main() {
     await page.click('#historyContextBranchActions [data-action="contextMergeBranch"][data-branch="main"]');
     await linkedRow.click({ button: 'right' });
     await page.click('#historyContextBranchActions [data-action="contextRebaseOntoBranch"][data-branch="feature/ahead"]');
-    assert.deepEqual((await branchSent()).map(m => [m.type, m.payload.branch || m.payload.ontoBranch, m.payload.operation || m.payload.action]),
-      [['applyHistoryCommit', 'main', 'merge'], ['rewriteHistoryCommit', 'feature/ahead', 'rebase']]);
+    assert.deepEqual((await branchSent()).map(m => [m.type, m.payload.branch || m.payload.ontoBranch, m.payload.operation || m.payload.action, m.payload.kind || m.payload.ontoKind]),
+      [['applyHistoryCommit', 'main', 'merge', 'local'], ['rewriteHistoryCommit', 'feature/ahead', 'rebase', 'local']]);
     // A commit whose labels are separate remote-tracking branches offers them, and no delete.
     await page.locator('.history-row', { hasText: 'add app' }).click({ button: 'right' });
     await page.locator('#historyContextMenu').waitFor();
@@ -1215,7 +1215,7 @@ async function main() {
     assert.equal((await menuTexts('#historyBranchMenu')).length, 5);
     await page.click('#historyBranchMenu [data-action="contextMergeBranch"]');
     await branchMenu.waitFor({ state: 'hidden' });
-    assert.deepEqual((await branchSent()).slice(2).map(m => [m.type, m.payload.branch, m.payload.operation]), [['applyHistoryCommit', 'feature/ahead', 'merge']]);
+    assert.deepEqual((await branchSent()).slice(2).map(m => [m.type, m.payload.branch, m.payload.operation, m.payload.kind]), [['applyHistoryCommit', 'feature/ahead', 'merge', 'local']]);
     // Compare reuses the branch comparison.
     await page.locator('.history-ref[data-target="feature/ahead"]').click({ button: 'right' });
     await page.click('#historyBranchMenu [data-action="branchLabelCompare"]');
@@ -1265,7 +1265,7 @@ async function main() {
     await branchMenu.waitFor();
     assert.deepEqual(await menuTexts('#historyBranchMenu'), ['Rebase feature/dashboard onto feature/ahead…']);
     await page.click('#historyBranchMenu [data-action="contextRebaseOntoBranch"]');
-    assert.deepEqual((await branchSent()).slice(sentBefore).map(m => [m.type, m.payload.ontoBranch, m.payload.action]), [['rewriteHistoryCommit', 'feature/ahead', 'rebase']]);
+    assert.deepEqual((await branchSent()).slice(sentBefore).map(m => [m.type, m.payload.ontoBranch, m.payload.action, m.payload.ontoKind]), [['rewriteHistoryCommit', 'feature/ahead', 'rebase', 'local']]);
     // Neither is the current branch: a disabled line, and clicking it does nothing.
     await label('feature/ahead').dragTo(label('main'));
     await branchMenu.waitFor();
@@ -1284,6 +1284,14 @@ async function main() {
     await label('origin/feature/ahead').dragTo(label('feature/dashboard'));
     await branchMenu.waitFor();
     assert.deepEqual(await menuTexts('#historyBranchMenu'), ['Merge origin/feature/ahead into feature/dashboard…']);
+    // The remote-tracking label's messages say so, so a local branch of the same name is never meant (drop, label menu, commit menu).
+    await page.click('#historyBranchMenu [data-action="contextMergeBranch"]');
+    await label('origin/feature/ahead').click({ button: 'right' });
+    await page.click('#historyBranchMenu [data-action="contextRebaseOntoBranch"]');
+    await page.locator('.history-row', { hasText: 'add app' }).click({ button: 'right' });
+    await page.click('#historyContextBranchActions [data-action="contextMergeBranch"][data-branch="origin/remote-only"]');
+    assert.deepEqual((await branchSent()).slice(-3).map(m => [m.type, m.payload.branch || m.payload.ontoBranch, m.payload.kind || m.payload.ontoKind]),
+      [['applyHistoryCommit', 'origin/feature/ahead', 'remote'], ['rewriteHistoryCommit', 'origin/feature/ahead', 'remote'], ['applyHistoryCommit', 'origin/remote-only', 'remote']]);
     await page.keyboard.press('Escape');
 
     // origin/HEAD, if the graph shows it, is neither draggable nor given a menu: the page is answered with one such commit.

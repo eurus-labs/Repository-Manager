@@ -369,8 +369,8 @@ export class GitOperations {
     return this.historyActionService.describe(repositoryPath, commit);
   }
 
-  async applyHistoryCommit(repositoryPath: string, commit: string, operation: HistoryAction, mainline?: number, expectedBranch?: string, mergeBranch?: string): Promise<CommandResult> {
-    return this.historyActionService.apply(repositoryPath, commit, operation, mainline, expectedBranch, mergeBranch);
+  async applyHistoryCommit(repositoryPath: string, commit: string, operation: HistoryAction, mainline?: number, expectedBranch?: string, mergeBranch?: string, mergeKind?: 'local' | 'remote'): Promise<CommandResult> {
+    return this.historyActionService.apply(repositoryPath, commit, operation, mainline, expectedBranch, mergeBranch, mergeKind);
   }
 
   async abortHistoryAction(repositoryPath: string, operation: HistoryAction): Promise<CommandResult> {
@@ -424,8 +424,8 @@ export class GitOperations {
   }
 
   async executeHistoryRewrite(repositoryPath: string, target: string, action: HistoryRewriteAction,
-    expectedBranch: string, expectedHead: string, mode?: ResetMode, ontoBranch?: string): Promise<CommandResult> {
-    return this.historyRewriteService.execute(repositoryPath, target, action, expectedBranch, expectedHead, mode, ontoBranch);
+    expectedBranch: string, expectedHead: string, mode?: ResetMode, ontoBranch?: string, ontoKind?: 'local' | 'remote'): Promise<CommandResult> {
+    return this.historyRewriteService.execute(repositoryPath, target, action, expectedBranch, expectedHead, mode, ontoBranch, ontoKind);
   }
 
   async resolveHistoryRebase(repositoryPath: string, command: 'continue' | 'abort'): Promise<CommandResult> {

@@ -85,7 +85,7 @@ export class HistoryRewriteService {
   }
 
   async execute(repositoryPath: string, target: string, action: HistoryRewriteAction,
-    expectedBranch: string, expectedHead: string, mode?: ResetMode, ontoBranch?: string): Promise<CommandResult> {
+    expectedBranch: string, expectedHead: string, mode?: ResetMode, ontoBranch?: string, ontoKind?: 'local' | 'remote'): Promise<CommandResult> {
     let started = false;
     let backup: string | undefined;
     try {
@@ -105,7 +105,7 @@ export class HistoryRewriteService {
       }
       await this.assertRunnable(repositoryPath, target, action, expectedHead, mode);
       // A rebase onto a named branch goes to the tip the question showed; a branch that moved since is not rebased onto.
-      if (ontoBranch && (await this.historyActions.resolveBranch(repositoryPath, ontoBranch)).sha !== target) {
+      if (ontoBranch && (await this.historyActions.resolveBranch(repositoryPath, ontoBranch, ontoKind)).sha !== target) {
         throw new Error(`Branch ${ontoBranch} moved while the question was open. Nothing was run; start the rebase again.`);
       }
       // Recheck immediately before making a backup or changing the current branch.

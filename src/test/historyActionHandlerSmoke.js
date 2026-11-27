@@ -175,6 +175,52 @@ async function main() {
     rmSync(path.join(root, 'clash3.txt'));
     await handleApplyHistoryCommit(ctx, { repositoryPath: '.', operation: 'merge', branch: '--abort' });
     assert.match(errors.at(-1), /Invalid branch name\./);
+
+    // A label's kind keeps its namespace: a local branch called origin/topic beside refs/remotes/origin/topic.
+    const commitOn = (name, file, from) => {
+      run('switch', '-q', '-c', name, from);
+      writeFileSync(path.join(root, file), `${name}\n`);
+      run('add', file);
+      run('commit', '-qm', `${name} commit`);
+      const sha = run('rev-parse', 'HEAD');
+      run('switch', '-q', targetName);
+      return sha;
+    };
+    const topicA = commitOn('tmp-a', 'topic-a.txt', base);
+    const topicB = commitOn('tmp-b', 'topic-b.txt', base);
+    run('branch', 'origin/topic', topicA);
+    run('update-ref', 'refs/remotes/origin/topic', topicB);
+    const beforeTopic = run('rev-parse', 'HEAD');
+    override = () => 'Merge';
+    for (const [kind, expected] of [['remote', topicB], ['local', topicA], [undefined, topicA]]) {
+      run('reset', '-q', '--hard', beforeTopic);
+      await handleApplyHistoryCommit(ctx, { repositoryPath: '.', operation: 'merge', branch: 'origin/topic', kind });
+      assert.equal(run('rev-parse', 'HEAD^2'), expected, `merge of a ${kind} label used the wrong ref`);
+    }
+    run('reset', '-q', '--hard', beforeTopic);
+
+    // merge.ff=false: the question says a merge commit is made, and it is.
+    const aheadTip = commitOn('ahead', 'ahead.txt', targetName);
+    seen.length = 0;
+    override = (message, options) => { seen.push(options.detail); return 'Merge'; };
+    run('config', 'merge.ff', 'false');
+    await handleApplyHistoryCommit(ctx, { repositoryPath: '.', operation: 'merge', branch: 'ahead', kind: 'local' });
+    assert.equal(seen.length, 1);
+    assert.doesNotMatch(seen[0], /Fast-forward/);
+    assert.match(seen[0], /^A merge commit will be made \(merge\.ff=false\)\. Incoming commits \(1\):/);
+    assert.equal(run('rev-parse', 'HEAD^2'), aheadTip, 'merge.ff=false makes a two-parent commit');
+
+    // merge.ff=only with a diverged branch: refused before the question, nothing runs.
+    run('reset', '-q', '--hard', beforeTopic);
+    commitOn('diverged', 'diverged.txt', base);
+    run('config', 'merge.ff', 'only');
+    seen.length = 0;
+    errors = [];
+    await handleApplyHistoryCommit(ctx, { repositoryPath: '.', operation: 'merge', branch: 'diverged', kind: 'local' });
+    assert.equal(seen.length, 0);
+    assert.match(errors[0], new RegExp(`^merge\\.ff=only: diverged cannot be fast-forwarded into ${targetName}, so Git would refuse this merge\\.`));
+    assert.equal(run('rev-parse', 'HEAD'), beforeTopic);
+    run('config', '--unset', 'merge.ff');
     console.log('History action handler smoke passed');
   } finally {
     rmSync(root, { recursive: true, force: true });
