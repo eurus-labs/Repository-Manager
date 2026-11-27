@@ -1427,7 +1427,7 @@ async function main() {
     await page.click('#dashboardMoreButton');
     assert.equal(await page.getAttribute('#dashboardMoreButton', 'aria-expanded'), 'true');
     assert.deepEqual(await page.locator('#dashboardMoreMenu button').evaluateAll(items => items.map(item => item.textContent.trim())),
-      ['Refresh', 'Compare branches…', 'Undo…', 'Include remote branches', 'Review branch: changed files', 'Review branch: every file', 'Open Review tab', 'Copilot model: Default', 'Copilot settings…']);
+      ['Refresh', 'Compare branches…', 'Undo…', 'Include remote branches', 'First-parent only', 'Review branch: changed files', 'Review branch: every file', 'Open Review tab', 'Copilot model: Default', 'Copilot settings…']);
     await snap(page, '04e-more-menu');
     await page.keyboard.press('Escape');
     assert.equal(await page.isHidden('#dashboardMoreMenu'), true, 'Escape left ⋯ open');
@@ -2308,6 +2308,155 @@ async function main() {
     });
     assert.deepEqual(appended, { rows: 200, sameFirst: true, lastSubject: true, graphCovers: true, nodes: 200 });
     await paging.close();
+
+    // History graph readability: label tones, the hover and focus highlight of a branch line, and
+    // First-parent only. The pages are scripted replies, so the shape (a merge, a branch not
+    // merged, origin/HEAD, a tag) does not depend on the fixture.
+    const readable = await openPage(1440, 900);
+    await readable.evaluate(() => {
+      const sent = window.__graphSent = [];
+      const toHost = window.__postToHost;
+      // History requests are held back, so no real reply can land late and replace a scripted one.
+      window.__postToHost = message => { if (message.type === 'getHistory') { sent.push(message); return Promise.resolve(); } return toHost(message); };
+      const hex = n => n.toString(16).padStart(40, '0');
+      const local = name => ({ name, kind: 'local-branch' });
+      const remote = name => ({ name, kind: 'remote-branch' });
+      const full = (n, parents, subject, refs, extra) => Object.assign({ hash: hex(n), shortHash: hex(n).slice(-7), parentHashes: parents.map(hex),
+        authorName: 'A', authorEmail: 'a@x', authoredAt: '2025-01-15T10:00:00Z', subject, refs: refs || [] }, extra);
+      // 9: feature/y, not merged. 8: the merge into main of feature/x. 7, 6: feature/x. 5, 1: main.
+      window.__graphCommits = {
+        all: [
+          full(9, [5], 'y work', [local('feature/y')]),
+          full(8, [5, 7], 'merge feature/x', [{ name: 'main', kind: 'head', isCurrent: true }, remote('origin/main'), remote('origin/HEAD'), { name: 'v2.0', kind: 'tag' }], { mergeCount: 2 }),
+          full(7, [6], 'x two', [local('feature/x'), remote('origin/feature/x')]),
+          full(6, [5], 'x one'),
+          full(5, [1], 'main work'),
+          full(1, [], 'base')
+        ],
+        firstParent: [
+          full(8, [5, 7], 'merge feature/x', [{ name: 'main', kind: 'head', isCurrent: true }, remote('origin/main')], { mergeCount: 2 }),
+          full(5, [1], 'main work'),
+          full(1, [], 'base')
+        ]
+      };
+      window.__graphReply = key => {
+        const request = sent.filter(message => message.type === 'getHistory').at(-1).payload;
+        window.dispatchEvent(new MessageEvent('message', { data: { type: 'historyLoaded', payload: { repositoryPath: request.repositoryPath,
+          requestId: request.requestId, offset: 0, commits: window.__graphCommits[key], nextOffset: null, upstream: null } } }));
+        return request;
+      };
+    });
+    // The Include remote branches filter sends a request of its own, which a scripted page answers.
+    await readable.evaluate(() => document.getElementById('dashboardIncludeRemotes').click());
+    await readable.waitForFunction(() => window.__graphSent.some(message => message.type === 'getHistory'));
+    assert.equal(await readable.evaluate(() => window.__graphReply('all').firstParent), false, 'the request asked for first-parent only');
+    await readable.locator('.history-row', { hasText: 'x two' }).waitFor();
+
+    // Labels carry their line's tone: main (tone 0, with its origin chip) and feature/x by name.
+    const dots = await readable.evaluate(() => {
+      const toneOf = name => `graph-lane-${window.RepositoryHistoryGraph.toneForName(name)}`;
+      const labels = {};
+      document.querySelectorAll('.history-ref').forEach(label => {
+        const dot = label.querySelector('.ref-dot');
+        labels[label.textContent] = { dot: dot ? dot.className.split(' ').find(name => /^graph-lane-\d$/.test(name)) : null,
+          chipAfterName: Boolean(label.querySelector('.ref-origin')) && label.lastElementChild.classList.contains('ref-origin') };
+      });
+      return { labels, expected: { x: toneOf('feature/x'), y: toneOf('feature/y') } };
+    });
+    assert.deepEqual(dots.labels['mainorigin'], { dot: 'graph-lane-0', chipAfterName: true }, 'main has no tone-0 dot before its name and its origin chip after');
+    assert.deepEqual(dots.labels['feature/xorigin'], { dot: dots.expected.x, chipAfterName: true }, 'the merged feature/x label has another tone');
+    assert.deepEqual(dots.labels['feature/y'], { dot: dots.expected.y, chipAfterName: false });
+    assert.equal(dots.labels['origin/HEAD'].dot, null, 'origin/HEAD has a dot');
+    assert.equal(dots.labels['v2.0'].dot, null, 'a tag has a dot');
+    assert.equal(await readable.locator('.ref-dot[aria-hidden="true"]').count(), 3);
+    assert.equal(await readable.locator('.history-ref [onclick], .history-ref [onmouseover], .history-ref a[href^="javascript:"]').count(), 0);
+
+    // Pointing at a row marks its branch line and dims the rest.
+    const highlight = () => readable.evaluate(() => {
+      const overlay = document.querySelector('.history-graph-overlay');
+      const parts = Array.from(overlay.querySelectorAll('.graph-edge, .graph-node, .graph-node-core'));
+      const active = parts.filter(part => part.classList.contains('graph-lane-active'));
+      const dimmed = parts.filter(part => part.classList.contains('graph-dim'));
+      return { active: active.length, dimmed: dimmed.length, total: parts.length, segments: Array.from(new Set(active.map(part => part.getAttribute('data-segment')))),
+        mixed: active.some(part => part.classList.contains('graph-dim')) };
+    });
+    const segmentOf = subject => readable.locator('.history-row', { hasText: subject }).getAttribute('data-segment');
+    const clear = async () => { await readable.mouse.move(2, 2); await readable.evaluate(() => document.activeElement && document.activeElement.blur()); };
+    const atRest = await highlight();
+    assert.equal(atRest.active + atRest.dimmed, 0, 'a highlight at rest');
+    assert.ok(atRest.total > 0);
+    const xSegment = await segmentOf('x two');
+    assert.notEqual(xSegment, await segmentOf('merge feature/x'), 'feature/x and main share a segment');
+    assert.notEqual(xSegment, await segmentOf('y work'));
+    assert.equal(await segmentOf('x one'), xSegment, 'a branch line has two segments');
+    await readable.locator('.history-row', { hasText: 'x one' }).hover();
+    let marked = await highlight();
+    assert.deepEqual(marked.segments, [xSegment]);
+    assert.ok(marked.active >= 3 && marked.dimmed > 0 && marked.active + marked.dimmed === marked.total && !marked.mixed, `hover marked ${JSON.stringify(marked)}`);
+    await snap(readable, '58-history-graph-highlight');
+    // A branch label, and the node, point at the same line.
+    await readable.locator('.history-ref[data-branch="feature/y"]').hover();
+    assert.deepEqual((await highlight()).segments, [await segmentOf('y work')]);
+    await readable.locator('.graph-node-control[data-commit$="7"]').hover();
+    assert.deepEqual((await highlight()).segments, [xSegment]);
+    // A reloaded history is drawn without a highlight, and pointing at its line marks it again, even from
+    // another part of the row pointed at before the reload. One script, so no pointer event comes between.
+    const afterReload = await readable.evaluate(() => {
+      const rowOf = text => Array.from(document.querySelectorAll('.history-row')).find(row => row.textContent.includes(text));
+      const over = element => element.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+      over(rowOf('y work').querySelector('.history-subject'));
+      window.__graphReply('all');
+      const unmarked = document.querySelectorAll('.history-graph-overlay .graph-lane-active, .history-graph-overlay .graph-dim').length;
+      over(rowOf('y work').querySelector('.history-ref'));
+      return { unmarked, marked: document.querySelectorAll('.history-graph-overlay .graph-lane-active').length };
+    });
+    assert.equal(afterReload.unmarked, 0, 'a reload kept the highlight');
+    assert.ok(afterReload.marked > 0, 'the line was not marked after a reload');
+    // Leaving clears both classes.
+    await clear();
+    const left = await highlight();
+    assert.equal(left.active + left.dimmed, 0, 'leaving left the highlight');
+    // Keyboard focus does the same: Tab from one line's row reaches another's.
+    await readable.locator('.history-row', { hasText: 'y work' }).focus();
+    assert.deepEqual((await highlight()).segments, [await segmentOf('y work')]);
+    let reached = false;
+    for (let press = 0; press < 12 && !reached; press++) {
+      await readable.keyboard.press('Tab');
+      reached = await readable.evaluate(() => Boolean(document.activeElement.closest('.history-row[data-segment]')) && document.activeElement.closest('.history-row').textContent.includes('x two'));
+    }
+    assert.ok(reached, 'Tab did not reach the feature/x row');
+    assert.deepEqual((await highlight()).segments, [xSegment], 'focus did not move the highlight');
+    await readable.evaluate(() => document.activeElement.blur());
+    const blurred = await highlight();
+    assert.equal(blurred.active + blurred.dimmed, 0, 'losing focus left the highlight');
+    await clear();
+
+    // First-parent only: the menu item toggles, reloads with the option, and the merge is one commit.
+    await more(readable, '#firstParentItem');
+    assert.equal(await readable.getAttribute('#firstParentItem', 'aria-checked'), 'true');
+    assert.equal(await readable.isHidden('#dashboardMoreMenu'), false, 'the menu closed after a choice');
+    await readable.waitForFunction(() => window.__graphSent.filter(message => message.type === 'getHistory').length >= 2);
+    assert.equal(await readable.evaluate(() => window.__graphReply('firstParent').firstParent), true, 'the request did not ask for first-parent only');
+    await readable.locator('.history-merge-badge').waitFor();
+    assert.equal(await readable.locator('.history-merge-badge').textContent(), 'merge · 2');
+    assert.equal(await readable.locator('.history-merge-badge').count(), 1, 'only the merge has a badge');
+    assert.equal(await readable.locator('.history-row').count(), 3);
+    const column = await readable.evaluate(() => ({
+      xs: Array.from(new Set(Array.from(document.querySelectorAll('.graph-node-control')).map(node => node.getAttribute('transform')).map(value => value.split(' ')[0]))),
+      curves: Array.from(document.querySelectorAll('.graph-edge')).filter(path => path.getAttribute('d').includes(' C ')).length }));
+    assert.equal(column.xs.length, 1, `the graph has ${column.xs.length} columns`);
+    assert.equal(column.curves, 0);
+    await readable.keyboard.press('Escape');
+    await snap(readable, '59-history-first-parent');
+    // Back off: the next request asks for the whole graph, and the badge goes.
+    await more(readable, '#firstParentItem');
+    assert.equal(await readable.getAttribute('#firstParentItem', 'aria-checked'), 'false');
+    await readable.waitForFunction(() => window.__graphSent.filter(message => message.type === 'getHistory').length >= 3);
+    assert.equal(await readable.evaluate(() => window.__graphReply('all').firstParent), false);
+    await readable.locator('.history-row', { hasText: 'x two' }).waitFor();
+    assert.equal(await readable.locator('.history-merge-badge').count(), 0);
+    await readable.keyboard.press('Escape');
+    await readable.close();
 
     // A reply for an older request or another repository does not replace the rows shown. The page's
     // own getHistory requests are held back, so no real reply can land at any timing: only the replies

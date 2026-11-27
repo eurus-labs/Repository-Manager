@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.11.0] - 2026-11-27
+
+### Added
+
+- **First-parent only** in the history's ⋯ menu, beside Include remote branches. It follows the current line only: the graph shows one column, and each merge is one commit with a "merge" badge and the number of commits it brought in. The choice is remembered for each repository.
+
+### Changed
+
+- A branch keeps its colour in the history graph. The colour comes from the branch's name, so it no longer changes when you load more commits, refresh or filter, and `origin/x` and `x` share one. The current branch's line stays in the first colour.
+- Branch labels in the history show a small dot in their line's colour, so a label names the line it belongs to. Tags and `origin/HEAD` have no dot.
+- Pointing at or tabbing to a commit, its node or one of its labels highlights that branch's whole line in the loaded history and dims the others.
+
 ## [3.10.0] - 2026-11-26
 
 ### Changed

@@ -35,14 +35,51 @@
     return '';
   }
 
+  const TONE_COUNT = 8;
+
+  // A stable tone (0-7) for a branch name, so a branch keeps its colour across pages and refreshes.
+  function toneForName(name) {
+    let hash = 5381;
+    for (let index = 0; index < name.length; index += 1) hash = ((hash * 33) + name.charCodeAt(index)) >>> 0;
+    return hash % TONE_COUNT;
+  }
+
+  // The branch a label stands for: a local branch's own name, a remote branch's name without its
+  // remote (`origin/x` is `x`, so both share a tone). `origin/HEAD` is a pointer and tags are not
+  // branches: they have none. '' when the label is not a branch.
+  function branchNameOfRef(ref) {
+    if (!ref || !ref.name) return '';
+    if (ref.kind === 'head' || ref.kind === 'local-branch') return ref.name;
+    if (ref.kind === 'remote-branch') {
+      const separator = ref.name.indexOf('/');
+      const name = separator >= 0 ? ref.name.slice(separator + 1) : ref.name;
+      return name === 'HEAD' ? '' : name;
+    }
+    return '';
+  }
+
+  // The name that colours a lane starting at this commit: its first local branch, else its first remote one.
+  function laneNameOf(commit) {
+    const refs = (commit && commit.refs) || [];
+    const local = refs.find(ref => ref && (ref.kind === 'head' || ref.kind === 'local-branch') && ref.name);
+    if (local) return local.name;
+    const remote = refs.map(branchNameOfRef).find(Boolean);
+    return remote || '';
+  }
+
   /**
    * Lays commits (newest first) out in lanes, Git Graph style: the current branch's first-parent
    * chain stays in column 0, and every branch path keeps one column and one colour from its tip
-   * until it merges or ends. Freed columns are reused, with a new colour.
+   * until it merges or ends. Freed columns are reused. A lane's colour comes from the name of the
+   * branch label where it starts (see toneForName), so it does not depend on what is loaded above;
+   * an unnamed lane takes a tone its neighbouring lanes do not use. With `options.firstParent`
+   * only each commit's first parent is followed (one column).
    *
    * Per row: `lane`/`color` of the commit; `before`/`after` the hash each lane expects above and
    * below the row, with `beforeColors`/`afterColors`; `incomingLanes`, other lanes that end at this
    * commit (its other children); `parentLanes`/`parentColors`, where the edges to its parents go.
+   * `segment` ids one branch line from its start to where it merges or ends, with
+   * `beforeSegments`/`afterSegments`/`parentSegments` beside the colour arrays.
    */
   function buildGraphModel(commits, options) {
     const list = commits || [];
@@ -55,16 +92,27 @@
       hash = (byHash.get(hash).parentHashes || [])[0];
     }
     const reserved = headChain.size > 0;
+    const firstParentOnly = Boolean(options && options.firstParent);
     const lanes = [];
     const colors = [];
-    let nextColor = reserved ? 1 : 0;
+    const segments = [];
+    let nextSegment = 0;
     let maxLaneCount = 1;
+    // A tone for a lane at this column: the branch label's, else one its neighbours do not use.
+    const toneFor = (commit, lane) => {
+      const name = laneNameOf(commit);
+      if (name) return toneForName(name);
+      const used = new Set([lane - 1, lane + 1].filter(index => index >= 0 && lanes[index]).map(index => colors[index]));
+      const candidates = [1, 2, 3, 4, 5, 6, 7, 0];
+      return candidates.find(tone => !used.has(tone) && (tone !== 0 || !reserved)) ?? candidates.find(tone => !used.has(tone)) ?? 1;
+    };
     const freeLane = () => {
       for (let index = reserved ? 1 : 0; ; index += 1) if (!lanes[index]) return index;
     };
     const open = (lane, hash, color) => {
       lanes[lane] = hash;
       colors[lane] = color;
+      segments[lane] = nextSegment++;
     };
 
     const rows = list.map((commit, rowIndex) => {
@@ -73,16 +121,23 @@
       lanes.forEach((value, index) => { if (value === commit.hash) expecting.push(index); });
       const lane = onHead ? 0 : expecting.length ? expecting[0] : freeLane();
       const startsHere = !expecting.includes(lane);
-      if (startsHere) colors[lane] = onHead ? 0 : nextColor++;
+      if (startsHere) {
+        colors[lane] = onHead ? 0 : toneFor(commit, lane);
+        segments[lane] = nextSegment++;
+      }
       const before = lanes.slice();
       const beforeColors = colors.slice();
+      const beforeSegments = segments.slice();
       const incomingLanes = expecting.filter(index => index !== lane);
       incomingLanes.forEach(index => { lanes[index] = null; });
       const color = colors[lane];
+      const segment = segments[lane];
 
-      const parents = Array.isArray(commit.parentHashes) ? commit.parentHashes : [];
+      const allParents = Array.isArray(commit.parentHashes) ? commit.parentHashes : [];
+      const parents = firstParentOnly ? allParents.slice(0, 1) : allParents;
       const parentLanes = [];
       const parentColors = [];
+      const parentSegments = [];
       if (parents.length === 0) {
         lanes[lane] = null;
       } else {
@@ -93,10 +148,12 @@
           lanes[lane] = null;
           parentLanes.push(other);
           parentColors.push(color);
+          parentSegments.push(segment);
         } else {
           lanes[lane] = first;
           parentLanes.push(lane);
           parentColors.push(color);
+          parentSegments.push(segment);
         }
         parents.slice(1).forEach(parentHash => {
           let parentLane = lanes.indexOf(parentHash);
@@ -104,14 +161,15 @@
             // Even a commit of the current branch opens its own lane here; when its row comes it
             // is drawn in column 0 and this lane curves into it.
             parentLane = freeLane();
-            open(parentLane, parentHash, nextColor++);
+            open(parentLane, parentHash, toneFor(byHash.get(parentHash), parentLane));
           }
           parentLanes.push(parentLane);
           parentColors.push(colors[parentLane]);
+          parentSegments.push(segments[parentLane]);
         });
       }
 
-      while (lanes.length && !lanes[lanes.length - 1]) { lanes.pop(); colors.length = lanes.length; }
+      while (lanes.length && !lanes[lanes.length - 1]) { lanes.pop(); colors.length = lanes.length; segments.length = lanes.length; }
       maxLaneCount = Math.max(maxLaneCount, before.length, lanes.length, lane + 1, ...parentLanes.map(value => value + 1));
       return {
         rowIndex,
@@ -121,11 +179,15 @@
         after: lanes.slice(),
         beforeColors,
         afterColors: colors.slice(),
+        segment,
+        beforeSegments,
+        afterSegments: segments.slice(),
         incomingLanes,
         parentLanes,
         parentColors,
+        parentSegments,
         startsHere,
-        isMerge: parents.length > 1,
+        isMerge: allParents.length > 1,
         isHead: commit.hash === headHash
       };
     });
@@ -174,13 +236,16 @@
     return {
       branch: typeof value.branch === 'string' ? value.branch : '',
       includeRemotes: value.includeRemotes !== false,
-      search: typeof value.search === 'string' ? value.search : ''
+      search: typeof value.search === 'string' ? value.search : '',
+      firstParent: value.firstParent === true
     };
   }
 
   return {
     ROW_HEIGHT,
     laneX,
+    toneForName,
+    branchNameOfRef,
     buildGraphModel,
     toggleCompareSelection,
     transitionCompareSelection,
