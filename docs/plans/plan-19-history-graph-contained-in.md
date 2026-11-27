@@ -1,6 +1,6 @@
 # Plan 19 — Light a line only on its commit node, and show which branches contain a selected commit
 
-Status: approved
+Status: implemented
 Date: 2026-11-27
 Branch: `feat/history-graph-contained-in`
 Baseline: `main` at `cbc08844d8d6826c1139752c029d522adb744e42` (3.11.0 content: plans 13 and 14 merged)
