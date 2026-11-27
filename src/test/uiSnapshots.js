@@ -2678,7 +2678,6 @@ async function main() {
           .map(repository => repository.path === request.repositoryPath ? Object.assign({}, repository, { ahead: 1, behind: 0 }) : repository) } } }));
       });
       await compact.locator('.history-row', { hasText: 'fold the labels' }).waitFor();
-      await compact.waitForFunction(() => document.querySelector('.history-row[data-commit$="9"] .history-ref-more:not([hidden])'));
       return compact;
     };
     for (const width of [1280, 600]) {
@@ -2695,6 +2694,7 @@ async function main() {
       rows.forEach((row, index) => assert.ok(Math.abs(row.height - 30) <= 1, `${width}px: a ${row.labelled ? 'labelled' : 'plain'} row is ${row.height}px tall (row ${index}), not 30`));
       rows.filter(row => row.labelled).forEach(row => assert.ok(row.overlap > 10 && row.beside, `${width}px: the first label is not on the subject's line (${JSON.stringify(row)})`));
       // Six labels fold into "+N", whose title names the folded ones.
+      await compact.waitForFunction(() => document.querySelector('.history-row[data-commit$="9"] .history-ref-more:not([hidden])'));
       const folding = await compact.evaluate(() => {
         const row = document.querySelector('.history-row[data-commit$="9"]');
         const message = row.querySelector('.history-message').getBoundingClientRect().width;
@@ -2762,6 +2762,7 @@ async function main() {
     }
     {
       const compactLight = await openCompact(1280, 'light');
+      await compactLight.waitForFunction(() => document.querySelector('.history-row[data-commit$="9"] .history-ref-more:not([hidden])'));
       await compactLight.mouse.move(2, 2);
       await snap(compactLight, '63-history-compact-rows-light');
       await compactLight.close();
