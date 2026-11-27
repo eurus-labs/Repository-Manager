@@ -1,10 +1,11 @@
 # Plan 14 — Merge and rebase between branches from the graph, with a preview
 
-Status: draft
+Status: approved
 Date: 2026-11-22
 Branch: `feat/history-graph-branch-actions`
-Baseline: `main` at `4fe5d23e5d17283e1987a4ed31c452e0a5034ac9`
-Depends on: plan 16 (`feat/branch-origin-labels-update`), which folds `x` and `origin/x` on one commit into one label with an `origin` chip. Revise this plan on top of it before approval: the label menu and a drop on a merged label must offer both `x` and `origin/x` as targets.
+Baseline: `main` at `1c8ecc4fdac80b5ce8887fc4c123fd39e32461ac` (3.10.0). Revised 2026-11-27 on top of plans 16, 17
+and 18, all merged. Line numbers below were taken at `4fe5d23` and have moved; find the code by the function names
+given.
 Target: `src/webview/template.ts` (menus), `resources/webview.js` (labels, menus, drag), `resources/webview.css`, `src/handlers/webviewMessageHandler.ts`, `src/services/historyRewriteService.ts`, `src/services/historyActionService.ts`, tests, `CHANGELOG.md`, `package.json`
 
 ## Goal
@@ -69,7 +70,24 @@ After this change:
      - The merge runs on the branch's name, so the merge message names it.
    - Rejected: a new preview dialog in the webview. The host's modal already shows the preview, is tested, and is
      the place for approvals (no `confirm()` in webviews).
-5. **Version: the next minor** at merge. CHANGELOG:
+5. **A merged label stands for the local branch** (plan 16). `main [origin]` is drawn only when `main` and
+   `origin/main` are at the same commit, so merging or rebasing onto either gives the same result. Its menu, and a
+   drop on it, act on the local `main`, and the messages name `main`.
+   - A separate `origin/x` label, at another commit, is its own target. Merge and rebase may use it (a read-only
+     ref). Checkout on it checks out `x` the way a click does (plan 16, and plan 18's fast path). It has no Delete.
+   - An `origin/HEAD` label has no menu and cannot be dragged or dropped on.
+   - The previous draft said the menu should offer both `x` and `origin/x`. That is dropped: at one commit the two
+     targets are the same.
+6. **Plan 17 and plan 18 still hold.**
+   - A named-branch merge or rebase goes through the same `assertRunnable` checks as today. Untracked files that the
+     branch's tip would overwrite are listed, and the action is refused, before the confirm modal.
+   - Checkout from the label menu posts the same `checkoutBranch` as a click, so it gets plan 18's checkout-first
+     path.
+   - A background branch update (plan 18) never moves a branch that a merge or rebase has changed in the meantime.
+     Its fast-forward is `--ff-only`, and its guards recheck HEAD and pending operations. No new handling is
+     needed; the Risks table records it.
+7. **Version: 3.11.0.** Plan 13 is built at the same time and also targets 3.11.0. Whichever merges second keeps
+   both entries under one `## [3.11.0]` heading and does not bump again. CHANGELOG:
    - `### Changed`: the rebase item;
    - `### Added`: label menus, drag, and merge preview commits.
 
@@ -148,8 +166,16 @@ Default (`AGENTS.md`): no `confirm()` in the webview, and approvals stay host mo
   - Dropping between two non-current labels shows the disabled "Check out … first".
   - Escape cancels, and nothing is posted on drop alone.
 
-  Checked by the UI test, which posts the chosen item's message. New screenshots `0x-history-branch-menu.png` and
-  `0x-history-branch-drop.png`.
+  Checked by the UI test, which posts the chosen item's message. New screenshots `60-history-branch-menu.png` and
+  `61-history-branch-drop.png`. Numbers 58–59 are plan 13's.
+- [ ] **Merged labels** (`uiSnapshots.js`). The fixture's `main [origin]` label:
+  - its menu offers actions on `main`;
+  - dropping it on another label names `main`;
+  - an `origin/HEAD` label, if the fixture shows one, has no menu.
+
+  A separate `origin/feature/ahead` label offers Merge and Rebase, but not Delete.
+- [ ] **Untracked files** (`historyRewriteHandlerSmoke.js` or `untrackedGuardSmoke.js`). Rebasing onto a branch whose
+  tip adds `clash.txt`, while `clash.txt` is untracked here, is refused before the confirm, with the file named.
 - [ ] **Failure first.** With the moved-branch recheck removed, the "branch moved" case runs the rebase. The test
   fails; report the message.
 - [ ] **Required checks pass:**
@@ -170,6 +196,7 @@ Default (`AGENTS.md`): no `confirm()` in the webview, and approvals stay host mo
 | A rebase of a published branch surprises others | The confirm already lists the commits that move; a backup branch is created for rewrites as today |
 | Drag is not accessible | The label menu offers every drag action by keyboard |
 | Remote labels (`origin/x`) as targets | Allowed for merge and rebase (read-only refs); Delete stays local-only |
+| A plan 18 background update lands while a merge or rebase from the graph runs | Its fast-forward is `--ff-only` and rechecks HEAD and pending operations just before it; at worst it reports `blocked` and moves nothing |
 
 ## Open questions
 
