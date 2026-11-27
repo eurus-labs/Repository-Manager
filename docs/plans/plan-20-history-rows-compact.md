@@ -1,6 +1,6 @@
 # Plan 20 — Compact history rows: one line per commit, initials nodes, tinted rows, icon labels
 
-Status: draft
+Status: approved
 Date: 2026-11-27
 Branch: `feat/history-rows-compact`
 Baseline: `main` at `cbc08844d8d6826c1139752c029d522adb744e42` (plans 13 and 14 merged)
@@ -76,7 +76,7 @@ All planner's. The user approved the look through the canvas and the PNGs (2026-
    - Tones come from the existing `--lane-color` per lane.
    - Pill text uses the tone darkened with `color-mix(in srgb, var(--lane-color) 70%, var(--text-primary))` in a light
      theme, so it passes 4.5:1. The UI test measures that.
-7. **Version: the next minor,** 3.12.0 if 3.11.0 has been released, shared with plan 19 if both land before a
+7. **Version: 3.12.0** (3.11.0 is released), shared with plan 19 if both land before a
    release. CHANGELOG `### Changed`.
 
 ## Scope
