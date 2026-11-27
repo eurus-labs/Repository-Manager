@@ -1,10 +1,10 @@
 # Plan 13 — A git graph that is easier to read
 
-Status: draft
+Status: approved
 Date: 2026-11-22
 Branch: `feat/history-graph-readability`
-Baseline: `main` at `4fe5d23e5d17283e1987a4ed31c452e0a5034ac9`
-Depends on: plan 16 (`feat/branch-origin-labels-update`), which folds `x` and `origin/x` on one commit into one label with an `origin` chip. Revise this plan on top of it before approval; the merged label takes `x`'s tone.
+Baseline: `main` at `1c8ecc4fdac80b5ce8887fc4c123fd39e32461ac` (3.10.0). Revised 2026-11-27 on top of plans 16 and 18,
+both merged. Line numbers below were taken at `4fe5d23` and have moved; find the code by the function names given.
 Target: `resources/historyGraph.js`, `resources/webview.js` (graph rendering and history menu), `resources/dashboardHistory.js` (saved filters), `resources/webview.css`, `src/services/historyService.ts`, `src/webview/template.ts`, tests, `CHANGELOG.md`, `package.json`
 
 ## Goal
@@ -31,11 +31,15 @@ After this change:
    - A lane that starts at a commit with a branch label takes the tone of a hash of the first such label's name,
      mod 8. Local branches come before remote ones, and `origin/x` and `x` share a tone.
    - HEAD's chain keeps tone 0, as today.
+   - **Merged labels (plan 16).** A label that plan 16 folds (`x` with an `origin` chip) takes `x`'s tone. A separate
+     `origin/x` label at another commit takes the same tone as `x`. `origin/HEAD` is a pointer, not a branch: it gets
+     no tone and stays neutral.
    - A lane with no label (an unnamed merge line) takes the next tone not used by a neighbouring lane.
    - Rejected: keeping order-based colours. They are the reason colours change.
    - Rejected: a colour per lane index, which is also unstable.
-2. **The legend is the labels.** Each branch label in the history gets a small dot or left border in its lane's
-   tone, plus its name. Nothing is added beside the graph.
+2. **The legend is the labels.** Each branch label in the history gets a small dot in its lane's tone, before its
+   name. Nothing is added beside the graph. The `origin` chip of a merged label keeps its own colour
+   (`--ref-origin`), after the name. Tags get no dot.
    - Rejected: a separate legend panel, which takes width the table needs.
 3. **Highlight a branch's line.**
    - Hovering or focusing a commit row, its node, or one of its branch labels marks that lane's segment: from the
@@ -54,15 +58,19 @@ After this change:
      `dashboardHistoryState` shape (plan 1 kept the shape; older saved states read as off).
    - This replaces "collapse merged branches". Folding one merge at a time is out of scope.
 5. **Unchanged:** HEAD and upstream placement (`findUpstreamTip`), compare selection, and the context menu.
-6. **Version: the next minor** at merge. CHANGELOG `### Added` for First-parent only, and `### Changed` for stable
-   colours and the highlight.
+6. **Version: 3.11.0.** Plan 14 is built at the same time and also targets 3.11.0. Whichever merges second keeps
+   both entries under one `## [3.11.0]` heading and does not bump again. CHANGELOG `### Added` for First-parent
+   only, and `### Changed` for stable colours and the highlight.
+7. **Plan 18's reloads keep the view.** A branch update that fast-forwards, or moves `origin/<branch>`, reloads the
+   history. The tones then stay the same, because they come from names, not from order. A highlight under the
+   pointer is redrawn on the next hover; nothing else is kept.
 
 ## Scope
 
 In:
 
 - `resources/historyGraph.js`: tone by branch name, `segment` ids, and the first-parent model when one column.
-- `resources/webview.js` (`renderHistoryGraph` `:1980`, `renderHistoryRefs` `:1595`, and the history menu):
+- `resources/webview.js` (`renderHistoryGraph`, `renderHistoryRefs`, and the history menu):
   label tones, the hover and focus highlight, and the menu item.
 - `resources/dashboardHistory.js`: the `firstParent` filter.
 - `src/services/historyService.ts`: `--first-parent`, and merge counts.
@@ -95,12 +103,14 @@ Default (`AGENTS.md`); the graph scripts stay UMD with no module state, as `hist
 
 ## Acceptance criteria
 
-- [ ] **Stable colours.** `buildGraphModel` gives a branch `feature/x` the same tone:
+- [ ] **Stable colours.** `buildGraphModel` (or the tone helper it uses) gives a branch `feature/x` the same tone:
   - on two pages that load different commits above it;
   - after another branch is added above it;
   - for `origin/feature/x` and `feature/x`.
 
-  HEAD's chain is tone 0. Checked by a new `src/test/historyGraphSmoke.js`, added to `npm test`.
+  HEAD's chain is tone 0. A merged `x` label (plan 16) has `x`'s tone dot and keeps its `origin` chip, and an
+  `origin/HEAD` label has no dot. Checked by a new `src/test/historyGraphSmoke.js`, added to `npm test`, and by
+  `uiSnapshots.js` for the labels.
 - [ ] **Segments.** Rows of one branch line share a `segment` id from its start to where it merges or ends.
   Another line has another id. Checked by the same test.
 - [ ] **First-parent.** `getHistory` with `firstParent` passes `--first-parent`, and returns merge counts for
@@ -117,8 +127,8 @@ Default (`AGENTS.md`); the graph scripts stay UMD with no module state, as `hist
   - The menu item toggles and reloads.
 
   Checked by `PLAYWRIGHT_CHROMIUM_PATH=/opt/pw-browsers/chromium-1243/chrome-linux64/chrome npm run test:ui`, with
-  new screenshots `0x-history-graph-highlight.png` and `0x-history-first-parent.png` (next free numbers in
-  `uiSnapshots.js`). Existing history screenshots may differ only in tones and label dots; the report names each.
+  new screenshots `58-history-graph-highlight.png` and `59-history-first-parent.png`. Numbers 53–55 are kept for
+  plans 9–12, 56–57 are plan 16's, and 60–61 are plan 14's. Existing history screenshots may differ only in tones and label dots; the report names each.
 - [ ] **Failure first.** With tones back to order-based, the stable-colour case fails. Report the message.
 - [ ] **Required checks pass:**
   - `npm ci`;
