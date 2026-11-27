@@ -2474,6 +2474,150 @@ async function main() {
     assert.deepEqual(appended, { rows: 200, sameFirst: true, lastSubject: true, graphCovers: true, nodes: 200 });
     await paging.close();
 
+    // Contained in (plan 19): the commit details list the branches that hold the commit. The first part runs
+    // the real host and Git; the rest scripts the host's answers to see every state.
+    const containedReal = await openPage(1440, 900);
+    await containedReal.locator('.history-row', { hasText: 'add linked repositories' }).click();
+    await containedReal.locator('#dashboardCommitSummary .contained-chip').first().waitFor();
+    const realChips = await containedReal.locator('#dashboardCommitSummary .contained-chip').evaluateAll(chips => chips.map(chip => chip.textContent));
+    assert.ok(realChips.includes('feature/ahead') && realChips.some(name => name.startsWith('main')), `the real listing was ${JSON.stringify(realChips)}`);
+    assert.ok(!realChips.some(name => /HEAD/.test(name)), 'origin/HEAD was listed');
+    assert.match(await containedReal.locator('#dashboardCommitSummary .contained-label').textContent(), /^Contained in \d+ branches?$/);
+    await containedReal.close();
+
+    const contained = await openPage(1440, 900);
+    // The page may have asked for the branches of a commit it picked by itself while it opened: let the host go
+    // quiet, then start from an empty cache (the refs are loaded again), so every step below counts its own requests.
+    while (!isHostIdle()) await contained.waitForTimeout(20);
+    await contained.evaluate(() => {
+      const sent = window.__containedSent = [];
+      const toHost = window.__postToHost;
+      window.__postToHost = message => { if (message.type === 'getCommitBranches') { sent.push(message); return Promise.resolve(); } return toHost(message); };
+      // Answers the n-th request as the host would: its repository, commit and request id.
+      window.__containedReply = (index, extra) => {
+        const request = window.__containedSent[index].payload;
+        window.dispatchEvent(new MessageEvent('message', { data: { type: 'commitBranchesLoaded',
+          payload: Object.assign({ repositoryPath: request.repositoryPath, commitHash: request.commitHash, requestId: request.requestId }, extra) } }));
+      };
+      window.__containedRefsLoaded = () => window.dispatchEvent(new MessageEvent('message', { data: { type: 'repositoryRefsLoaded',
+        payload: { repositoryPath: '.', branches: [], tags: [], remotes: [], stashes: [] } } }));
+      window.__containedRefsLoaded();
+    });
+    const sentCount = () => contained.evaluate(() => window.__containedSent.length);
+    const line = contained.locator('#dashboardCommitSummary .commit-summary-contained');
+    const chipNames = () => line.locator('.contained-chip').evaluateAll(chips => chips.map(chip => chip.textContent));
+    const pick = async subject => {
+      await contained.locator('.history-row', { hasText: subject }).click();
+      await contained.waitForFunction(text => document.getElementById('dashboardCommitSummary').textContent.includes(text), subject);
+    };
+    const hexOf = subject => contained.locator('.history-row', { hasText: subject }).getAttribute('data-commit');
+    const branch = (name, extra) => Object.assign({ name, kind: 'local', current: false, onOrigin: false }, extra);
+
+    // Selecting a commit shows "Finding branches…" and posts one request with a request id.
+    const hashA = await hexOf('add linked repositories');
+    const hashB = await hexOf('update app in two places');
+    const hashC = await hexOf('add app');
+    await pick('add linked repositories');
+    await contained.waitForFunction(() => window.__containedSent.length === 1);
+    assert.deepEqual(await contained.evaluate(() => { const { type, payload } = window.__containedSent[0];
+      return [type, typeof payload.requestId, payload.repositoryPath.length > 0, payload.commitHash]; }), ['getCommitBranches', 'number', true, hashA]);
+    assert.equal((await line.textContent()).trim(), 'Finding branches…');
+    // The answer lists the branches in the host's order, the checked-out one first in HEAD's tone.
+    const answerA = [branch('feature/dashboard', { current: true, onOrigin: true }), branch('feature/ahead'), branch('main', { onOrigin: true }),
+      branch('origin/remote-only', { kind: 'remote' })];
+    await contained.evaluate(branches => window.__containedReply(0, { branches }), answerA);
+    await line.locator('.contained-chip').first().waitFor();
+    assert.deepEqual(await chipNames(), ['feature/dashboardorigin', 'feature/ahead', 'mainorigin', 'origin/remote-only']);
+    assert.equal(await line.locator('.contained-label').textContent(), 'Contained in 4 branches');
+    const tones = await line.locator('.contained-chip').evaluateAll(chips => chips.map(chip => chip.querySelector('.chip-tone').className.split(' ').find(name => /^graph-lane-\d$/.test(name))));
+    const expectedTones = await contained.evaluate(() => ['feature/ahead', 'main', 'remote-only'].map(name => `graph-lane-${window.RepositoryHistoryGraph.toneForName(name)}`));
+    assert.equal(tones[0], 'graph-lane-0', 'the checked-out branch does not take HEAD\'s tone');
+    assert.deepEqual(tones.slice(1), expectedTones, 'the other chips take the graph tone of their name');
+    assert.equal(await line.locator('.contained-chip').first().getAttribute('class'), 'contained-chip contained-current');
+    assert.equal(await line.locator('.contained-more').count(), 0);
+    assert.equal(await contained.locator('#dashboardCommitSummary [onclick], #dashboardCommitSummary [onmouseover], #dashboardCommitSummary a[href^="javascript:"]').count(), 0);
+    await snap(contained, '62-history-contained-in');
+
+    // A commit with no branch, and reselecting a commit already listed posts nothing.
+    await pick('update app in two places');
+    await contained.waitForFunction(() => window.__containedSent.length === 2);
+    assert.equal(await contained.evaluate(() => window.__containedSent[1].payload.commitHash), hashB);
+    await contained.evaluate(() => window.__containedReply(1, { branches: [] }));
+    await contained.waitForFunction(() => /Not on any branch/.test(document.querySelector('#dashboardCommitSummary .commit-summary-contained').textContent));
+    await pick('add linked repositories');
+    assert.equal(await sentCount(), 2, 'reselecting posted a second request');
+    assert.deepEqual(await chipNames(), ['feature/dashboardorigin', 'feature/ahead', 'mainorigin', 'origin/remote-only'], 'the cached answer was not shown');
+    // A request still in flight is reused: leaving a commit before its answer and coming back posts nothing.
+    await pick('add app');
+    await contained.waitForFunction(() => window.__containedSent.length === 3);
+    await pick('add linked repositories');
+    await pick('add app');
+    assert.equal(await sentCount(), 3, 'an unanswered request was posted again');
+    // The error text; the details stay; an error is asked again.
+    await contained.evaluate(() => window.__containedReply(2, { error: true, message: 'Git command timed out after 10000ms' }));
+    await contained.waitForFunction(() => /Could not list the branches/.test(document.querySelector('#dashboardCommitSummary .commit-summary-contained').textContent));
+    assert.equal(await contained.locator('#dashboardCommitSummary .dashboard-error').count(), 0, 'the details were replaced by the error');
+    assert.ok(await contained.locator('#dashboardChangedFiles .changed-file-item').count() > 0, 'the details lost their files');
+    await pick('update app in two places');
+    await pick('add app');
+    await contained.waitForFunction(() => window.__containedSent.length === 4);
+    assert.equal(await contained.evaluate(() => window.__containedSent[3].payload.commitHash), hashC);
+    await contained.evaluate(() => window.__containedReply(3, { branches: [] }));
+    await contained.waitForFunction(() => /Not on any branch/.test(document.querySelector('#dashboardCommitSummary .commit-summary-contained').textContent));
+
+    // A node click toggles Base/Target as before and opens no branch list.
+    const nodeA = contained.locator(`.graph-node-control[data-commit="${hashA}"]`);
+    const sentBeforeNode = await sentCount();
+    await nodeA.click();
+    assert.equal(await nodeA.getAttribute('aria-pressed'), 'true');
+    assert.equal(await contained.locator('.contained-popover, .contained-card, [role="dialog"]:visible').count(), 0);
+    await nodeA.click();
+    assert.equal(await nodeA.getAttribute('aria-pressed'), 'false');
+    assert.equal(await sentCount(), sentBeforeNode, 'a node click posted a request for a commit already listed');
+
+    // After the refs change the cache is dropped and the commit shown is asked again at once. An older answer is ignored.
+    await pick('add linked repositories');
+    await contained.evaluate(() => window.__containedRefsLoaded());
+    await contained.waitForFunction(() => window.__containedSent.length === 5);
+    assert.equal(await contained.evaluate(() => window.__containedSent[4].payload.commitHash), hashA);
+    const [oldId, newId] = await contained.evaluate(() => [window.__containedSent[0].payload.requestId, window.__containedSent[4].payload.requestId]);
+    assert.ok(newId > oldId);
+    assert.equal((await line.textContent()).trim(), 'Finding branches…');
+    await contained.evaluate(() => window.__containedReply(4, { requestId: window.__containedSent[0].payload.requestId, branches: [{ name: 'stale', kind: 'local', current: false, onOrigin: false }] }));
+    assert.equal((await line.textContent()).trim(), 'Finding branches…', 'a stale answer changed the line');
+    // The refs change again while that request is on its way: it is dropped, the commit is asked again, and the
+    // line does not stay on "Finding branches…" (a slow listing on a big repository).
+    await contained.evaluate(() => window.__containedRefsLoaded());
+    await contained.waitForFunction(() => window.__containedSent.length === 6);
+    await contained.evaluate(() => window.__containedReply(4, { branches: [{ name: 'dropped', kind: 'local', current: false, onOrigin: false }] }));
+    assert.equal((await line.textContent()).trim(), 'Finding branches…', 'an answer to a dropped request changed the line');
+    // Other commits were dropped with the cache: B is asked again, and A, still on its way, is not.
+    await pick('update app in two places');
+    await contained.waitForFunction(() => window.__containedSent.length === 7);
+    assert.equal(await contained.evaluate(() => window.__containedSent[6].payload.commitHash), hashB);
+    await pick('add linked repositories');
+    assert.equal(await sentCount(), 7, 'a request still on its way was posted again');
+    // Fifteen branches: twelve chips and "+3 more", which shows the rest in place.
+    const fifteen = Array.from({ length: 15 }, (_, index) => branch(`topic/${String(index).padStart(2, '0')}`));
+    await contained.evaluate(branches => window.__containedReply(5, { branches }), fifteen);
+    await line.locator('.contained-chip').first().waitFor();
+    assert.equal(await line.locator('.contained-chip').count(), 12);
+    assert.equal(await line.locator('.contained-more').textContent(), '+3 more');
+    assert.equal(await line.locator('.contained-label').textContent(), 'Contained in 15 branches');
+    await snap(contained, '62b-history-contained-in-more');
+    await line.locator('.contained-more').click();
+    assert.equal(await line.locator('.contained-chip').count(), 15);
+    assert.equal(await line.locator('.contained-more').count(), 0);
+
+    // In a comparison the line is the Target's.
+    await contained.locator(`.graph-node-control[data-commit="${hashB}"]`).click();
+    await contained.locator(`.graph-node-control[data-commit="${hashC}"]`).click();
+    await contained.waitForFunction(commit => {
+      const shown = document.querySelector('#dashboardCommitSummary .commit-summary-contained');
+      return shown && shown.dataset.commit === commit;
+    }, hashC);
+    await contained.close();
+
     // History graph readability: label tones, the hover and focus highlight of a branch line, and
     // First-parent only. The pages are scripted replies, so the shape (a merge, a branch not
     // merged, origin/HEAD, a tag) does not depend on the fixture.
@@ -2551,7 +2695,8 @@ async function main() {
     assert.ok(rowHeights.every(height => height === 30), `history rows are ${JSON.stringify(rowHeights)} px tall`);
     assert.equal(await readable.locator('.history-ref [onclick], .history-ref [onmouseover], .history-ref a[href^="javascript:"]').count(), 0);
 
-    // Pointing at a row marks its branch line and dims the rest.
+    // Only a commit node marks its branch line and fades the rest (plan 19). A row, a label and empty graph
+    // area leave every line as it is.
     const highlight = () => readable.evaluate(() => {
       const overlay = document.querySelector('.history-graph-overlay');
       const parts = Array.from(overlay.querySelectorAll('.graph-edge, .graph-node, .graph-node-core'));
@@ -2569,25 +2714,44 @@ async function main() {
     assert.notEqual(xSegment, await segmentOf("Merge branch 'feature/x'"), 'feature/x and main share a segment');
     assert.notEqual(xSegment, await segmentOf('y work'));
     assert.equal(await segmentOf('x one'), xSegment, 'a branch line has two segments');
+    const none = async what => {
+      const state = await highlight();
+      assert.equal(state.active + state.dimmed, 0, `${what} marked ${JSON.stringify(state)}`);
+    };
     await readable.locator('.history-row', { hasText: 'x one' }).hover();
+    await none('a row');
+    await readable.locator('.history-row', { hasText: 'x one' }).locator('.history-subject').hover();
+    await none('a subject');
+    await readable.locator('.history-ref[data-branch="feature/y"]').hover();
+    await none('a label');
+    // Empty graph area: inside the overlay, away from every node and edge.
+    const graphBox = await readable.locator('.history-graph-overlay').boundingBox();
+    await readable.mouse.move(graphBox.x + graphBox.width - 3, graphBox.y + graphBox.height / 2);
+    await none('empty graph area');
+    // A node marks its own line.
+    await readable.locator('.graph-node-control[data-commit$="6"]').hover();
     let marked = await highlight();
     assert.deepEqual(marked.segments, [xSegment]);
     assert.ok(marked.active >= 3 && marked.dimmed > 0 && marked.active + marked.dimmed === marked.total && !marked.mixed, `hover marked ${JSON.stringify(marked)}`);
+    // The fade is a transition: wait for it to end before reading the opacity.
+    await readable.waitForFunction(() => Array.from(document.querySelectorAll('.history-graph-overlay .graph-dim')).every(part => getComputedStyle(part).opacity === '0.4'),
+      undefined, { timeout: 3000 }).catch(() => {});
+    assert.equal(await readable.evaluate(() => Array.from(new Set(Array.from(document.querySelectorAll('.history-graph-overlay .graph-dim')).map(part => getComputedStyle(part).opacity))).join()), '0.4', 'the faded lines are at 40%');
     await snap(readable, '58-history-graph-highlight');
-    // A branch label, and the node, point at the same line.
-    await readable.locator('.history-ref[data-branch="feature/y"]').hover();
+    // Another node moves it; leaving the node for a row clears it.
+    await readable.locator('.graph-node-control[data-commit$="9"]').hover();
     assert.deepEqual((await highlight()).segments, [await segmentOf('y work')]);
-    await readable.locator('.graph-node-control[data-commit$="7"]').hover();
-    assert.deepEqual((await highlight()).segments, [xSegment]);
-    // A reloaded history is drawn without a highlight, and pointing at its line marks it again, even from
-    // another part of the row pointed at before the reload. One script, so no pointer event comes between.
+    await readable.locator('.history-row', { hasText: 'y work' }).hover();
+    await none('leaving a node for its row');
+    // A reloaded history is drawn without a highlight, and pointing at its node marks it again, even from
+    // another part of the node pointed at before the reload. One script, so no pointer event comes between.
     const afterReload = await readable.evaluate(() => {
-      const rowOf = text => Array.from(document.querySelectorAll('.history-row')).find(row => row.textContent.includes(text));
+      const nodeOf = suffix => document.querySelector(`.graph-node-control[data-commit$="${suffix}"]`);
       const over = element => element.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
-      over(rowOf('y work').querySelector('.history-subject'));
+      over(nodeOf('9').querySelector('.graph-node-selection'));
       window.__graphReply('all');
       const unmarked = document.querySelectorAll('.history-graph-overlay .graph-lane-active, .history-graph-overlay .graph-dim').length;
-      over(rowOf('y work').querySelector('.history-ref'));
+      over(nodeOf('9').querySelector('.graph-node-hit'));
       return { unmarked, marked: document.querySelectorAll('.history-graph-overlay .graph-lane-active').length };
     });
     assert.equal(afterReload.unmarked, 0, 'a reload kept the highlight');
@@ -2596,15 +2760,18 @@ async function main() {
     await clear();
     const left = await highlight();
     assert.equal(left.active + left.dimmed, 0, 'leaving left the highlight');
-    // Keyboard focus does the same: Tab from one line's row reaches another's.
+    // Keyboard focus does the same, on nodes only: a focused row marks nothing, and Tab from one line's
+    // node reaches another's.
     await readable.locator('.history-row', { hasText: 'y work' }).focus();
+    await none('a focused row');
+    await readable.locator('.graph-node-control[data-commit$="9"]').focus();
     assert.deepEqual((await highlight()).segments, [await segmentOf('y work')]);
     let reached = false;
     for (let press = 0; press < 12 && !reached; press++) {
       await readable.keyboard.press('Tab');
-      reached = await readable.evaluate(() => Boolean(document.activeElement.closest('.history-row[data-segment]')) && document.activeElement.closest('.history-row').textContent.includes('x two'));
+      reached = await readable.evaluate(() => Boolean(document.activeElement.closest('.graph-node-control[data-commit$="7"]')));
     }
-    assert.ok(reached, 'Tab did not reach the feature/x row');
+    assert.ok(reached, 'Tab did not reach the feature/x node');
     assert.deepEqual((await highlight()).segments, [xSegment], 'focus did not move the highlight');
     await readable.evaluate(() => document.activeElement.blur());
     const blurred = await highlight();

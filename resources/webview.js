@@ -960,6 +960,13 @@
       loadParentCommitDetail(commitHash);
     },
 
+    showAllContainingBranches: el => {
+      const hash = el.dataset.commit;
+      if (!hash) return;
+      containingExpanded.add(containingKey(hash));
+      refreshContainingLine(hash);
+    },
+
     selectChangedFile: (el, event) => {
       const filePath = el.dataset.path;
       if (!filePath || !selectedDashboardCommit) return;
@@ -1962,6 +1969,7 @@
       repositoryPath: activeDashboardRepository,
       commitHash
     });
+    requestContainingBranches(commitHash);
   }
 
   function clearCommitComparison(restoreParent) {
@@ -2019,6 +2027,7 @@
       commitHash: targetRevision,
       baseRevision
     });
+    requestContainingBranches(targetRevision);
   }
 
   function populateBranchCompareSelects(baseSelect, targetSelect) {
@@ -2316,7 +2325,7 @@
     return `<span class="history-merge-badge" title="${escapeHtml(title)}">merge · ${commit.mergeCount}</span>`;
   }
 
-  // The branch line pointed at or focused: its segment's parts are marked, the others dimmed. Class
+  // The branch line whose commit node is pointed at or focused: its segment's parts are marked, the others dimmed. Class
   // toggles only; the graph is not drawn again.
   let highlightedSegment = null;
   function applyHistoryHighlight() {
@@ -2337,7 +2346,8 @@
   }
 
   function historySegmentOf(target) {
-    const part = target && typeof target.closest === 'function' ? target.closest('#dashboardHistory [data-segment]') : null;
+    // Only a commit node lights its line; rows, labels, edges and empty graph area do not.
+    const part = target && typeof target.closest === 'function' ? target.closest('#dashboardHistory .graph-node-control[data-segment]') : null;
     return part ? part.getAttribute('data-segment') : null;
   }
 
@@ -2797,6 +2807,16 @@
     const remotes = payload.remotes || [];
     const stashes = payload.stashes || [];
     repositoryRefs = { branches, tags, remotes, stashes };
+    // A fetch, checkout, merge or branch change moved the refs: what was listed may no longer be true.
+    containingBranches.clear();
+    containingExpanded.clear();
+    // The commit shown asks again at once: an answer still on its way is dropped with the cache, and a line
+    // that stayed would say what is no longer true (the checked-out branch, a merged branch).
+    const shownLine = document.querySelector('#dashboardCommitSummary .commit-summary-contained');
+    if (shownLine && shownLine.dataset.commit) {
+      ensureContainingBranches(shownLine.dataset.commit);
+      refreshContainingLine(shownLine.dataset.commit);
+    }
     const branchList = document.getElementById('dashboardBranches');
     const tagList = document.getElementById('dashboardTags');
     const remoteList = document.getElementById('dashboardRemotes');
@@ -2893,6 +2913,78 @@
     return glyphs[status] || '?';
   }
 
+  // Which branches contain the shown commit (plan 19). One entry per repository and commit: loading (with the
+  // id of the request in flight), done, or error. It doubles as the cache, and is dropped when the refs change.
+  const containingBranches = new Map();
+  const containingExpanded = new Set();
+  const CONTAINING_LIMIT = 12;
+  let containingRequestId = 0;
+
+  function containingKey(hash, repositoryPath) {
+    return `${repositoryPath === undefined ? activeDashboardRepository : repositoryPath}\n${hash}`;
+  }
+
+  // Posts getCommitBranches unless the answer is cached or already on its way. An error is asked again.
+  function ensureContainingBranches(hash) {
+    if (!hash || hash === WORKING_TREE || !activeDashboardRepository) return;
+    const key = containingKey(hash);
+    const entry = containingBranches.get(key);
+    if (entry && entry.status !== 'error') return;
+    containingRequestId += 1;
+    containingBranches.set(key, { status: 'loading', requestId: containingRequestId });
+    postMessage('getCommitBranches', { repositoryPath: activeDashboardRepository, commitHash: hash, requestId: containingRequestId });
+  }
+
+  // Beside getCommitDetail, so the details never wait for it. A name (a compared branch) is asked for once
+  // the details say which commit it is.
+  function requestContainingBranches(hash) {
+    if (/^[0-9a-f]{4,64}$/i.test(hash || '')) ensureContainingBranches(hash);
+  }
+
+  function containingBranchesHtml(hash) {
+    const key = containingKey(hash);
+    const entry = containingBranches.get(key);
+    if (!entry || entry.status === 'loading') return '<span class="contained-note" role="status">Finding branches…</span>';
+    if (entry.status === 'error') return '<span class="contained-note contained-error" role="status">Could not list the branches</span>';
+    const branches = entry.branches;
+    if (!branches.length) return '<span class="contained-note">Not on any branch</span>';
+    const all = containingExpanded.has(key);
+    const shown = all ? branches : branches.slice(0, CONTAINING_LIMIT);
+    const chips = shown.map(branch => {
+      // The checked-out branch takes HEAD's tone 0; the others the tone their line has in the graph.
+      const bare = branch.kind === 'remote' ? branch.name.slice(branch.name.indexOf('/') + 1) : branch.name;
+      const tone = branch.current ? 0 : window.RepositoryHistoryGraph.toneForName(bare);
+      const title = branch.current ? `${branch.name} is checked out`
+        : branch.onOrigin ? `${branch.name} and origin/${branch.name} contain this commit`
+          : `${branch.name} contains this commit`;
+      const origin = branch.onOrigin ? '<span class="ref-origin">origin</span>' : '';
+      return `<span class="contained-chip${branch.current ? ' contained-current' : ''}" title="${escapeHtml(title)}"><span class="chip-tone graph-lane-${tone}" aria-hidden="true"></span>${escapeHtml(branch.name)}${origin}</span>`;
+    }).join('');
+    const more = branches.length - shown.length;
+    const button = more > 0
+      ? `<button type="button" class="link-button contained-more" data-action="showAllContainingBranches" data-commit="${escapeHtml(hash)}">+${more} more</button>`
+      : '';
+    return `<span class="contained-label">Contained in ${branches.length} ${branches.length === 1 ? 'branch' : 'branches'}</span>${chips}${button}`;
+  }
+
+  function refreshContainingLine(hash) {
+    document.querySelectorAll('#dashboardCommitSummary .commit-summary-contained').forEach(line => {
+      if (line.dataset.commit === hash) line.innerHTML = containingBranchesHtml(hash);
+    });
+  }
+
+  function containingBranchesLoaded(payload) {
+    if (!payload || typeof payload.commitHash !== 'string') return;
+    const key = containingKey(payload.commitHash, payload.repositoryPath);
+    const entry = containingBranches.get(key);
+    // Only the latest request for this commit counts: an older one, or one from before the refs changed, is dropped.
+    if (!entry || entry.status !== 'loading' || entry.requestId !== payload.requestId) return;
+    containingBranches.set(key, payload.error
+      ? { status: 'error' }
+      : { status: 'done', branches: Array.isArray(payload.branches) ? payload.branches : [] });
+    if (payload.repositoryPath === activeDashboardRepository) refreshContainingLine(payload.commitHash);
+  }
+
   function renderCommitDetail(payload) {
     if (!payload || payload.repositoryPath !== activeDashboardRepository || !payload.detail) return;
     const detail = payload.detail;
@@ -2912,6 +3004,7 @@
     const files = document.getElementById('dashboardChangedFiles');
     const count = document.getElementById('changedFileCount');
     if (summary) {
+      ensureContainingBranches(detail.hash);
       const refs = (detail.refs || []).map(ref => `<span class="history-ref ref-${escapeHtml(ref.kind)}">${escapeHtml(ref.name)}</span>`).join('');
       const initials = (detail.authorName || '?').split(/\s+/).filter(Boolean).slice(0, 2).map(part => part.charAt(0)).join('').toUpperCase();
       const comparisonText = detail.comparisonBaseHash
@@ -2922,7 +3015,7 @@
       const title = stash ? stash.message || detail.subject : detail.subject;
       const who = stash ? `Stash ${stash.ref}${stash.branch ? ` · on ${stash.branch}` : ''}` : detail.authorName;
       const avatar = stash ? '<div class="commit-avatar stash-avatar" aria-hidden="true">▱</div>' : `<div class="commit-avatar">${escapeHtml(initials)}</div>`;
-      summary.innerHTML = `${avatar}<div class="commit-summary-copy"><strong>${escapeHtml(title)}</strong><span>${escapeHtml(who)} · ${escapeHtml(formatHistoryDate(detail.authoredAt))} · ${comparisonText}</span>${detail.body && detail.body !== detail.subject ? `<p>${escapeHtml(detail.body)}</p>` : ''}</div><code>${escapeHtml(detail.shortHash)}</code><div class="commit-summary-refs">${refs}</div>`;
+      summary.innerHTML = `${avatar}<div class="commit-summary-copy"><strong>${escapeHtml(title)}</strong><span>${escapeHtml(who)} · ${escapeHtml(formatHistoryDate(detail.authoredAt))} · ${comparisonText}</span>${detail.body && detail.body !== detail.subject ? `<p>${escapeHtml(detail.body)}</p>` : ''}</div><code>${escapeHtml(detail.shortHash)}</code><div class="commit-summary-refs">${refs}</div><div class="commit-summary-contained" data-commit="${escapeHtml(detail.hash)}">${containingBranchesHtml(detail.hash)}</div>`;
     }
     if (count) count.textContent = String((detail.files || []).length);
     if (files) {
@@ -3527,6 +3620,10 @@
 
         case 'commitDetailLoaded':
           renderCommitDetail(message.payload);
+          break;
+
+        case 'commitBranchesLoaded':
+          containingBranchesLoaded(message.payload);
           break;
 
         case 'fileDiffLoaded':

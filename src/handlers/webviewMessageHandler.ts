@@ -90,6 +90,24 @@ export async function handleGetCommitDetail(ctx: MessageHandlerContext, payload:
   }
 }
 
+/** Which branches contain a commit. Posted beside getCommitDetail, so a slow listing never delays the details. */
+export async function handleGetCommitBranches(ctx: MessageHandlerContext, payload: unknown): Promise<void> {
+  const request = requireRecord(payload);
+  const repositoryPath = requireString(request, 'repositoryPath');
+  const commitHash = requireString(request, 'commitHash');
+  const requestId = typeof request.requestId === 'number' ? request.requestId : 0;
+  try {
+    const branches = await ctx.gitOps.listContainingBranches(repositoryPath, commitHash);
+    await sendToWebview(ctx, { type: 'commitBranchesLoaded', payload: { repositoryPath, commitHash, requestId, branches } });
+  } catch (error) {
+    // Not a dashboardError: the details stay as they are, and only this line says it failed.
+    await sendToWebview(ctx, { type: 'commitBranchesLoaded', payload: {
+      repositoryPath, commitHash, requestId, error: true,
+      message: error instanceof Error ? error.message : 'Could not list the branches'
+    } });
+  }
+}
+
 export async function handleGetFileDiff(ctx: MessageHandlerContext, payload: unknown): Promise<void> {
   const request = requireRecord(payload);
   const repositoryPath = requireString(request, 'repositoryPath');
@@ -1373,6 +1391,7 @@ export async function handleSetRebaseStatus(
 export const messageHandlers: Record<string, (ctx: MessageHandlerContext, payload?: unknown) => Promise<void>> = {
   'getHistory': (ctx, payload) => handleGetHistory(ctx, payload),
   'getCommitDetail': (ctx, payload) => handleGetCommitDetail(ctx, payload),
+  'getCommitBranches': (ctx, payload) => handleGetCommitBranches(ctx, payload),
   'getFileDiff': (ctx, payload) => handleGetFileDiff(ctx, payload),
   'getRepositoryRefs': (ctx, payload) => handleGetRepositoryRefs(ctx, payload),
   'getWorkingTreeChanges': (ctx, payload) => handleGetWorkingTreeChanges(ctx, payload),
