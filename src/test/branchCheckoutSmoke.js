@@ -58,7 +58,17 @@ function service(repo, calls) {
   }
   return new BranchService(cmd);
 }
-const checkout = (repo, branch, calls) => service(repo, calls).checkoutBranch('.', branch);
+/**
+ * A click: the checkout step, then (when it says the update is pending) the update step, as the
+ * handler runs them. Returns the update's result, or the checkout's when there is nothing to update
+ * or the checkout failed.
+ */
+async function checkout(repo, branch, calls, updateOptions) {
+  const branches = service(repo, calls);
+  const switched = await branches.switchBranch('.', branch);
+  if (!switched.success || !switched.data || switched.data.update !== 'pending') return switched;
+  return branches.updateBranch('.', branch, updateOptions);
+}
 const outcome = result => result.data && result.data.update;
 const currentBranch = repo => git(repo, 'symbolic-ref', '--short', 'HEAD');
 
@@ -157,6 +167,102 @@ async function main() {
     assert.match(result.message, /Updated x by 1 commit from origin/);
     assert.equal(currentBranch(repos.local), 'x');
     assert.equal(git(repos.local, 'rev-parse', 'x'), lastFetched);
+
+    // The checkout step alone: no fetch, no network. It checks out x at once, even though origin has
+    // newer commits, and says the update is pending.
+    repos = setup();
+    git(repos.local, 'checkout', '-q', 'x');
+    git(repos.local, 'checkout', '-q', 'main');
+    const xTip = git(repos.local, 'rev-parse', 'x');
+    pushOnX(repos, 'f.txt', '2\n', 'two');
+    let steps = [];
+    result = await service(repos.local, steps).switchBranch('.', 'x');
+    assert.equal(result.success, true, result.message);
+    assert.equal(result.data.update, 'pending');
+    assert.equal(result.data.unchanged, false);
+    assert.equal(currentBranch(repos.local), 'x');
+    assert.equal(git(repos.local, 'rev-parse', 'x'), xTip);
+    assert.deepEqual(steps.map(args => args[0]), ['for-each-ref', 'checkout'], JSON.stringify(steps));
+    // The current branch: one process, nothing checked out.
+    steps = [];
+    result = await service(repos.local, steps).switchBranch('.', 'x');
+    assert.equal(result.data.unchanged, true);
+    assert.deepEqual(steps.map(args => args[0]), ['for-each-ref']);
+
+    // A remote-only branch keeps the old order: fetch first, then create it from the fetched copy.
+    repos = setup();
+    pushed = pushOnX(repos, 'f.txt', '2\n', 'two');
+    steps = [];
+    result = await service(repos.local, steps).switchBranch('.', 'x');
+    assert.equal(result.success, true, result.message);
+    assert.equal(result.data.update, 'up-to-date');
+    assert.equal(git(repos.local, 'rev-parse', 'x'), pushed);
+    const order = steps.map(args => args[0]);
+    assert.ok(order.indexOf('fetch') >= 0 && order.indexOf('fetch') < order.indexOf('checkout'), JSON.stringify(steps));
+
+    // The command paths that wait for one message still get the checkout and the update together.
+    repos = setup();
+    git(repos.local, 'checkout', '-q', 'x');
+    git(repos.local, 'checkout', '-q', 'main');
+    pushed = pushOnX(repos, 'f.txt', '2\n', 'two');
+    result = await service(repos.local).checkoutBranch('.', 'x');
+    assert.equal(outcome(result), 'fast-forwarded', result.message);
+    assert.equal(git(repos.local, 'rev-parse', 'HEAD'), pushed);
+
+    // Guards before the merge. HEAD left the branch (a direct git checkout while the fetch ran):
+    // main is not fast-forwarded onto origin/x, and the fetched origin/x stays.
+    repos = setup();
+    git(repos.local, 'checkout', '-q', 'x');
+    git(repos.local, 'checkout', '-q', 'main');
+    pushed = pushOnX(repos, 'f.txt', '2\n', 'two');
+    const mainTip = git(repos.local, 'rev-parse', 'main');
+    result = await service(repos.local).switchBranch('.', 'x');
+    assert.equal(result.data.update, 'pending');
+    git(repos.local, 'checkout', '-q', 'main');
+    result = await service(repos.local).updateBranch('.', 'x');
+    assert.equal(result.success, true, result.message);
+    assert.equal(result.data.skipped, 'head-moved');
+    assert.equal(git(repos.local, 'rev-parse', 'main'), mainTip);
+    assert.notEqual(git(repos.local, 'rev-parse', 'x'), pushed);
+    assert.equal(git(repos.local, 'rev-parse', 'origin/x'), pushed);
+
+    // A merge in progress: no fast-forward.
+    repos = setup();
+    git(repos.local, 'checkout', '-q', 'x');
+    git(repos.local, 'checkout', '-q', 'main');
+    pushOnX(repos, 'f.txt', '2\n', 'two');
+    const beforeMerge = git(repos.local, 'rev-parse', 'x');
+    await service(repos.local).switchBranch('.', 'x');
+    writeFileSync(path.join(repos.local, '.git', 'MERGE_HEAD'), `${git(repos.local, 'rev-parse', 'main')}\n`);
+    result = await service(repos.local).updateBranch('.', 'x');
+    assert.equal(result.data.skipped, 'operation-pending');
+    assert.equal(git(repos.local, 'rev-parse', 'x'), beforeMerge);
+
+    // A newer click: the update stops after its fetch.
+    repos = setup();
+    git(repos.local, 'checkout', '-q', 'x');
+    git(repos.local, 'checkout', '-q', 'main');
+    pushed = pushOnX(repos, 'f.txt', '2\n', 'two');
+    await service(repos.local).switchBranch('.', 'x');
+    result = await service(repos.local).updateBranch('.', 'x', { isLatest: () => false });
+    assert.equal(result.data.skipped, 'newer-click');
+    assert.notEqual(git(repos.local, 'rev-parse', 'x'), pushed);
+    assert.equal(git(repos.local, 'rev-parse', 'origin/x'), pushed);
+
+    // A running auto-fetch: the update waits for it to end, then runs its own fetch of the branch.
+    repos = setup();
+    git(repos.local, 'checkout', '-q', 'x');
+    git(repos.local, 'checkout', '-q', 'main');
+    pushed = pushOnX(repos, 'f.txt', '2\n', 'two');
+    await service(repos.local).switchBranch('.', 'x');
+    steps = [];
+    let settled = false;
+    result = await service(repos.local, steps).updateBranch('.', 'x', {
+      settleAutoFetch: async () => { assert.equal(steps.some(args => args[0] === 'fetch'), false); settled = true; }
+    });
+    assert.equal(settled, true);
+    assert.equal(outcome(result), 'fast-forwarded', result.message);
+    assert.equal(steps.filter(args => args[0] === 'fetch').length, 1, JSON.stringify(steps));
 
     // A local-only branch: checked out without any fetch.
     repos = setup();

@@ -247,6 +247,24 @@ export class GitOperations {
     return this.branchService.checkoutBranch(submodulePath, branchName, replaceWithRemote);
   }
 
+  /** Check out a branch without waiting for origin (see BranchService.switchBranch). */
+  async switchBranch(
+    submodulePath: string,
+    branchName: string,
+    options?: { settleAutoFetch?: () => Promise<void> }
+  ): Promise<CommandResult> {
+    return this.branchService.switchBranch(submodulePath, branchName, options);
+  }
+
+  /** Update a checked-out branch from origin (see BranchService.updateBranch). */
+  async updateBranch(
+    submodulePath: string,
+    branchName: string,
+    options?: { settleAutoFetch?: () => Promise<void>; isLatest?: () => boolean }
+  ): Promise<CommandResult> {
+    return this.branchService.updateBranch(submodulePath, branchName, options);
+  }
+
   /**
    * Pull changes for a submodule
    */

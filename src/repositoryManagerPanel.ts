@@ -6,6 +6,7 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
 import { GitOperations } from './gitOperations';
+import { BranchSwitchTracker } from './services/branchService';
 import { OpenTimings } from './openTimings';
 import { SubmoduleInfo } from './types';
 import { PRManager } from './prManager';
@@ -100,6 +101,8 @@ export class RepositoryManagerPanel {
   private _autoFetchTimer?: NodeJS.Timeout;
   private _autoFetchRun?: Promise<void>;
   private _lastAutoFetch = 0;
+  /** Numbers each repository's branch clicks, so a late update never moves a branch after a newer click. */
+  private readonly _branchSwitches = new BranchSwitchTracker();
   /**
    * The first background fetch waits for the first history page (or FIRST_FETCH_DELAY_MS), so the
    * Git processes of opening the dashboard do not compete with it.
@@ -516,6 +519,9 @@ export class RepositoryManagerPanel {
       workspaceRoot: this._workspaceRoot,
       refresh: () => this.refresh(),
       reloadDashboardHistory: (repositoryPaths) => this.reloadDashboardHistory(repositoryPaths),
+      branchSwitches: this._branchSwitches,
+      settleAutoFetch: () => this._settleAutoFetch(),
+      timings: this._timings,
       workspaceState: this._workspaceState,
       conflictExplainer: this._conflictExplainer(),
       showProposedFile: async (filePath, current, proposed) => {
@@ -544,13 +550,25 @@ export class RepositoryManagerPanel {
     };
   }
 
+  /** A checkout of a branch (not "Reset to origin"): see _handleMessage. */
+  private _isPlainBranchClick(message: { type: string; payload?: unknown }): boolean {
+    return message.type === 'checkoutBranch'
+      && (message.payload as { replaceWithRemote?: unknown } | undefined)?.replaceWithRemote !== true;
+  }
+
+  /** Waits for a running auto-fetch to end; the branch fetch that follows is its own. */
+  private async _settleAutoFetch(): Promise<void> {
+    await this._autoFetchRun?.catch(() => undefined);
+  }
+
   private async _handleMessage(message: { type: string; payload?: unknown }) {
     this._messagesInFlight++;
     const action = !READ_ONLY_MESSAGES.has(message.type);
     if (action) { this._actionsInFlight++; }
     try {
-      // Git actions wait for a running background fetch so they never race it for ref locks.
-      if (this._autoFetchRun && !READ_ONLY_MESSAGES.has(message.type)) {
+      // Git actions wait for a running background fetch so they never race it for ref locks. A branch
+      // click does not: it only writes HEAD and the index, and the update that follows it waits.
+      if (this._autoFetchRun && !READ_ONLY_MESSAGES.has(message.type) && !this._isPlainBranchClick(message)) {
         await this._autoFetchRun;
       }
       if (message.type === 'getHistory') { this._timings?.markOnce('history asked'); }
@@ -581,7 +599,8 @@ export class RepositoryManagerPanel {
       }
       if (message.type === 'dashboardTiming') {
         const name = (message.payload as { name?: unknown } | undefined)?.name;
-        if (typeof name === 'string') { this._timings?.markOnce(name); }
+        if (name === 'branch history drawn') { this._timings?.mark(name); }
+        else if (typeof name === 'string') { this._timings?.markOnce(name); }
         return;
       }
       if (this._reviews.handles(message.type)) {

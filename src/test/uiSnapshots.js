@@ -980,6 +980,9 @@ async function main() {
     await page.waitForFunction(() => window.__sent.some(m => m.type === 'checkoutBranch'));
     assert.equal(await page.evaluate(() => window.__sent.find(m => m.type === 'checkoutBranch').payload.branch), 'feature/dashboard');
     await page.waitForFunction(() => !document.querySelector('.checkout-pending'));
+    // A click on the current branch asks for its history once: the host says nothing was checked out
+    // (unchanged), so the result does not ask a second time.
+    assert.equal(await page.evaluate(() => window.__sent.filter(m => m.type === 'getHistory').length), 1);
     // The graph draws main and origin/main at one commit as a single label with an origin chip.
     const labelsAt = async subject => (await page.locator('.history-row', { hasText: subject }).first().locator('.history-ref').allTextContents());
     assert.deepEqual(await labelsAt('add linked repositories'), ['1.0.0', 'mainorigin', 'feature/ahead', 'claude/review-dashboard-layout-at-narrow-widths']);
@@ -1004,6 +1007,42 @@ async function main() {
       window.__restoreHost();
       window.dispatchEvent(new MessageEvent('message', { data: { type: 'branchCheckoutResult', payload: { repositoryPath: payload.submodule, branch: payload.branch, success: false, cancelled: true, message: '' } } }));
     }, askedCheckout);
+    await page.waitForFunction(() => !document.querySelector('.checkout-pending'));
+    // A branch click holds the lock only until the host's checkout result, which now comes before
+    // the update from origin; branchUpdateResult never touches the lock.
+    await page.evaluate(() => {
+      const toHost = window.__postToHost;
+      window.__sent.length = 0;
+      window.__postToHost = m => m.type === 'checkoutBranch' ? window.__sent.push(m) : toHost(m);
+      window.__restoreHost = () => { window.__postToHost = toHost; };
+    });
+    await page.locator('.history-ref[data-branch="main"]').dblclick();
+    await page.waitForFunction(() => window.__sent.some(m => m.type === 'checkoutBranch'));
+    assert.ok(await page.locator('.checkout-pending').count() > 0, 'the click did not take the lock');
+    const lockedFor = await page.evaluate(() => window.__sent.find(m => m.type === 'checkoutBranch').payload);
+    await page.evaluate(payload => {
+      window.__restoreHost();
+      window.__sent.length = 0;
+      window.dispatchEvent(new MessageEvent('message', { data: { type: 'branchCheckoutResult', payload: { repositoryPath: payload.submodule, branch: payload.branch, success: true, update: 'pending', message: "Checked out 'main'" } } }));
+    }, lockedFor);
+    assert.equal(await page.locator('.checkout-pending').count(), 0, 'the lock outlived branchCheckoutResult');
+    // The page reloads the history and the refs, then reports when the new history is drawn.
+    await page.waitForFunction(() => window.__sent.some(m => m.type === 'dashboardTiming' && m.payload.name === 'branch history drawn'));
+    const countSent = type => page.evaluate(name => window.__sent.filter(m => m.type === name).length, type);
+    const update = (outcome, branch) => page.evaluate(({ payload, outcome, branch }) => {
+      window.dispatchEvent(new MessageEvent('message', { data: { type: 'branchUpdateResult', payload: { repositoryPath: payload.submodule, branch, update: outcome, message: outcome } } }));
+    }, { payload: lockedFor, outcome, branch });
+    await page.evaluate(() => { window.__sent.length = 0; });
+    // Outcomes that change no data, and a fast-forward of a branch the page no longer shows, reload nothing.
+    for (const outcome of ['up-to-date', 'ahead', 'diverged', 'blocked', 'local-only']) await update(outcome, lockedFor.branch);
+    await update('fast-forwarded', 'some-other-branch');
+    await page.evaluate(() => window.dispatchEvent(new MessageEvent('message', { data: { type: 'branchUpdateResult', payload: { repositoryPath: 'not-the-active-repository', branch: 'main', update: 'fast-forwarded', message: '' } } })));
+    assert.equal(await countSent('getHistory'), 0);
+    assert.equal(await countSent('getRepositoryRefs'), 0);
+    // A fast-forward of the branch it shows reloads the history and the refs, once.
+    await update('fast-forwarded', lockedFor.branch);
+    assert.equal(await countSent('getHistory'), 1);
+    assert.equal(await countSent('getRepositoryRefs'), 1);
     await page.waitForFunction(() => !document.querySelector('.checkout-pending'));
     // The history search still finds the commit through the ref name the label folded away.
     await page.fill('#dashboardSearch', 'origin/main');

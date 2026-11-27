@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.10.0] - 2026-11-26
+
+### Changed
+
+- Switching to a branch that exists on this machine is much faster. The click checks the branch out and draws its history first, without waiting for origin or for a running background fetch. Then the branch is fetched and fast-forwarded in the background. The history reloads when new commits arrive, and the repository list and the history are read again whenever the fetch moves origin's copy, even when the branch itself stays where it is. A branch that exists only on origin is still fetched before it is created.
+- The notifications follow the two steps. A checkout that works shows no message, and a failure still shows an error. The update shows "Updated x by N commits from origin" when commits arrive, a warning when the branch has diverged, is blocked by local changes, or origin could not be fetched, and nothing otherwise.
+- If you click another branch before the update of the first one ends, that update fetches `origin/<branch>` but never moves a branch, and a merge, rebase, cherry-pick or revert in progress stops it too.
+- Git commands that only read no longer take the index lock, so a refresh running during a checkout cannot make the checkout fail with "Unable to create index.lock". A branch update always fetches its own branch, so a branch deleted on origin is noticed.
+- With `repositoryManager.debug.timings` on, the Repository Manager Timings output also records each branch switch: the click, the checkout, the result, the history drawn, the end of the update, and every Git process.
+
 ## [3.9.0] - 2026-11-25
 
 ### Changed

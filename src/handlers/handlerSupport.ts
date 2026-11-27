@@ -6,6 +6,8 @@ import * as vscode from 'vscode';
 import { GitOperations } from '../gitOperations';
 import { PRManager } from '../prManager';
 import { ConflictExplainerHost } from '../services/conflictExplanation';
+import { BranchSwitchTracker } from '../services/branchService';
+import { OpenTimings } from '../openTimings';
 
 export interface MessageHandlerContext {
   panel: vscode.WebviewPanel;
@@ -20,6 +22,12 @@ export interface MessageHandlerContext {
   conflictExplainer?: ConflictExplainerHost;
   /** Shows a suggested resolution as a diff from the file as it is now. */
   showProposedFile?: (filePath: string, current: string, proposed: string) => Promise<void>;
+  /** Numbers the branch clicks of each repository; absent, the handler keeps its own. */
+  branchSwitches?: BranchSwitchTracker;
+  /** Waits for a running auto-fetch to end, so a branch fetch never races it for ref locks. */
+  settleAutoFetch?: (repositoryPath: string) => Promise<void>;
+  /** The timings recorder, present when repositoryManager.debug.timings is on. */
+  timings?: OpenTimings;
 }
 
 const PUSH_AFTER_COMMIT_KEY = 'repositoryManager.pushAfterCommit';
