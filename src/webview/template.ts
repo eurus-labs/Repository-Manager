@@ -309,6 +309,7 @@ function renderDashboard(repositories: RepositoryInfo[], workspaceFolders: Works
         <main class="dashboard-main">
           <div class="history-controls">
             <input id="dashboardIncludeRemotes" type="checkbox" checked hidden>
+            <input id="dashboardFirstParent" type="checkbox" hidden>
             <div class="commit-compare-status" id="commitCompareStatus" role="status" aria-live="polite" hidden></div>
             <div class="dashboard-search"><span>⌕</span><input id="dashboardSearch" type="text" placeholder="Search author, commit, message, or ref"></div>
           </div>
@@ -534,6 +535,7 @@ export function getHtmlForWebview(repositories: RepositoryInfo[], resourceUris: 
     <button type="button" role="menuitem" data-action="openBranchCompareModal" title="Show the changes from a base branch or tag to a target branch or tag">Compare branches…</button>
     <button type="button" role="menuitem" data-action="naturalUndo" id="naturalUndoButton" title="Say what to undo (e.g. &quot;undo my last 2 commits but keep the changes&quot;). Copilot picks one of the dashboard's actions; you see it, and that action's own confirmation, before anything runs">Undo…</button>
     <button type="button" role="menuitemcheckbox" data-action="toggleIncludeRemotes" id="includeRemotesItem" aria-checked="true" title="Include remote branches in the graph">Include remote branches</button>
+    <button type="button" role="menuitemcheckbox" data-action="toggleFirstParent" id="firstParentItem" aria-checked="false" title="Follow only the current line: each merge shows as one commit, with how many commits it brought in">First-parent only</button>
     <div class="menu-separator" role="separator"></div>
     <div class="menu-heading" role="presentation">Review with Copilot</div>
     <button type="button" role="menuitem" data-action="reviewRelease" data-scope="changes" title="Review the files the current branch changed since it left the default branch (main or master), as a pull request shows them. Committed changes only: use Review changes for uncommitted work">Review branch: changed files</button>

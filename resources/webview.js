@@ -164,6 +164,15 @@
     const box = document.getElementById('dashboardIncludeRemotes');
     const item = document.getElementById('includeRemotesItem');
     if (box && item) item.setAttribute('aria-checked', String(box.checked));
+    const firstParentBox = document.getElementById('dashboardFirstParent');
+    const firstParentItem = document.getElementById('firstParentItem');
+    if (firstParentBox && firstParentItem) firstParentItem.setAttribute('aria-checked', String(firstParentBox.checked));
+    // First-parent only shows one line, so the remote branches filter keeps its state but does nothing.
+    if (item) {
+      const unused = Boolean(firstParentBox && firstParentBox.checked);
+      if (unused) item.setAttribute('aria-disabled', 'true'); else item.removeAttribute('aria-disabled');
+      item.title = unused ? 'Not used while First-parent only is on' : 'Include remote branches in the graph';
+    }
   }
 
   // Review branch's menu: the changed files (the button's own review) or every file. Nothing is
@@ -1180,6 +1189,16 @@
     toggleIncludeRemotes: () => {
       const box = document.getElementById('dashboardIncludeRemotes');
       if (!box) return;
+      const item = document.getElementById('includeRemotesItem');
+      if (item && item.getAttribute('aria-disabled') === 'true') return;
+      box.checked = !box.checked;
+      syncIncludeRemotesItem();
+      box.dispatchEvent(new Event('change'));
+    },
+    // First parent only: the history follows the current line, each merge one commit.
+    toggleFirstParent: () => {
+      const box = document.getElementById('dashboardFirstParent');
+      if (!box) return;
       box.checked = !box.checked;
       syncIncludeRemotesItem();
       box.dispatchEvent(new Event('change'));
@@ -1596,7 +1615,7 @@
     return '';
   }
 
-  function renderHistoryRefs(refs, interactive) {
+  function renderHistoryRefs(refs, interactive, tone) {
     const list = refs || [];
     // origin/x at the commit where x is also drawn reads as one label with an origin chip.
     const isLocal = ref => ref.kind === 'head' || ref.kind === 'local-branch';
@@ -1608,11 +1627,14 @@
       const branch = interactive ? checkoutBranchFromRef(ref) : '';
       const merged = isLocal(ref) && mergedNames.has(ref.name);
       const chip = merged ? '<span class="ref-origin">origin</span>' : '';
-      if (!branch) return `<span class="${className}" title="${escapeHtml(ref.name)}">${escapeHtml(ref.name)}${chip}</span>`;
+      // A branch label carries its lane's tone as a dot; tags and the origin/HEAD pointer have none.
+      const isBranch = isLocal(ref) || (ref.kind === 'remote-branch' && !/(^|\/)HEAD$/.test(ref.name));
+      const dot = isBranch && Number.isInteger(tone) ? `<span class="ref-dot graph-lane-${tone % 8}" aria-hidden="true"></span>` : '';
+      if (!branch) return `<span class="${className}" title="${escapeHtml(ref.name)}">${dot}${escapeHtml(ref.name)}${chip}</span>`;
       const title = merged
         ? `${ref.name} and origin/${ref.name} are at this commit. Double-click to check out ${ref.name} and update it from origin`
         : `Double-click to checkout ${branch}`;
-      return `<button class="${className}" type="button" data-branch="${escapeHtml(branch)}" title="${escapeHtml(title)}">${escapeHtml(ref.name)}${chip}</button>`;
+      return `<button class="${className}" type="button" data-branch="${escapeHtml(branch)}" title="${escapeHtml(title)}">${dot}${escapeHtml(ref.name)}${chip}</button>`;
     }).join('');
   }
 
@@ -1819,9 +1841,11 @@
     if (!activeDashboardRepository) return;
     const includeRemotes = document.getElementById('dashboardIncludeRemotes');
     const search = document.getElementById('dashboardSearch');
+    const firstParent = document.getElementById('dashboardFirstParent');
     historyState.setFilters(activeDashboardRepository, {
       includeRemotes: Boolean(includeRemotes && includeRemotes.checked),
-      search: search ? search.value : ''
+      search: search ? search.value : '',
+      firstParent: Boolean(firstParent && firstParent.checked)
     });
   }
 
@@ -1830,6 +1854,8 @@
     const includeRemotes = document.getElementById('dashboardIncludeRemotes');
     const search = document.getElementById('dashboardSearch');
     if (includeRemotes) includeRemotes.checked = filters.includeRemotes;
+    const firstParent = document.getElementById('dashboardFirstParent');
+    if (firstParent) firstParent.checked = filters.firstParent;
     syncIncludeRemotesItem();
     if (search) search.value = filters.search;
   }
@@ -1930,6 +1956,7 @@
       search: search ? search.value.trim() : '',
       branch: filters.branch || undefined,
       includeRemotes: Boolean(includeRemotes && includeRemotes.checked),
+      firstParent: filters.firstParent,
       append: Boolean(append),
       requestId
     });
@@ -2008,6 +2035,10 @@
       const currentX = window.RepositoryHistoryGraph.laneX(layout.lane);
       // Colours follow branches, not columns: each branch path keeps its colour.
       const tone = value => `graph-lane-${(value === undefined ? 0 : value) % 8}`;
+      // The segment ties each part to its branch line, for the hover and focus highlight.
+      const seg = value => (value === undefined ? '' : ` data-segment="${value}"`);
+      const beforeSegments = layout.beforeSegments || [];
+      const afterSegments = layout.afterSegments || [];
       const color = layout.color === undefined ? layout.lane : layout.color;
       const beforeColors = layout.beforeColors || [];
       const afterColors = layout.afterColors || [];
@@ -2016,37 +2047,76 @@
         if (lane === layout.lane) continue;
         if (layout.before[lane] && layout.after[lane] && layout.before[lane] === layout.after[lane]) {
           const x = window.RepositoryHistoryGraph.laneX(lane);
-          paths.push(`<path class="graph-edge ${tone(afterColors[lane] === undefined ? lane : afterColors[lane])}" d="M ${x} ${top} V ${bottom}"/>`);
+          paths.push(`<path class="graph-edge ${tone(afterColors[lane] === undefined ? lane : afterColors[lane])}"${seg(afterSegments[lane])} d="M ${x} ${top} V ${bottom}"/>`);
         }
       }
 
       if (!layout.startsHere) {
-        paths.push(`<path class="graph-edge ${tone(color)}" d="M ${currentX} ${top} V ${middle}"/>`);
+        paths.push(`<path class="graph-edge ${tone(color)}"${seg(layout.segment)} d="M ${currentX} ${top} V ${middle}"/>`);
       }
       // Other children of this commit arrive from their own columns.
       (layout.incomingLanes || []).forEach(lane => {
         const x = window.RepositoryHistoryGraph.laneX(lane);
-        paths.push(`<path class="graph-edge ${tone(beforeColors[lane] === undefined ? lane : beforeColors[lane])}" d="${laneCurve(x, top, currentX, middle)}"/>`);
+        paths.push(`<path class="graph-edge ${tone(beforeColors[lane] === undefined ? lane : beforeColors[lane])}"${seg(beforeSegments[lane])} d="${laneCurve(x, top, currentX, middle)}"/>`);
       });
       layout.parentLanes.forEach((parentLane, parentIndex) => {
         const parentX = window.RepositoryHistoryGraph.laneX(parentLane);
         const edgeColor = layout.parentColors ? layout.parentColors[parentIndex] : parentIndex === 0 ? layout.lane : parentLane;
+        const edgeSegment = (layout.parentSegments || [])[parentIndex];
         paths.push(parentLane === layout.lane
-          ? `<path class="graph-edge ${tone(edgeColor)}" d="M ${currentX} ${middle} V ${bottom}"/>`
-          : `<path class="graph-edge ${tone(edgeColor)}" d="${laneCurve(currentX, middle, parentX, bottom)}"/>`);
+          ? `<path class="graph-edge ${tone(edgeColor)}"${seg(edgeSegment)} d="M ${currentX} ${middle} V ${bottom}"/>`
+          : `<path class="graph-edge ${tone(edgeColor)}"${seg(edgeSegment)} d="${laneCurve(currentX, middle, parentX, bottom)}"/>`);
       });
 
       const decorated = (commit.refs || []).length > 0 || layout.isMerge;
       nodes.push(layout.isHead
-        ? `<circle class="graph-node graph-node-head ${tone(color)}" cx="${currentX}" cy="${middle}" r="6"/>`
+        ? `<circle class="graph-node graph-node-head ${tone(color)}"${seg(layout.segment)} cx="${currentX}" cy="${middle}" r="6"/>`
         : decorated
-          ? `<circle class="graph-node ${tone(color)}" cx="${currentX}" cy="${middle}" r="5.5"/><circle class="graph-node-core ${tone(color)}" cx="${currentX}" cy="${middle}" r="2.3"/>`
-          : `<circle class="graph-node-core ${tone(color)}" cx="${currentX}" cy="${middle}" r="4"/>`);
-      controls.push(`<g class="graph-node-control" data-action="toggleCommitCompareNode" data-commit="${escapeHtml(commit.hash)}" transform="translate(${currentX} ${middle})" role="button" tabindex="0" aria-label="Select commit ${escapeHtml(commit.shortHash)} for comparison" aria-pressed="false" data-marker=""><title>Select ${escapeHtml(commit.shortHash)} for comparison</title><circle class="graph-node-hit" r="12"/><circle class="graph-node-selection" r="10"/><text class="graph-node-marker" text-anchor="middle" dominant-baseline="central"></text></g>`);
+          ? `<circle class="graph-node ${tone(color)}"${seg(layout.segment)} cx="${currentX}" cy="${middle}" r="5.5"/><circle class="graph-node-core ${tone(color)}"${seg(layout.segment)} cx="${currentX}" cy="${middle}" r="2.3"/>`
+          : `<circle class="graph-node-core ${tone(color)}"${seg(layout.segment)} cx="${currentX}" cy="${middle}" r="4"/>`);
+      controls.push(`<g class="graph-node-control"${seg(layout.segment)} data-action="toggleCommitCompareNode" data-commit="${escapeHtml(commit.hash)}" transform="translate(${currentX} ${middle})" role="button" tabindex="0" aria-label="Select commit ${escapeHtml(commit.shortHash)} for comparison" aria-pressed="false" data-marker=""><title>Select ${escapeHtml(commit.shortHash)} for comparison</title><circle class="graph-node-hit" r="12"/><circle class="graph-node-selection" r="10"/><text class="graph-node-marker" text-anchor="middle" dominant-baseline="central"></text></g>`);
       top = bottom;
     });
     return `<svg class="history-graph-overlay" width="${graphModel.width}" height="${top}" viewBox="0 0 ${graphModel.width} ${top}">${paths.join('')}${nodes.join('')}${controls.join('')}</svg>`;
   }
+
+  // First parent only: a merge says how many commits it brought in. A merge the host did not count
+  // (past the limit, or the count failed) has no badge.
+  function renderMergeBadge(commit, firstParent) {
+    if (!firstParent || !commit.parentHashes || commit.parentHashes.length < 2 || !Number.isInteger(commit.mergeCount)) return '';
+    const title = `Merge: brought in ${commit.mergeCount} ${commit.mergeCount === 1 ? 'commit' : 'commits'}`;
+    return `<span class="history-merge-badge" title="${escapeHtml(title)}">merge · ${commit.mergeCount}</span>`;
+  }
+
+  // The branch line pointed at or focused: its segment's parts are marked, the others dimmed. Class
+  // toggles only; the graph is not drawn again.
+  let highlightedSegment = null;
+  function applyHistoryHighlight() {
+    const overlay = document.querySelector('#dashboardHistory .history-graph-overlay');
+    if (!overlay) return;
+    const id = highlightedSegment;
+    overlay.querySelectorAll('.graph-edge, .graph-node, .graph-node-core').forEach(item => {
+      const active = id !== null && item.getAttribute('data-segment') === id;
+      item.classList.toggle('graph-lane-active', active);
+      item.classList.toggle('graph-dim', id !== null && !active);
+    });
+  }
+
+  function setHistoryHighlight(segment) {
+    if (segment === highlightedSegment) return;
+    highlightedSegment = segment;
+    applyHistoryHighlight();
+  }
+
+  function historySegmentOf(target) {
+    const part = target && typeof target.closest === 'function' ? target.closest('#dashboardHistory [data-segment]') : null;
+    return part ? part.getAttribute('data-segment') : null;
+  }
+
+  document.body.addEventListener('mouseover', event => setHistoryHighlight(historySegmentOf(event.target)));
+  document.body.addEventListener('mouseout', event => { if (!event.relatedTarget) setHistoryHighlight(null); });
+  document.body.addEventListener('focusin', event => setHistoryHighlight(historySegmentOf(event.target)));
+  document.body.addEventListener('focusout', event => setHistoryHighlight(historySegmentOf(event.relatedTarget)));
 
   function renderGraphCell() {
     return '<span class="history-graph-cell" aria-hidden="true"></span>';
@@ -2067,6 +2137,7 @@
       if (!overlay) return;
       overlay.outerHTML = renderHistoryGraph(historyState.loadedCommits(), loadedHistoryGraphModel, heights);
       historyGraphGeometrySignature = signature;
+      applyHistoryHighlight();
       updateCommitCompareUI();
     });
   }
@@ -2091,15 +2162,18 @@
     if (appendError) appendError.remove(); // the page that failed has loaded since
     const { renderedCount, addedCommits } = accepted;
     const shownCommits = historyState.loadedCommits();
-    const graphModel = window.RepositoryHistoryGraph.buildGraphModel(shownCommits, { upstream: historyState.loadedUpstream() });
+    const firstParent = getDashboardFilters(activeDashboardRepository).firstParent;
+    const graphModel = window.RepositoryHistoryGraph.buildGraphModel(shownCommits, { upstream: historyState.loadedUpstream(), firstParent });
     loadedHistoryGraphModel = graphModel;
     historyGraphGeometrySignature = '';
     const historyRegion = history.closest('.history-region');
     historyGraphWidth = graphModel.width;
     if (historyRegion) historyRegion.style.setProperty('--graph-width', `${graphModel.width}px`);
-    const renderRows = commits => commits.map(commit => {
-      const refs = renderHistoryRefs(commit.refs, true);
-      return `<div class="history-row" data-action="selectHistoryCommit" data-commit="${escapeHtml(commit.hash)}" tabindex="0" title="Ctrl+click or Shift+click to compare">
+    const renderRows = (commits, firstIndex = 0) => commits.map((commit, index) => {
+      const layout = graphModel.rows[firstIndex + index] || {};
+      const refs = renderHistoryRefs(commit.refs, true, layout.color) + renderMergeBadge(commit, firstParent);
+      const segment = layout.segment === undefined ? '' : ` data-segment="${layout.segment}"`;
+      return `<div class="history-row" data-action="selectHistoryCommit" data-commit="${escapeHtml(commit.hash)}"${segment} tabindex="0" title="Ctrl+click or Shift+click to compare">
         ${renderGraphCell()}
         <span class="history-message">${refs ? `<span class="history-refs">${refs}</span>` : ''}<button class="history-subject" type="button" data-action="selectHistoryCommit" data-commit="${escapeHtml(commit.hash)}">${escapeHtml(commit.subject)}</button></span>
         <span class="history-author" title="${escapeHtml(commit.authorEmail)}">${escapeHtml(commit.authorName)}</span>
@@ -2116,9 +2190,10 @@
     if (append && content && content.querySelectorAll('.history-row').length === renderedCount) {
       // Load more adds only the new rows; the graph is redrawn once, from the rows' real heights,
       // by the geometry pass in the next frame. Re-rendering every row made each page slower.
-      if (addedCommits.length) content.insertAdjacentHTML('beforeend', renderRows(addedCommits));
+      if (addedCommits.length) content.insertAdjacentHTML('beforeend', renderRows(addedCommits, renderedCount));
       scheduleHistoryGraphGeometry();
     } else {
+      highlightedSegment = null; // a new page is drawn without a highlight; the next hover marks it again
       const rows = renderRows(shownCommits);
       const uncommitted = uncommittedRowHtml();
       uncommittedRowRendered = Boolean(uncommitted);
@@ -2699,7 +2774,7 @@
     if (!e.target.closest('#summaryModelMenu, #summaryModelButton')) hideSummaryModelMenu(false);
     const moreItem = e.target.closest('#dashboardMoreMenu [data-action]');
     if (!e.target.closest('#dashboardMoreMenu, #dashboardMoreButton')) hideDashboardMoreMenu(false);
-    else if (moreItem && moreItem.dataset.action !== 'toggleIncludeRemotes') hideDashboardMoreMenu(false);
+    else if (moreItem && moreItem.dataset.action !== 'toggleIncludeRemotes' && moreItem.dataset.action !== 'toggleFirstParent') hideDashboardMoreMenu(false);
     let el = e.target;
 
     // Walk up the DOM tree to find element with data-action
@@ -3570,6 +3645,14 @@
   const dashboardIncludeRemotes = document.getElementById('dashboardIncludeRemotes');
   if (dashboardIncludeRemotes) {
     dashboardIncludeRemotes.addEventListener('change', function () {
+      captureDashboardFilters();
+      saveState();
+      requestDashboardHistory(0, false);
+    });
+  }
+  const dashboardFirstParent = document.getElementById('dashboardFirstParent');
+  if (dashboardFirstParent) {
+    dashboardFirstParent.addEventListener('change', function () {
       captureDashboardFilters();
       saveState();
       requestDashboardHistory(0, false);

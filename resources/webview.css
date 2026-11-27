@@ -1650,14 +1650,14 @@ button.reference-detail-item:hover { background: var(--bg-hover); }
 }
 
 .graph-edge { fill: none; stroke-width: 2; stroke-linecap: round; }
-.graph-lane-0 { stroke: var(--warning); }
-.graph-lane-1 { stroke: var(--accent); }
-.graph-lane-2 { stroke: #a48bf0; }
-.graph-lane-3 { stroke: var(--info); }
-.graph-lane-4 { stroke: var(--error); }
-.graph-lane-5 { stroke: #d48fd5; }
-.graph-lane-6 { stroke: #6fc2e8; }
-.graph-lane-7 { stroke: #a9c36b; }
+.graph-lane-0 { stroke: var(--warning); --lane-color: var(--warning); }
+.graph-lane-1 { stroke: var(--accent); --lane-color: var(--accent); }
+.graph-lane-2 { stroke: #a48bf0; --lane-color: #a48bf0; }
+.graph-lane-3 { stroke: var(--info); --lane-color: var(--info); }
+.graph-lane-4 { stroke: var(--error); --lane-color: var(--error); }
+.graph-lane-5 { stroke: #d48fd5; --lane-color: #d48fd5; }
+.graph-lane-6 { stroke: #6fc2e8; --lane-color: #6fc2e8; }
+.graph-lane-7 { stroke: #a9c36b; --lane-color: #a9c36b; }
 .graph-node { fill: var(--bg-primary); stroke-width: 2; }
 /* HEAD: a hollow, heavier ring, as in Git Graph. */
 .graph-node-head { fill: var(--bg-primary); stroke-width: 3; }
@@ -1807,6 +1807,37 @@ body.vscode-high-contrast .graph-node-control[data-marker="T"] .graph-node-hit {
 }
 
 .history-ref.ref-tag { color: var(--vscode-charts-purple, #c5b5ff); background: rgba(164, 139, 240, .14); }
+
+/* The branch's tone in the graph, as a bar along the label's left edge: the label names the line.
+   It sits in the left padding and takes no width, so labels wrap exactly as they did without it. */
+.history-ref { position: relative; }
+
+.history-ref .ref-dot {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 3px;
+  background: var(--lane-color);
+}
+
+/* A merge in the first-parent view: one commit, with the number of commits it brought in. */
+.history-merge-badge {
+  flex: none;
+  align-self: center;
+  padding: 0 5px;
+  border-radius: 4px;
+  color: var(--text-secondary);
+  background: var(--bg-hover);
+  font-size: 9px;
+  line-height: 14px;
+  white-space: nowrap;
+}
+
+/* Pointing at or focusing a commit marks its branch line and dims the others. */
+.graph-edge { transition: opacity .12s; }
+.graph-edge.graph-lane-active { stroke-width: 3.5; }
+.graph-dim { opacity: .22; }
 
 /* The chip sits on a branch label of any colour, so it brings its own background. */
 .history-ref .ref-origin {
@@ -3193,3 +3224,6 @@ body.sidebar-view { overflow: hidden; background: var(--vscode-sideBar-backgroun
 #commitContent.working-tree { grid-template-columns: minmax(0, 1fr) !important; }
 .sidebar-change-row.shown { background: var(--vscode-list-inactiveSelectionBackground, rgba(127, 127, 127, 0.18)); }
 .sidebar-change-row.shown .sidebar-change-name { font-weight: 600; }
+
+/* Include remote branches keeps its state but is not used while First-parent only is on. */
+#includeRemotesItem[aria-disabled="true"] { opacity: .5; cursor: not-allowed; }
