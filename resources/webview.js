@@ -1828,15 +1828,15 @@
     const chips = Array.from(history.querySelectorAll('.history-ref-more'));
     chips.forEach(chip => {
       chip.hidden = true;
+      // Measured at natural width: neither the share limit nor shrinking applies while measuring.
+      chip.parentElement.classList.add('ref-measuring');
       chip.parentElement.querySelectorAll('.ref-folded').forEach(pill => pill.classList.remove('ref-folded'));
     });
     const plans = chips.map(chip => {
       const container = chip.parentElement;
       const pills = Array.from(container.querySelectorAll('.history-ref'));
       const widths = pills.map(pill => {
-        const name = pill.querySelector('.ref-name');
-        const clipped = name ? Math.max(0, name.scrollWidth - name.clientWidth) : 0;
-        return Math.min(pill.offsetWidth + clipped, HISTORY_REF_MAX_WIDTH);
+        return Math.min(pill.offsetWidth, HISTORY_REF_MAX_WIDTH);
       });
       const badge = container.querySelector('.history-merge-badge');
       return { chip, pills, widths, messageWidth: container.parentElement.clientWidth, extra: badge ? badge.offsetWidth + HISTORY_REF_GAP : 0 };
@@ -1855,6 +1855,7 @@
       }
       const folded = plan.pills.slice(visible);
       folded.forEach(pill => pill.classList.add('ref-folded'));
+      plan.chip.parentElement.classList.remove('ref-measuring');
       plan.chip.hidden = folded.length === 0;
       plan.chip.textContent = folded.length ? `+${folded.length}` : '';
       plan.chip.title = folded.map(pill => pill.dataset.refName || pill.textContent).join(', ');

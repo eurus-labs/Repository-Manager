@@ -2301,10 +2301,12 @@ body.vscode-high-contrast .graph-node-control[data-marker="T"] .graph-node-hit {
 
 .history-refs .history-ref.ref-head { font-weight: 700; }
 
-/* On a light background the pale tones need more ink: darken them toward the text colour. */
-body.vscode-light .history-refs .history-ref.ref-tone { color: color-mix(in srgb, var(--lane-color) 70%, var(--text-primary)); }
+/* On a light background the pale tones cannot carry text: the text and icons take the theme colour, the tone stays on the border and fill. */
+body.vscode-light .history-refs .history-ref.ref-tone { color: var(--text-primary); }
 
 .history-refs .history-ref.ref-folded { display: none; }
+.history-refs.ref-measuring { max-width: none; }
+.history-refs.ref-measuring > .history-ref:first-child { flex-shrink: 0; }
 
 .history-ref-more {
   flex: none;
