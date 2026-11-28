@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.14.0] - 2026-11-28
+
+### Changed
+
+- **A branch keeps its colour when you check it out.** The checked-out line no longer turns amber and the branch you leave no longer changes colour: every branch has the colour of its name, in the graph, its labels and the commit details. The checked-out line is still in the first column, with an outlined tip row, a bold label and, new, a ring around its node. A detached HEAD stays amber.
+- In the commit details, the **branch labels and the "Contained in" chips look like the labels in the history**: an outlined pill in the branch's colour, with a cloud for a branch on `origin` and a monitor for one on this machine, in place of the "origin" text.
+
+### Fixed
+
+- In a short window, **the Changed files list was pushed out of view** by a tall commit header. The Review changes and Summarize changes buttons now stay on the title row down to 720 px, and the labels and "Contained in" share one row: the branches that do not fit fold into a "+N" button, which shows the rest in place and names them in its tooltip.
+
 ## [3.13.0] - 2026-11-27
 
 ### Changed

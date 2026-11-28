@@ -843,17 +843,23 @@ select {
 .commit-summary-copy span,
 .commit-summary-copy p { color: var(--text-secondary); font-size: 10px; }
 .commit-summary > code { justify-self: end; color: var(--text-muted); font-size: 10px; }
-.commit-summary-refs { grid-column: 2 / -1; }
-.commit-summary-contained { grid-column: 2 / -1; }
-/* Narrow: the actions move down to the refs row, so the title keeps its width. */
-@media (max-width: 900px) {
+.commit-summary-labels {
+  grid-column: 2 / -1;
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  overflow: hidden;
+}
+/* The Review and Summarize buttons stay on the title row down to 720px; under it they move down, so the title keeps its width. */
+@media (max-width: 719px) {
   .commit-header { grid-template-columns: auto minmax(0, 1fr) auto; }
   .commit-summary > .detail-placeholder,
   .commit-summary > .dashboard-loading,
   .commit-summary > .dashboard-error { grid-column: 1 / -1; }
-  .commit-header-actions { grid-column: 3; grid-row: 2; }
-  .commit-summary-refs { grid-column: 2; grid-row: 2; }
-  .commit-summary-contained { grid-column: 1 / -1; grid-row: 3; }
+  .commit-header-actions { grid-column: 2 / -1; grid-row: 2; justify-content: flex-start; }
+  .commit-summary-labels { grid-column: 1 / -1; grid-row: 3; }
 }
 
 .commit-content {
@@ -1669,6 +1675,8 @@ button.reference-detail-item:hover { background: var(--bg-hover); }
 .graph-node { fill: color-mix(in srgb, var(--lane-color) 85%, transparent); stroke-width: 2; }
 /* HEAD: a heavier ring. */
 .graph-node-head { stroke-width: 3; }
+/* HEAD's node has a ring around it in its line's tone, beyond the node's own outline; it never takes pointer events. */
+.graph-node-head-ring { fill: none; stroke-width: 1.5; pointer-events: none; }
 .graph-node-initials {
   fill: #14161a;
   font-size: 8.5px;
@@ -1862,50 +1870,47 @@ body.vscode-high-contrast .graph-node-control[data-marker="T"] .graph-node-hit {
 .graph-edge.graph-lane-active { stroke-width: 3.5; }
 .graph-dim { opacity: .4; }
 
-/* Contained in: the branches that hold the shown commit. A chip names a branch and carries its line's tone as a
-   bar on its left edge, like a branch label in the history. */
+/* Contained in: the branches that hold the shown commit, on one line after the commit's own labels. A chip is the same
+   outlined pill as a history label: the line's tone on its border, a cloud for origin, a monitor for this machine. The
+   chips that do not fit fold into "+N" (foldContainingLine); an expanded line wraps. */
 .commit-summary-contained {
   display: flex;
-  flex-wrap: wrap;
+  flex: 1 1 0;
+  flex-wrap: nowrap;
   align-items: center;
   gap: 4px;
   min-width: 0;
+  overflow: hidden;
   color: var(--text-secondary);
   font-size: 10px;
 }
+.commit-summary-contained.contained-expanded { flex-wrap: wrap; overflow: visible; }
+.commit-summary-contained > * { flex: none; }
 .contained-label,
-.contained-note { color: var(--text-muted); }
+.contained-note { color: var(--text-muted); white-space: nowrap; }
 .contained-error { color: var(--tone-warn, var(--warning)); }
 .contained-chip {
-  position: relative;
-  display: inline-block;
-  max-width: 180px;
-  overflow: hidden;
-  padding: 1px 5px 1px 7px;
-  border: 1px solid currentColor;
-  border-radius: 8px;
-  color: var(--tone-info);
-  background: rgba(139, 167, 240, .12);
-  text-overflow: ellipsis;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 220px;
+  height: 20px;
+  padding: 0 6px;
+  border: 1px solid var(--lane-color);
+  border-radius: 5px;
+  color: var(--lane-color);
+  background: color-mix(in srgb, var(--lane-color) 12%, transparent);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 18px;
   white-space: nowrap;
 }
-.contained-chip .chip-tone {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  left: 0;
-  width: 3px;
-  background: var(--lane-color);
-}
-.contained-chip .ref-origin {
-  margin-left: 4px;
-  padding: 0 4px;
-  border-radius: 4px;
-  color: var(--ref-origin);
-  background: var(--bg-sunken);
-  font-weight: 500;
-}
+.contained-chip .ref-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.contained-chip .ref-icon { flex: none; }
+.contained-chip.ref-folded { display: none; }
+body.vscode-light .contained-chip { color: var(--text-primary); }
 .contained-current { font-weight: 600; }
+.contained-more[hidden] { display: none; }
 .contained-more { padding: 0; border: 0; color: var(--vscode-textLink-foreground, var(--accent)); background: none; font: inherit; text-decoration: underline; cursor: pointer; }
 
 .sidebar-ref-item small.ref-origin { color: var(--ref-origin); }
@@ -2382,6 +2387,13 @@ body.vscode-light .history-refs .history-ref.ref-tone { color: var(--text-primar
 }
 
 .history-ref-more[hidden] { display: none; }
+
+/* The commit details' own labels: the same pills, on the shared row; they never wrap and give way to the chips last. */
+.history-refs.commit-summary-refs {
+  flex: 0 1 auto;
+  max-width: 50%;
+  overflow: hidden;
+}
 
 .history-refs .history-ref:focus-visible { outline-offset: -2px; }
 

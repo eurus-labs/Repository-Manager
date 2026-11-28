@@ -1804,7 +1804,9 @@
   }
 
   // counts: { ahead, behind } of the repository the history shows.
-  function renderHistoryRefs(refs, interactive, tone, counts) {
+  // `tone` is one tone for the row, or a function of the ref (the commit details tone each label by its own name);
+  // `fold` adds the "+N" chip the history row folds into (the details do not fold their labels).
+  function renderHistoryRefs(refs, interactive, tone, counts, fold = true) {
     const list = refs || [];
     // origin/x at the commit where x is also drawn reads as one label with a cloud icon.
     const isLocal = ref => ref.kind === 'head' || ref.kind === 'local-branch';
@@ -1816,8 +1818,9 @@
       const merged = isLocal(ref) && mergedNames.has(ref.name);
       // A branch label carries its line's tone as its border and text; tags and the origin/HEAD pointer have none.
       const isBranch = isLocal(ref) || (ref.kind === 'remote-branch' && !/(^|\/)HEAD$/.test(ref.name));
-      const toned = isBranch && Number.isInteger(tone);
-      const className = `history-ref ref-${escapeHtml(ref.kind)}${toned ? ` ref-tone graph-lane-${tone % 8}` : ''}${ref.kind === 'remote-branch' && !isBranch ? ' ref-plain' : ''}`;
+      const refTone = typeof tone === 'function' ? tone(ref) : tone;
+      const toned = isBranch && Number.isInteger(refTone);
+      const className = `history-ref ref-${escapeHtml(ref.kind)}${toned ? ` ref-tone graph-lane-${refTone % 8}` : ''}${ref.kind === 'remote-branch' && !isBranch ? ' ref-plain' : ''}`;
       const cloud = merged || (ref.kind === 'remote-branch' && isBranch && ref.name.startsWith('origin/')) ? REF_ICON_CLOUD : '';
       const monitor = isLocal(ref) ? REF_ICON_LOCAL : '';
       const isCurrent = ref.isCurrent || ref.kind === 'head';
@@ -1835,7 +1838,7 @@
       return `<button class="${className}" type="button" data-branch="${escapeHtml(branch)}" data-ref-name="${escapeHtml(ref.name)}"${drag} title="${escapeHtml(title)}">${inner}</button>`;
     });
     // Labels never wrap: the ones that do not fit fold into this chip (see foldHistoryRefs).
-    return pills.join('') + (pills.length > 1 ? '<span class="history-ref-more" hidden></span>' : '');
+    return pills.join('') + (fold && pills.length > 1 ? '<span class="history-ref-more" hidden></span>' : '');
   }
 
   // Labels share at most 55% of the message column; the rest fold into a "+N" chip whose title lists
@@ -2320,7 +2323,10 @@
       });
 
       // Every commit is one filled circle in its line's tone with the author's initials; HEAD's is heavier.
-      nodes.push(`<circle class="graph-node${layout.isHead ? ' graph-node-head' : ''} ${tone(color)}"${seg(layout.segment)} cx="${currentX}" cy="${middle}" r="8"/><text class="graph-node-core graph-node-initials"${seg(layout.segment)} x="${currentX}" y="${middle}" text-anchor="middle" dominant-baseline="central">${escapeHtml(authorInitials(commit.authorName))}</text>`);
+      // HEAD's node is ringed in its line's tone (a branch keeps its colour, so the ring, the outlined tip row and the
+      // bold label mark the checked-out line). Drawn before the controls, so hover and selection rings stay on top.
+      const headRing = layout.isHead ? `<circle class="graph-node-head-ring ${tone(color)}"${seg(layout.segment)} cx="${currentX}" cy="${middle}" r="11.5"/>` : '';
+      nodes.push(`<circle class="graph-node${layout.isHead ? ' graph-node-head' : ''} ${tone(color)}"${seg(layout.segment)} cx="${currentX}" cy="${middle}" r="8"/><text class="graph-node-core graph-node-initials"${seg(layout.segment)} x="${currentX}" y="${middle}" text-anchor="middle" dominant-baseline="central">${escapeHtml(authorInitials(commit.authorName))}</text>${headRing}`);
       controls.push(`<g class="graph-node-control"${seg(layout.segment)} data-action="toggleCommitCompareNode" data-commit="${escapeHtml(commit.hash)}" transform="translate(${currentX} ${middle})" role="button" tabindex="0" aria-label="Select commit ${escapeHtml(commit.shortHash)} for comparison" aria-pressed="false" data-marker=""><title>Select ${escapeHtml(commit.shortHash)} for comparison</title><circle class="graph-node-hit" r="12"/><circle class="graph-node-selection" r="10"/><text class="graph-node-marker" text-anchor="middle" dominant-baseline="central"></text></g>`);
       top = bottom;
     });
@@ -2928,6 +2934,8 @@
   const containingBranches = new Map();
   const containingExpanded = new Set();
   const CONTAINING_LIMIT = 12;
+  const CONTAINING_GAP = 4;
+  const CONTAINING_MORE_WIDTH = 30;
   let containingRequestId = 0;
 
   function containingKey(hash, repositoryPath) {
@@ -2961,25 +2969,59 @@
     const all = containingExpanded.has(key);
     const shown = all ? branches : branches.slice(0, CONTAINING_LIMIT);
     const chips = shown.map(branch => {
-      // The checked-out branch takes HEAD's tone 0; the others the tone their line has in the graph.
+      // Every chip takes the tone its line has in the graph, the checked-out branch included.
       const bare = branch.kind === 'remote' ? branch.name.slice(branch.name.indexOf('/') + 1) : branch.name;
-      const tone = branch.current ? 0 : window.RepositoryHistoryGraph.toneForName(bare);
+      const tone = window.RepositoryHistoryGraph.toneForName(bare);
       const title = branch.current ? `${branch.name} is checked out`
         : branch.onOrigin ? `${branch.name} and origin/${branch.name} contain this commit`
           : `${branch.name} contains this commit`;
-      const origin = branch.onOrigin ? '<span class="ref-origin">origin</span>' : '';
-      return `<span class="contained-chip${branch.current ? ' contained-current' : ''}" title="${escapeHtml(title)}"><span class="chip-tone graph-lane-${tone}" aria-hidden="true"></span>${escapeHtml(branch.name)}${origin}</span>`;
+      // The same pill as a history label: a cloud for origin, a monitor for this machine, no "origin" text.
+      const cloud = branch.onOrigin || branch.kind === 'remote' ? REF_ICON_CLOUD : '';
+      const monitor = branch.kind === 'remote' ? '' : REF_ICON_LOCAL;
+      return `<span class="contained-chip ref-tone graph-lane-${tone}${branch.current ? ' contained-current' : ''}" data-ref-name="${escapeHtml(branch.name)}" title="${escapeHtml(title)}">${cloud}${monitor}<span class="ref-name">${escapeHtml(branch.name)}</span></span>`;
     }).join('');
-    const more = branches.length - shown.length;
-    const button = more > 0
-      ? `<button type="button" class="link-button contained-more" data-action="showAllContainingBranches" data-commit="${escapeHtml(hash)}">+${more} more</button>`
-      : '';
+    // The chips that do not fit the line fold into this button (foldContainingLine); it shows them all in place.
+    const hidden = branches.length - shown.length;
+    const button = all ? ''
+      : `<button type="button" class="link-button contained-more" data-action="showAllContainingBranches" data-commit="${escapeHtml(hash)}"${hidden > 0 ? '' : ' hidden'}>${hidden > 0 ? `+${hidden}` : ''}</button>`;
     return `<span class="contained-label">Contained in ${branches.length} ${branches.length === 1 ? 'branch' : 'branches'}</span>${chips}${button}`;
+  }
+
+  // One non-wrapping line: the chips that do not fit fold into "+N" (visibleRefCount, as the history labels do). The
+  // button counts the folded chips and those past the limit; its title names them. An expanded line wraps and shows all.
+  function foldContainingLine(line) {
+    if (!line) return;
+    const hash = line.dataset.commit;
+    const button = line.querySelector('.contained-more');
+    const chips = Array.from(line.querySelectorAll('.contained-chip'));
+    const entry = containingBranches.get(containingKey(hash));
+    const all = containingExpanded.has(containingKey(hash));
+    line.classList.toggle('contained-expanded', all);
+    chips.forEach(chip => chip.classList.remove('ref-folded'));
+    if (!button || all || !entry || entry.status !== 'done') return;
+    const beyond = entry.branches.slice(CONTAINING_LIMIT).map(branch => branch.name);
+    // Measured with every chip shown and the button out of the way.
+    button.hidden = true;
+    const label = line.querySelector('.contained-label');
+    const budget = line.clientWidth - (label ? label.offsetWidth + CONTAINING_GAP : 0);
+    // Chips past the limit are not drawn: each counts as one that never fits, so the button keeps its room.
+    const widths = chips.map(chip => chip.offsetWidth).concat(beyond.map(() => budget + 1));
+    const fits = Math.min(chips.length, window.RepositoryHistoryGraph.visibleRefCount(widths, budget, widths.length, CONTAINING_GAP, CONTAINING_MORE_WIDTH));
+    const folded = chips.slice(fits);
+    folded.forEach(chip => chip.classList.add('ref-folded'));
+    const names = folded.map(chip => chip.dataset.refName).concat(beyond);
+    button.hidden = names.length === 0;
+    button.textContent = names.length ? `+${names.length}` : '';
+    button.title = names.join(', ');
+    if (names.length) button.setAttribute('aria-label', `Show ${names.length} more ${names.length === 1 ? 'branch' : 'branches'}: ${names.join(', ')}`);
+    else button.removeAttribute('aria-label');
   }
 
   function refreshContainingLine(hash) {
     document.querySelectorAll('#dashboardCommitSummary .commit-summary-contained').forEach(line => {
-      if (line.dataset.commit === hash) line.innerHTML = containingBranchesHtml(hash);
+      if (line.dataset.commit !== hash) return;
+      line.innerHTML = containingBranchesHtml(hash);
+      foldContainingLine(line);
     });
   }
 
@@ -2993,6 +3035,17 @@
       ? { status: 'error' }
       : { status: 'done', branches: Array.isArray(payload.branches) ? payload.branches : [] });
     if (payload.repositoryPath === activeDashboardRepository) refreshContainingLine(payload.commitHash);
+  }
+
+  // The details' labels come from `git show`, which names a branch without its ref path, so they arrive as kind 'other':
+  // an origin/ name is a remote branch, a name in the branch list is a local one, anything else (a stash) stays as it is.
+  function classifyDetailRefs(refs) {
+    const local = new Set(((repositoryRefs && repositoryRefs.branches) || []).filter(branch => !branch.isRemote).map(branch => branch.name));
+    return (refs || []).map(ref => {
+      if (!ref || ref.kind !== 'other') return ref;
+      if (ref.name.startsWith('origin/')) return Object.assign({}, ref, { kind: 'remote-branch' });
+      return local.has(ref.name) ? Object.assign({}, ref, { kind: 'local-branch' }) : ref;
+    });
   }
 
   function renderCommitDetail(payload) {
@@ -3015,7 +3068,8 @@
     const count = document.getElementById('changedFileCount');
     if (summary) {
       ensureContainingBranches(detail.hash);
-      const refs = (detail.refs || []).map(ref => `<span class="history-ref ref-${escapeHtml(ref.kind)}">${escapeHtml(ref.name)}</span>`).join('');
+      // The same outlined pills as the history, each toned by its own branch name (a detached HEAD has tone 0).
+      const refs = renderHistoryRefs(classifyDetailRefs(detail.refs), false, ref => (ref.name === 'HEAD' ? 0 : window.RepositoryHistoryGraph.toneForName(window.RepositoryHistoryGraph.branchNameOfRef(ref) || ref.name)), null, false);
       const initials = (detail.authorName || '?').split(/\s+/).filter(Boolean).slice(0, 2).map(part => part.charAt(0)).join('').toUpperCase();
       const comparisonText = detail.comparisonBaseHash
         ? `${detail.comparisonMode === 'parent' ? 'Parent' : 'Compare'} ${escapeHtml(shortRevision(detail.comparisonBaseHash))} → ${escapeHtml(detail.shortHash)}`
@@ -3025,7 +3079,8 @@
       const title = stash ? stash.message || detail.subject : detail.subject;
       const who = stash ? `Stash ${stash.ref}${stash.branch ? ` · on ${stash.branch}` : ''}` : detail.authorName;
       const avatar = stash ? '<div class="commit-avatar stash-avatar" aria-hidden="true">▱</div>' : `<div class="commit-avatar">${escapeHtml(initials)}</div>`;
-      summary.innerHTML = `${avatar}<div class="commit-summary-copy"><strong>${escapeHtml(title)}</strong><span>${escapeHtml(who)} · ${escapeHtml(formatHistoryDate(detail.authoredAt))} · ${comparisonText}</span>${detail.body && detail.body !== detail.subject ? `<p>${escapeHtml(detail.body)}</p>` : ''}</div><code>${escapeHtml(detail.shortHash)}</code><div class="commit-summary-refs">${refs}</div><div class="commit-summary-contained" data-commit="${escapeHtml(detail.hash)}">${containingBranchesHtml(detail.hash)}</div>`;
+      summary.innerHTML = `${avatar}<div class="commit-summary-copy"><strong>${escapeHtml(title)}</strong><span>${escapeHtml(who)} · ${escapeHtml(formatHistoryDate(detail.authoredAt))} · ${comparisonText}</span>${detail.body && detail.body !== detail.subject ? `<p>${escapeHtml(detail.body)}</p>` : ''}</div><code>${escapeHtml(detail.shortHash)}</code><div class="commit-summary-labels"><div class="commit-summary-refs history-refs">${refs}</div><div class="commit-summary-contained" data-commit="${escapeHtml(detail.hash)}">${containingBranchesHtml(detail.hash)}</div></div>`;
+      foldContainingLine(summary.querySelector('.commit-summary-contained'));
     }
     if (count) count.textContent = String((detail.files || []).length);
     if (files) {
@@ -4114,6 +4169,16 @@
     applyHistoryColumnWidths(historyColumnWidths);
 
     history.scrollLeft = 0;
+    // The details' "Contained in" line folds to the width it has: a window or splitter change measures it again.
+    const detailHeader = document.querySelector('.commit-header');
+    if (detailHeader && typeof ResizeObserver === 'function') {
+      let width = 0;
+      new ResizeObserver(() => {
+        if (detailHeader.clientWidth === width) return;
+        width = detailHeader.clientWidth;
+        foldContainingLine(document.querySelector('#dashboardCommitSummary .commit-summary-contained'));
+      }).observe(detailHeader);
+    }
     // A taller list (window or splitter) can bring its end into view without a scroll event.
     new ResizeObserver(() => { applyHistoryColumnWidths(historyColumnWidths); loadHistoryNearEnd(); })
       .observe(history);

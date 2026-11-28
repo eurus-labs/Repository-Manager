@@ -135,7 +135,10 @@ function testHistoryGraph(): void {
   ]);
   assert.deepEqual(branchy.rows.map(row => row.lane), [1, 0, 1, 0, 0]);
   assert.equal(branchy.rows[1].isHead, true);
-  assert.deepEqual(branchy.rows.filter(row => row.lane === 0).map(row => row.color), [0, 0, 0]);
+  // HEAD's chain takes its branch's name tone (plan 22), one tone along the column, never tone 0.
+  const headTones = branchy.rows.filter(row => row.lane === 0).map(row => row.color);
+  assert.equal(new Set(headTones).size, 1);
+  assert.notEqual(headTones[0], 0);
   assert.equal(branchy.rows[0].color, branchy.rows[2].color, 'feature changed colour along its path');
   assert.notEqual(branchy.rows[0].color, 0);
   // f1 is expected by both f2 (lane 1) and the merge m2: one lane, never a dangling duplicate.

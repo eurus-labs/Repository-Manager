@@ -18,6 +18,12 @@
     return head ? head.hash : '';
   }
 
+  // The branch checked out at this commit: its `head` ref's name, '' when HEAD is detached (a bare "HEAD") or absent.
+  function headNameOf(commit) {
+    const ref = commit && (commit.refs || []).find(item => item && (item.isCurrent || item.name === 'HEAD'));
+    return ref && ref.name && ref.name !== 'HEAD' ? ref.name : '';
+  }
+
   // The current branch's configured upstream (`@{upstream}`, resolved by the extension) when it
   // is ahead of HEAD and its first-parent line runs straight down to HEAD: the main column then
   // starts at the upstream tip, so "behind by n" reads as one line, as in Git Graph. Nothing is
@@ -38,7 +44,7 @@
   const TONE_COUNT = 8;
 
   // A stable tone (1-7) for a branch name, so a branch keeps its colour across pages and refreshes.
-  // Tone 0 is HEAD's line: a name never takes it, so no other branch looks checked out.
+  // Tone 0 is for a detached HEAD's line only: a name never takes it.
   function toneForName(name) {
     let hash = 5381;
     for (let index = 0; index < name.length; index += 1) hash = ((hash * 33) + name.charCodeAt(index)) >>> 0;
@@ -124,8 +130,10 @@
       const candidates = [1, 2, 3, 4, 5, 6, 7, 0];
       return candidates.find(tone => !used.has(tone) && (tone !== 0 || !reserved)) ?? candidates.find(tone => !used.has(tone)) ?? 1;
     };
-    // Column 0's tone: 0 when the chain holds HEAD, else its tip's label.
-    const chainColor = headChain.has(headHash) || !list.length ? 0 : toneFor(list[0], 0);
+    // Column 0's tone: the tone of the branch checked out when the chain holds HEAD (a branch keeps its colour
+    // whether or not it is checked out), tone 0 for a detached HEAD, else its tip's label.
+    const headName = headNameOf(byHash.get(headHash));
+    const chainColor = !list.length ? 0 : headChain.has(headHash) ? (headName ? toneForName(headName) : 0) : toneFor(list[0], 0);
     const freeLane = () => {
       for (let index = reserved ? 1 : 0; ; index += 1) if (!lanes[index]) return index;
     };
