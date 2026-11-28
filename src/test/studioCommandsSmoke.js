@@ -412,6 +412,46 @@ async function main() {
       assert.ok(!second.slice(0, 1).some(message => /attempt 1/.test(message)), 'the first attempt\'s activity was carried over');
     }
 
+    // ---- Stop from anywhere (plan 10, Decision 4): stop(runId) cancels the run being driven, like the
+    // ---- notification's Cancel; false for a run not being driven, or one already asked to stop.
+    {
+      commands.clear();
+      const studio = registerStudio(context(), workspace);
+      studio.steps.set('test.hold', { type: 'test.hold', title: 'Hold', effect: 'read', required: [], single: true,
+        run: async (_input, stepContext) => {
+          while (!stepContext.signal.cancelled) { await new Promise(resolve => setTimeout(resolve, 10)); }
+          throw new Error('Cancelled');
+        } });
+      assert.equal(typeof studio.stop, 'function', 'StudioRuns has no stop');
+      assert.equal(studio.stop('unknown-run'), false);
+      const hold = { schema: 'repository-manager/workflow@1', id: 'hold', version: '1.0.0', title: 'Hold on',
+        nodes: [{ id: 'one', type: 'test.hold' }, { id: 'two', type: 'test.hold' }], edges: [{ from: 'one', to: 'two' }] };
+      let holdId;
+      let started;
+      const inStep = new Promise(resolve => { started = resolve; });
+      asked.length = 0;
+      answers.info.push('Run');
+      const going = studio.run(hold, 'h', state => { holdId = state.id; }, { onLog: entry => { if (entry.type === 'node') { started(); } } });
+      await inStep;
+      assert.equal(studio.stop(holdId), true, 'stop did not accept a running run');
+      assert.equal(studio.stop(holdId), false, 'a run already asked to stop was stopped again');
+      const final = await going;
+      assert.equal(final.status, 'stopped');
+      assert.equal(final.error, 'Cancelled');
+      assert.equal((await (await studio.runs()).load(holdId)).status, 'stopped');
+      assert.equal((await (await studio.runs()).readLog(holdId)).some(entry => entry.node === 'two' && entry.type === 'node'), false, 'the step after Stop ran');
+      assert.equal(studio.stop(holdId), false, 'a finished run was stopped');
+      // A run waiting at an approval is stopped by it too: Stop pressed while the dialog is open wins.
+      const gated = { schema: 'repository-manager/workflow@1', id: 'gated', version: '1.0.0', title: 'Gated',
+        nodes: [{ id: 'w', type: 'file.write', title: 'Write', with: { path: 'notes/gated.txt', content: 'x' } }] };
+      let gatedId;
+      answers.info.push('Run');
+      answers.warning.push(() => { assert.equal(studio.stop(gatedId), true); return 'Approve'; });
+      const stoppedAtGate = await studio.run(gated, 'h', state => { gatedId = state.id; });
+      assert.equal(stoppedAtGate.status, 'stopped', 'an approval answered after stop() went on');
+      assert.equal(fs.existsSync(path.join(workspace, 'notes', 'gated.txt')), false);
+    }
+
     console.log('Studio commands smoke passed');
   } finally {
     fs.rmSync(base, { recursive: true, force: true });

@@ -47,6 +47,12 @@ export interface StudioRuns {
   run(workflow: Workflow, hash: string, onUpdate?: (state: RunState) => void, options?: RunOptions): Promise<RunState | undefined>;
   /** The stored runs, once recovery after a restart is done. */
   runs(): Promise<RunStore>;
+  /**
+   * Stops a run this window is driving, wherever the person is looking (the diagram, the Runs view):
+   * the same cancel as the notification's Cancel and the chat's Stop. False for a run that is not being
+   * driven here, or that was stopped already.
+   */
+  stop(runId: string): boolean;
   /** Takes a waiting run up again (asks at its gate or review), with the workflow as it was when it started. */
   resume(id: string): Promise<RunState | undefined>;
   /** Opens a run's state and log as JSON, for investigating. */
@@ -155,10 +161,23 @@ export function registerStudio(context: vscode.ExtensionContext, workspaceRoot: 
     return await vscode.window.showInformationMessage(`Run "${workflow.title}" (${workflow.version})?`, { modal: true, detail: lines.join('\n') }, run) === run;
   };
 
+  /** The runs `drive` is driving now, each with whether a Stop was asked for (Decision 4 of plan 10). */
+  const driving = new Map<string, { stopped: boolean }>();
+  const stop = (runId: string): boolean => {
+    const control = driving.get(runId);
+    if (!control || control.stopped) { return false; }
+    control.stopped = true;
+    return true;
+  };
+
   /** Runs on, asking at each gate, until the run is done, stopped, failed, or left waiting. */
   const drive = async (workflow: Workflow, state: RunState, onUpdate?: (state: RunState) => void, options?: RunOptions): Promise<RunState> => {
     await recovered();
     let current = state;
+    // One flag for every way to stop: the caller's signal, and `stop(runId)` from a view.
+    const control = { stopped: false };
+    driving.set(state.id, control);
+    const cancelled = () => control.stopped || Boolean(options?.signal?.cancelled);
     // The notification names the step running and what it is doing; the caller gets the entries.
     const order = runOrder(workflow);
     const titles = new Map(workflow.nodes.map(node => [node.id, node.title ?? node.id]));
@@ -193,7 +212,7 @@ export function registerStudio(context: vscode.ExtensionContext, workspaceRoot: 
             async (progress, token) => {
               report = message => progress.report({ message });
               try {
-                return await engine.continue(workflow, current, { get cancelled() { return token.isCancellationRequested || Boolean(options?.signal?.cancelled); } });
+                return await engine.continue(workflow, current, { get cancelled() { return token.isCancellationRequested || cancelled(); } });
               } finally { report = undefined; }
             });
           onUpdate?.(current);
@@ -205,7 +224,7 @@ export function registerStudio(context: vscode.ExtensionContext, workspaceRoot: 
         // Stop acts at once (plan 3, Decision 7), also at an approval: the engine's own stop path, so a
         // reviewed step's changes are undone and nothing is approved.
         const stopWaiting = async () => { current = await engine.answer(current, review ? 'stop' : false, workflow); onUpdate?.(current); };
-        if (options?.signal?.cancelled) { await stopWaiting(); continue; }
+        if (cancelled()) { await stopWaiting(); continue; }
         // A review's Accept says what it accepts: a failed or unverified change is never plain "Accept".
         const approve = !review ? (waiting.kind === 'gate' ? 'Continue' : 'Approve')
           : waiting.verdict === 'failed' ? 'Accept Anyway' : waiting.verdict === 'unverified' ? 'Accept as Unverified' : 'Accept';
@@ -223,7 +242,7 @@ export function registerStudio(context: vscode.ExtensionContext, workspaceRoot: 
           }
         } while (answer === show);
         // Stop pressed while the dialog was open wins over any answer, closing it included.
-        if (options?.signal?.cancelled) { await stopWaiting(); continue; }
+        if (cancelled()) { await stopWaiting(); continue; }
         // Closing the dialog leaves the run waiting (Show Workflow Runs takes it up again).
         if (answer === undefined) { return current; }
         current = review
@@ -249,6 +268,7 @@ export function registerStudio(context: vscode.ExtensionContext, workspaceRoot: 
       return current;
     } finally {
       subscription.dispose();
+      if (driving.get(state.id) === control) { driving.delete(state.id); }
     }
   };
 
@@ -430,5 +450,5 @@ export function registerStudio(context: vscode.ExtensionContext, workspaceRoot: 
     return probe.value;
   };
   const scriptRunner = async () => (await chooseRunner(parseSetting(vscode.workspace.getConfiguration('repositoryManager').get<unknown>('studio.skillScripts')), detect)).mode;
-  return { steps, skills, run, runs: async () => { await recovered(); return store; }, resume, openLog, scriptRunner };
+  return { steps, skills, run, runs: async () => { await recovered(); return store; }, stop, resume, openLog, scriptRunner };
 }

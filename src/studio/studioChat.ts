@@ -15,7 +15,7 @@ import { ChatMessage, ChatRun, ChatRunActivity, ChatRunStep, ChatStore, Conversa
 import { acceptEntry, Attachment, attachedLine, PreparedItem, prepareAttachments } from './chatAttachments';
 import { gitIgnored, insideMaps } from './folderMap';
 import { RunLogEntry, RunState } from './engine';
-import { activityLine, runTimeline } from './runsReport';
+import { activityLine, runTimeline, stepOutcome } from './runsReport';
 import { CancelSignal, StepDefinition, StudioModel } from './steps';
 import { studioSteps } from './registry';
 import { ChosenModelRefused, dashboardSelector, listModels, ModelChoice, onModelsChanged, studioModel } from './studioModels';
@@ -51,22 +51,6 @@ interface LiveRun {
   /** When each step last started, for the page's clock. */
   since: Map<string, string>;
   signature: string;
-}
-
-/** The words of the card: what `runTimeline` says about a step, given how the run itself stands. */
-function stepOutcome(outcome: string, runStatus: string): string {
-  const finished = runStatus === 'done' || runStatus === 'failed' || runStatus === 'stopped';
-  const closing = runStatus === 'done' ? 'done' : runStatus === 'failed' ? 'failed' : 'stopped';
-  switch (outcome) {
-    case 'running': return finished ? closing : 'running';
-    case 'approved': return finished ? 'done' : 'running';
-    case 'waiting': return finished ? closing : 'waiting';
-    case 'done': case 'accepted': return 'done';
-    case 'skipped': return 'skipped';
-    case 'failed': case 'interrupted': return 'failed';
-    case 'stopped': case 'rejected': return 'stopped';
-    default: return 'pending';
-  }
 }
 
 type Incoming =

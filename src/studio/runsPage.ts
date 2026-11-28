@@ -60,7 +60,7 @@ function listHtml(model: RunsPageModel): string {
     ${shown.length > RUNS_LISTED ? `<p class="muted">The ${RUNS_LISTED} newest of ${shown.length} are listed.</p>` : ''}`;
 }
 
-function nodeHtml(node: TimelineNode): string {
+function nodeHtml(node: TimelineNode, runId: string): string {
   // Not run yet (pending, or waiting at its gate) is not the same as a time the log lacks.
   const ran = node.runs > 0 || node.executionMs !== undefined;
   const facts = [
@@ -76,7 +76,7 @@ function nodeHtml(node: TimelineNode): string {
       <div><strong>${escape(node.title ?? node.node)}</strong>${node.type ? ` <span class="muted">${escape(node.type)}</span>` : ''} <span class="status status-${escape(node.outcome)}">${escape(node.outcome)}</span></div>
       <div class="muted">${facts.map(escape).join(' · ')}</div>
       ${node.error ? `<p class="error">${escape(node.error)}</p>` : ''}${recovered}
-      ${node.result ? `<details class="result"><summary>Result${node.truncated ? ' (first part; Open raw log has all of it)' : ''}</summary><pre>${escape(node.result)}</pre></details>` : ''}
+      ${node.result ? `<details class="result" data-key="${escape(`${runId}/${node.node}`)}"><summary>Result${node.truncated ? ' (first part; Open raw log has all of it)' : ''}</summary><pre>${escape(node.result)}</pre></details>` : ''}
     </li>`;
 }
 
@@ -89,10 +89,11 @@ function detailHtml(model: RunsPageModel): string {
     ${state.error ? `<p class="error">${escape(state.error)}</p>` : ''}
     ${timeline.hasLog ? '' : '<p class="muted">This run has no log: times and retries are not known.</p>'}
     <div class="actions">
+      ${state.status === 'running' ? `<button type="button" data-action="stop" data-run="${escape(state.id)}" title="Stops the run at its next step boundary, like Cancel on its notification">Stop</button>` : ''}
       ${state.status === 'waiting' ? `<button type="button" data-action="resume" data-run="${escape(state.id)}">Resume: ${escape(state.waiting?.title ?? 'answer')}</button>` : ''}
       <button type="button" data-action="rawLog" data-run="${escape(state.id)}">Open raw log</button>
     </div>
-    <ol class="timeline">${timeline.nodes.map(nodeHtml).join('')}</ol>
+    <ol class="timeline">${timeline.nodes.map(node => nodeHtml(node, state.id)).join('')}</ol>
   </section>`;
 }
 
@@ -136,6 +137,16 @@ export function renderRunsPage(model: RunsPageModel): string {
   ${detailHtml(model)}
   <script nonce="${model.nonce}">
     const vscode = acquireVsCodeApi();
+    // The page is drawn again while a run goes on: keep where the person was and what they opened.
+    const remembered = (typeof vscode.getState === 'function' && vscode.getState()) || {};
+    const opened = new Set(remembered.opened || []);
+    const keep = () => { if (typeof vscode.setState === 'function') { vscode.setState({ y: window.scrollY, opened: [...opened] }); } };
+    document.querySelectorAll('details[data-key]').forEach(details => {
+      if (opened.has(details.dataset.key)) { details.open = true; }
+      details.addEventListener('toggle', () => { if (details.open) { opened.add(details.dataset.key); } else { opened.delete(details.dataset.key); } keep(); });
+    });
+    if (remembered.y) { window.scrollTo(0, remembered.y); }
+    window.addEventListener('scroll', keep, { passive: true });
     document.addEventListener('click', event => {
       const target = event.target.closest('[data-action]');
       if (target) { vscode.postMessage({ type: target.dataset.action, run: target.dataset.run }); }
