@@ -1,6 +1,6 @@
 # Plan 22 — Keep a branch's colour when it is checked out, and keep the commit details compact
 
-Status: draft
+Status: approved
 Date: 2026-11-28
 Branch: `fix/history-stable-colours-compact-details`
 Baseline: `main` at `4a89f99a129e1663c2cc0026491f735adc879d13` (3.13.0)
@@ -32,14 +32,24 @@ The user reported three things on 2026-11-28, with screenshots of 3.13.0.
 ## Decisions
 
 Decision 1 is the user's (2026-11-28). Decisions 2 and 3 are the planner's. The planner proposed them in chat on
-2026-11-28, and the user's approval of this plan confirms them.
+2026-11-28, and the user approved this plan on 2026-11-28 after seeing a rendered preview, choosing to keep the HEAD
+ring in Decision 1.
 
 1. **A branch's tone never depends on HEAD.**
    - **Tone source.** Column 0's chain takes the tone of its branch name, `toneForName(<checked-out branch>)`, like
      any other line. The name comes from the `head` ref at the HEAD commit. A detached HEAD has no name and takes tone
      0.
-   - **Where HEAD's line stays.** It keeps its column (0). It is marked by plan 20's outlined tip row (`row-head`) and
-     its bold label, not by a colour.
+   - **Where HEAD's line stays.** It keeps its column (0). It is marked by plan 20's outlined tip row (`row-head`), its
+     bold label and a ring around its node, not by a colour.
+   - **The HEAD ring (user's choice, 2026-11-28).** One extra SVG circle around the HEAD node only:
+     - class `graph-node-head-ring`, centred on the node, `r="11.5"`, `fill: none`, `stroke-width: 1.5`, stroke in the
+       node's lane tone (`var(--lane-color)` through the same `graph-lane-N` class), `pointer-events: none`;
+     - drawn after the node and before the `.graph-node-control` group, so the hover and compare-selection rings
+       still draw on top of it;
+     - the gap between the node's outer edge (r 8 + half of its 3 px stroke = 9.5) and the ring is the background,
+       which reads as the preview's "gap then ring";
+     - lane spacing is 18 px (`LANE_GAP`), so the ring (outer 12.25) clears a neighbouring line by about 4.5 px;
+     - a detached HEAD gets the ring in tone 0; no ring when the HEAD commit is not in the loaded history.
    - **Details chip.** In "Contained in", the checked-out branch's chip takes its name tone as well.
    - **Tone 0's new use.** It is now only for a detached HEAD and for unnamed lanes when no other tone is free.
      `toneForName` stays 1–7, so no branch changes colour because of this plan.
@@ -69,6 +79,7 @@ Decision 1 is the user's (2026-11-28). Decisions 2 and 3 are the planner's. The 
 In:
 
 - `resources/historyGraph.js`: `buildGraphModel`'s column 0 tone, and the `headHash` name lookup.
+- `resources/webview.js` graph renderer: the HEAD ring circle next to the HEAD node.
 - `resources/webview.js`:
   - the "Contained in" chip tone and markup;
   - the summary layout (refs and Contained in on one row, with folding);
@@ -111,6 +122,11 @@ Default (`AGENTS.md`):
   - In both, `main`'s line and `feature/x`'s line have the same tone, and neither is 0.
   - A detached HEAD's line is tone 0.
   - **Failing first:** on `4a89f99` the checked-out line is 0.
+- [ ] **HEAD ring** (`uiSnapshots.js`).
+  - Exactly one `.graph-node-head-ring` is in the graph, centred on the HEAD node, and its computed stroke equals the
+    HEAD node's lane colour.
+  - After the scripted checkout it moves to the new HEAD node; the old HEAD node has none.
+  - Hovering the HEAD node still shows the hover ring (`.graph-node-hit` stroke) on top.
 - [ ] **Stable tone in the page** (`uiSnapshots.js`).
   - The tone of `main`'s label, and of its "Contained in" chip, is the same before and after a scripted checkout
     to another branch.
@@ -143,7 +159,8 @@ Default (`AGENTS.md`):
 
 | Risk | Handling |
 | --- | --- |
-| Without amber, the checked-out line is harder to spot | It keeps column 0, the outlined tip row and the bold label; the screenshot is checked for it |
+| Without amber, the checked-out line is harder to spot | It keeps column 0, the outlined tip row, the bold label and the ring; the screenshot is checked for it |
+| The ring hides the hover or compare marker | The ring is drawn below `.graph-node-control`; the hover assertion covers it |
 | Two lines share a tone and one of them is HEAD's | Accepted as for any two lines (plan 13); the outline tells them apart |
 | Folding "Contained in" hides branches people wanted to see | "+N" with the names in `title`; the button expands in place |
 | CI fonts wider than local | No wrapping on the ref row; only folding changes, and row height is asserted |
