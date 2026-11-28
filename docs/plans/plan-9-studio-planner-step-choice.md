@@ -1,6 +1,6 @@
 # Plan 9 — The Studio planner picks the right steps and writes checkable criteria
 
-Status: draft
+Status: approved
 Date: 2026-11-22
 Branch: `feat/studio-planner-step-choice`
 Baseline: `main` at `4fe5d23e5d17283e1987a4ed31c452e0a5034ac9`
