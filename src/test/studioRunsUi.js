@@ -64,7 +64,8 @@ async function main() {
       while (current.status === 'waiting') { current = await engine.continue(flow, await engine.answer(current, true), never); }
       return current;
     },
-    openLog: async id => { calls.push(['rawLog', id]); }
+    openLog: async id => { calls.push(['rawLog', id]); },
+    stop: id => { calls.push(['stop', id]); return true; }
   };
 
   const browser = await chromium.launch({ executablePath: process.env.PLAYWRIGHT_CHROMIUM_PATH || undefined });
@@ -80,14 +81,15 @@ async function main() {
     const webview = {
       cspSource: 'vscode-resource:', options: {},
       // A real navigation, so the init script that provides acquireVsCodeApi runs on each page.
-      set html(value) { current = value; rendered = page.goto('https://runs.view.test/'); },
+      set html(value) { current = value; rendered = page.goto('https://runs.view.test/').catch(() => undefined); },
       onDidReceiveMessage: handler => { receive = handler; }
     };
     await page.exposeFunction('postToHost', message => receive(message));
-    await page.addInitScript(() => { window.acquireVsCodeApi = () => ({ postMessage: message => window.postToHost(message) }); });
+    // getState/setState as VS Code gives them: what the page keeps survives it being drawn again.
+    await page.addInitScript(() => { window.acquireVsCodeApi = () => ({ postMessage: message => window.postToHost(message), getState: () => JSON.parse(sessionStorage.getItem('state') || 'null'), setState: value => sessionStorage.setItem('state', JSON.stringify(value)) }); });
     const settle = async () => { for (let i = 0; i < 20; i++) { await new Promise(resolve => setTimeout(resolve, 25)); await rendered; } };
 
-    new RunsViewProvider(studioRuns).resolveWebviewView({ webview, visible: true, onDidChangeVisibility: () => {} });
+    new RunsViewProvider(studioRuns).resolveWebviewView({ webview, visible: true, onDidChangeVisibility: () => {}, onDidDispose: () => {} });
     await settle();
     // The summary: 3 runs, 1 done of 2 finished (the waiting run is not counted), 1 interrupted.
     assert.equal(await page.locator('.tile').nth(0).innerText(), '3\nruns');
@@ -124,8 +126,44 @@ async function main() {
     await page.click('.detail button[data-action="rawLog"]');
     await settle();
     assert.deepEqual(calls[1], ['rawLog', waiting.id]);
+
+    // A run goes on (plan 10): the view follows its log without a click, and a running run has Stop.
+    await store.save({ id: 'going', workflow: { id: 'note', version: '1.0.0', title: 'Write a note', hash: 'h' }, startedAt: '2026-11-28T09:00:00.000Z', updatedAt: '',
+      status: 'running', inputs: {}, approvals: {}, nodes: { ask: { status: 'pending' }, write: { status: 'pending' } } });
+    await store.saveWorkflow('going', flow);
+    await store.log('going', { type: 'start' });
+    await store.log('going', { type: 'node', node: 'ask' });
+    await page.waitForFunction(() => document.querySelectorAll('table.runs tbody tr').length === 4, undefined, { timeout: 3000 });
+    assert.match(await page.locator('.tile').nth(2).innerText(), /^1\nnot finished \(1 running, 0 waiting\)$/);
+    await page.click('button[data-action="select"][data-run="going"]');
+    await page.locator('.detail button[data-action="stop"]').waitFor();
+    assert.equal(await page.locator('.detail button[data-action="resume"]').count(), 0, 'a running run offers Resume');
+    assert.match(await page.locator('.detail').innerText(), /Go\?[\s\S]*running/);
+    await page.screenshot({ path: path.join(outputDir, '53-studio-run-running.png') });
+    // The next step starting shows without a click.
+    await store.log('going', { type: 'done', node: 'ask' });
+    await store.log('going', { type: 'node', node: 'write' });
+    await page.waitForFunction(() => /Write it[\s\S]*running/.test(document.querySelector('.detail').innerText), undefined, { timeout: 3000 });
+    // Stop reaches StudioRuns.stop; a finished run has none.
+    await page.click('.detail button[data-action="stop"]');
+    await settle();
+    assert.deepEqual(calls.at(-1), ['stop', 'going']);
+    await store.log('going', { type: 'finish', status: 'stopped', reason: 'Cancelled' });
+    await store.save({ ...(await store.load('going')), status: 'stopped', error: 'Cancelled' });
+    await page.waitForFunction(() => !document.querySelector('.detail button[data-action="stop"]'), undefined, { timeout: 3000 });
+
+    // A section the person opened stays open when the page is drawn again for a run elsewhere.
+    await page.click(`button[data-action="select"][data-run="${waiting.id}"]`);
+    await page.locator('.detail details.result summary').first().click();
+    assert.equal(await page.locator('.detail details.result[open]').count() > 0, true);
+    await store.save({ id: 'elsewhere', workflow: { id: 'fix', version: '1', title: 'Another workflow', hash: 'h' }, startedAt: '2026-11-28T09:30:00.000Z', updatedAt: '',
+      status: 'running', inputs: {}, approvals: {}, nodes: {} });
+    await store.log('elsewhere', { type: 'start' });
+    await page.waitForFunction(() => document.querySelectorAll('table.runs tbody tr').length === 5, undefined, { timeout: 3000 });
+    await settle();
+    assert.equal(await page.locator('.detail details.result[open]').count() > 0, true, 'an open result was closed by the redraw');
     assert.deepEqual(errors, [], `page errors: ${errors.join('; ')}`);
-    console.log('Studio runs UI test passed; screenshots in ui-snapshots/50-52');
+    console.log('Studio runs UI test passed; screenshots in ui-snapshots/50-53');
   } finally {
     await browser.close();
     fs.rmSync(base, { recursive: true, force: true });

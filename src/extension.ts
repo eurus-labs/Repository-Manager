@@ -64,7 +64,7 @@ export function activate(context: vscode.ExtensionContext) {
   // A clarification file opens in the Requirement editor with or without a folder.
   step('Requirements', () => registerRequirements(context));
   // A workflow file opens in the Workflow Editor with or without a folder; running it needs one.
-  step('Workflow editor', () => context.subscriptions.push(WorkflowEditorProvider.register(context)));
+  step('Workflow editor', () => context.subscriptions.push(WorkflowEditorProvider.register(context, studioRuns)));
   // The chat view is declared in package.json, so it is there with no folder too; it says so.
   step('Studio Chat', () => StudioChatProvider.register(context, studioRuns, workspaceRoot));
   // Runs: what ran, how it went, and the waiting ones to take up again.

@@ -232,6 +232,22 @@ export function runTimeline(record: RunRecord, workflow?: { nodes: Array<{ id: s
   return { nodes: list, hasLog: log.length > 0, executionMs, waitingMs };
 }
 
+/** The words of the card: what `runTimeline` says about a step, given how the run itself stands. */
+export function stepOutcome(outcome: string, runStatus: string): string {
+  const finished = runStatus === 'done' || runStatus === 'failed' || runStatus === 'stopped';
+  const closing = runStatus === 'done' ? 'done' : runStatus === 'failed' ? 'failed' : 'stopped';
+  switch (outcome) {
+    case 'running': return finished ? closing : 'running';
+    case 'approved': return finished ? 'done' : 'running';
+    case 'waiting': return finished ? closing : 'waiting';
+    case 'done': case 'accepted': return 'done';
+    case 'skipped': return 'skipped';
+    case 'failed': case 'interrupted': return 'failed';
+    case 'stopped': case 'rejected': return 'stopped';
+    default: return 'pending';
+  }
+}
+
 /** The longest an activity line is: a tool's note can be long (a query, a file list). */
 const ACTIVITY_CHARS = 200;
 

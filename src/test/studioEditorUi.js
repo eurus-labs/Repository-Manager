@@ -8,6 +8,7 @@ const fs = require('fs');
 const http = require('http');
 const path = require('path');
 const Module = require('module');
+const os = require('os');
 const { chromium } = require('playwright-core');
 
 const root = path.resolve(__dirname, '../..');
@@ -55,10 +56,12 @@ Module._load = function (request, parent, isMain) {
 };
 const { WorkflowEditorProvider } = require('../../out/studio/workflowEditorProvider.js');
 Module._load = originalLoad;
+const { RunStore } = require('../../out/studio/engine.js');
+const { workflowHash } = require('../../out/studio/workflow.js');
 
 const themes = {
-  dark: ':root{--vscode-foreground:#cccccc;--vscode-editor-background:#1e1e1e;--vscode-sideBar-background:#252526;--vscode-input-background:#3c3c3c;--vscode-input-foreground:#cccccc;--vscode-button-background:#0e639c;--vscode-button-foreground:#ffffff;--vscode-button-secondaryBackground:#3a3d41;--vscode-button-secondaryForeground:#ffffff;--vscode-focusBorder:#007fd4;--vscode-errorForeground:#f48771;--vscode-editorWarning-foreground:#cca700;--vscode-descriptionForeground:#9d9d9d;--vscode-panel-border:#80808059;--vscode-editorWidget-background:#2d2d30;--vscode-textLink-foreground:#3794ff}',
-  light: ':root{--vscode-foreground:#3b3b3b;--vscode-editor-background:#ffffff;--vscode-sideBar-background:#f8f8f8;--vscode-input-background:#ffffff;--vscode-input-foreground:#3b3b3b;--vscode-input-border:#cecece;--vscode-button-background:#005fb8;--vscode-button-foreground:#ffffff;--vscode-button-secondaryBackground:#e5e5e5;--vscode-button-secondaryForeground:#3b3b3b;--vscode-focusBorder:#005fb8;--vscode-errorForeground:#a1260d;--vscode-editorWarning-foreground:#895503;--vscode-descriptionForeground:#717171;--vscode-panel-border:#e5e5e5;--vscode-editorWidget-background:#f3f3f3;--vscode-textLink-foreground:#005fb8}'
+  dark: ':root{--vscode-foreground:#cccccc;--vscode-editor-background:#1e1e1e;--vscode-sideBar-background:#252526;--vscode-input-background:#3c3c3c;--vscode-input-foreground:#cccccc;--vscode-button-background:#0e639c;--vscode-button-foreground:#ffffff;--vscode-button-secondaryBackground:#3a3d41;--vscode-button-secondaryForeground:#ffffff;--vscode-focusBorder:#007fd4;--vscode-errorForeground:#f48771;--vscode-editorWarning-foreground:#cca700;--vscode-descriptionForeground:#9d9d9d;--vscode-panel-border:#80808059;--vscode-editorWidget-background:#2d2d30;--vscode-textLink-foreground:#3794ff;--vscode-testing-iconPassed:#73c991}',
+  light: ':root{--vscode-foreground:#3b3b3b;--vscode-editor-background:#ffffff;--vscode-sideBar-background:#f8f8f8;--vscode-input-background:#ffffff;--vscode-input-foreground:#3b3b3b;--vscode-input-border:#cecece;--vscode-button-background:#005fb8;--vscode-button-foreground:#ffffff;--vscode-button-secondaryBackground:#e5e5e5;--vscode-button-secondaryForeground:#3b3b3b;--vscode-focusBorder:#005fb8;--vscode-errorForeground:#a1260d;--vscode-editorWarning-foreground:#895503;--vscode-descriptionForeground:#717171;--vscode-panel-border:#e5e5e5;--vscode-editorWidget-background:#f3f3f3;--vscode-textLink-foreground:#005fb8;--vscode-testing-iconPassed:#388a34}'
 };
 
 async function main() {
@@ -81,9 +84,12 @@ async function main() {
   fs.mkdirSync(outputDir, { recursive: true });
   const snap = (page, name) => page.screenshot({ path: path.join(outputDir, `${name}.png`), animations: 'disabled', caret: 'hide' });
 
-  const open = async (text, { theme = 'dark', width = 1400, height = 820 } = {}) => {
+  // `runs` is what the editor follows (a real RunStore, see the live-run case); `now` fixes the page's clock
+  // (and its time zone and locale) so a run's elapsed time and start time read the same on every run.
+  const open = async (text, { theme = 'dark', width = 1400, height = 820, runs, now } = {}) => {
     documentInEditor = new TextDocument(fileUri(path.join(root, 'flow.workflow.json')), text);
-    const page = await browser.newPage({ viewport: { width, height } });
+    const page = await browser.newPage({ viewport: { width, height }, ...(now ? { timezoneId: 'UTC', locale: 'en-GB' } : {}) });
+    if (now) { await page.addInitScript(fixed => { Date.now = () => fixed; }, now); }
     let listener;
     const panel = {
       onDidDispose() {},
@@ -101,7 +107,7 @@ async function main() {
       let state = null;
       window.acquireVsCodeApi = () => ({ getState: () => state, setState: value => { state = value; }, postMessage: message => window.__postToHost(message) });
     });
-    await new WorkflowEditorProvider(fileUri(root)).resolveCustomTextEditor(documentInEditor, panel);
+    await new WorkflowEditorProvider(fileUri(root), runs).resolveCustomTextEditor(documentInEditor, panel);
     const route = `/editor-${pages.size + 1}`;
     pages.set(route, panel.webview.html.replace('</head>', `<link rel="stylesheet" href="${origin}/theme-${theme}.css"></head>`));
     await page.goto(origin + route);
@@ -238,8 +244,142 @@ async function main() {
     assert.equal(columns, 1);
     await narrow.close();
 
+    // ---- A run seen live in the diagram (plan 10). Real RunStore, real provider; the run is written the way
+    // ---- the engine writes it, and the page's clock is fixed so the screenshots do not change between runs.
+    const sampleText = fs.readFileSync(samplePath, 'utf8');
+    const sample = JSON.parse(sampleText);
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'repository-manager-editor-run-'));
+    try {
+      // A store per case: a run left waiting by one would be found by the next page that opens.
+      let store = new RunStore(path.join(tmp, 'runs-1'));
+      const stopCalls = [];
+      const runs = { runs: async () => store, stop: id => { stopCalls.push(id); return true; } };
+      const at = seconds => new Date(Date.UTC(2026, 10, 28, 10, 0, seconds)).toISOString();
+      const nodeStates = states => Object.fromEntries(sample.nodes.map(node => [node.id, { status: states[node.id] ?? 'pending', ...(states[node.id] === 'failed' ? { error: 'boom' } : {}) }]));
+      const begin = async (id, { status = 'running', states = {}, workflow = sample, hash = workflowHash(sampleText), startedAt = at(0), extra = {} } = {}) => {
+        await store.save({ id, workflow: { id: sample.id, version: '1.0.0', title: sample.title, hash }, startedAt, updatedAt: startedAt, status, inputs: {}, approvals: {}, nodes: nodeStates(states), ...extra });
+        await store.saveWorkflow(id, workflow);
+        await store.log(id, { at: startedAt, type: 'start' });
+      };
+      const NOW = Date.UTC(2026, 10, 28, 10, 0, 42);
+      // Dark: three steps done, the fourth running for 42 s, the last not started.
+      await begin('live-1', { states: { 'read-new': 'done', 'read-old': 'done', compare: 'done' } });
+      for (const [index, id] of ['read-new', 'read-old', 'compare'].entries()) {
+        await store.log('live-1', { at: at(1 + index * 2), type: 'node', node: id });
+        await store.log('live-1', { at: at(2 + index * 2), type: 'done', node: id });
+      }
+      await store.log('live-1', { at: at(0), type: 'node', node: 'analyze' });
+      await store.log('live-1', { at: at(1), type: 'tool', node: 'analyze', name: 'read_file', ok: true, note: 'docs/requirements.md:1-80' });
+      const live = await open(sampleText, { runs, now: NOW, width: 1760 });
+      await live.locator('#run-banner:not([hidden])').waitFor();
+      assert.match(await live.textContent('#run-banner .run-line'), /^Analyze requirement changes · Step 4 of 5 · started 10:00Running$/);
+      assert.equal(await live.textContent('#run-activity'), 'read_file docs/requirements.md:1-80');
+      assert.equal(await live.isVisible('#run-stop'), true);
+      assert.equal(await live.isVisible('#run-open'), true);
+      const words = () => live.locator('#nodes .node').evaluateAll(nodes => Object.fromEntries(nodes.map(node => [node.dataset.node, [[...node.classList].filter(name => name.startsWith('run-')).join(' '), (node.querySelector('.run-word') || {}).textContent]])));
+      assert.deepEqual(await words(), {
+        'read-new': ['run-done', '✓ Done'], 'read-old': ['run-done', '✓ Done'], compare: ['run-done', '✓ Done'],
+        analyze: ['run-running', '▶ Running · 0:42'], write: ['run-pending', '○ Not started']
+      });
+      assert.equal(await live.textContent('#run-status'), 'Analyze requirement changes: step 4 of 5, Analyze each change: running');
+      assert.match(await live.getAttribute('.node[data-node="analyze"]', 'aria-label'), /, running$/);
+      assert.match(await live.getAttribute('.node[data-node="write"]', 'aria-label'), /not started$/);
+      await snap(live, '33-studio-editor-run-live');
+
+      // The status line changes only when a step starts or ends: more activity does not touch it.
+      await live.evaluate(() => { window.__announced = 0; new MutationObserver(() => { window.__announced++; }).observe(document.getElementById('run-status'), { childList: true, characterData: true, subtree: true }); });
+      for (let i = 0; i < 3; i++) { await store.log('live-1', { at: at(3), type: 'tool', node: 'analyze', name: 'search', ok: true, note: `query ${i}` }); await new Promise(resolve => setTimeout(resolve, 300)); }
+      await live.waitForFunction(() => document.getElementById('run-activity').textContent === 'search query 2');
+      assert.equal(await live.evaluate(() => window.__announced), 0, 'the status line changed for an activity line');
+      // A step ending and the next starting is announced once.
+      await store.log('live-1', { at: at(9), type: 'done', node: 'analyze' });
+      await store.log('live-1', { at: at(9), type: 'node', node: 'write' });
+      await live.waitForFunction(() => document.querySelector('.node[data-node="write"]').classList.contains('run-running'));
+      assert.equal(await live.evaluate(() => window.__announced), 1, 'the status line did not change once for a step change');
+      assert.equal(await live.textContent('#run-status'), 'Analyze requirement changes: step 5 of 5, Write the analysis: running');
+      // Editing during a run stays possible; the run keeps the copy it started with, and the banner says so.
+      assert.match(await live.textContent('#run-edit'), /keep editing/);
+      await commit(live, '#f-Title', 'Retitled while running');
+      await live.waitForFunction(() => !document.getElementById('run-earlier').hidden);
+      assert.match(await live.textContent('#run-earlier'), /^Running an earlier version of this file\.$/);
+      assert.equal(await live.locator('.node[data-node="write"].run-running').count(), 1, 'the diagram lost the run after an edit');
+      // Stop goes to the host with the run's id; Open in Runs asks for the view.
+      await live.click('#run-stop');
+      await until(() => stopCalls.length === 1, 'Stop');
+      assert.deepEqual(stopCalls, ['live-1']);
+      assert.equal(await live.textContent('#run-stop'), 'Stopping…');
+      assert.equal(await live.isDisabled('#run-stop'), true);
+      executed.length = 0;
+      await live.click('#run-open');
+      await until(() => executed.length === 1, 'Open in Runs');
+      assert.deepEqual(executed[0], ['repositoryManager.studio.runs.focus']);
+      // The run ends (stopped): no Stop, a Hide, and the final state stays.
+      await store.log('live-1', { at: at(11), type: 'finish', status: 'stopped', reason: 'Cancelled' });
+      await live.waitForFunction(() => document.getElementById('run-state').textContent === 'Stopped');
+      assert.equal(await live.isVisible('#run-stop'), false);
+      assert.equal(await live.locator('.node[data-node="write"].run-stopped').count(), 1);
+      assert.match(await live.textContent('.node[data-node="write"] .run-word'), /^■ Stopped$/);
+      await live.click('#run-hide');
+      assert.equal(await live.isVisible('#run-banner'), false);
+      assert.equal(await live.locator('#nodes .node[class*="run-"]').count(), 0, 'a hidden run left its marks on the diagram');
+      await live.close();
+
+      store = new RunStore(path.join(tmp, 'runs-2'));
+      // Light, waiting at the step that writes: the word and the engine's lock both show.
+      await begin('live-2', { status: 'waiting', startedAt: at(100), states: { 'read-new': 'done', 'read-old': 'done', compare: 'done', analyze: 'done' },
+        extra: { waiting: { node: 'write', kind: 'effect', title: 'Write a file: write', effect: 'write', preview: 'x' } } });
+      for (const [index, id] of ['read-new', 'read-old', 'compare', 'analyze'].entries()) {
+        await store.log('live-2', { at: at(101 + index * 2), type: 'node', node: id });
+        await store.log('live-2', { at: at(102 + index * 2), type: 'done', node: id });
+      }
+      await store.log('live-2', { at: at(110), type: 'waiting', node: 'write', kind: 'effect', effect: 'write' });
+      const waiting = await open(sampleText, { theme: 'light', width: 1760, height: 820, runs, now: NOW });
+      await waiting.locator('#run-banner:not([hidden])').waitFor();
+      assert.match(await waiting.textContent('#run-banner .run-line'), /Step 5 of 5 · started 10:01Waiting for you$/);
+      assert.equal(await waiting.isVisible('#run-stop'), false, 'Stop is offered while waiting at an approval');
+      assert.equal(await waiting.textContent('.node[data-node="write"] .run-word'), '⏸ Waiting for you');
+      assert.equal(await waiting.textContent('.node[data-node="write"] .lock'), '🔒 asks before it writes files');
+      await snap(waiting, '34-studio-editor-run-live-light');
+      await waiting.close();
+
+      // An earlier version of the file, a step the file no longer has, and a failed step with its error.
+      store = new RunStore(path.join(tmp, 'runs-3'));
+      const older = { ...sample, nodes: [...sample.nodes, { id: 'gone', type: 'gate', title: 'Old check', with: { title: 'ok?' } }], edges: [...sample.edges, { from: 'write', to: 'gone' }] };
+      // The page is open before the run starts: it is followed from its log, and it ends failed.
+      const earlier = await open(sampleText, { runs, now: NOW });
+      await begin('live-3', { status: 'failed', workflow: older, hash: 'an-older-hash', startedAt: at(200), states: { 'read-new': 'done', 'read-old': 'failed' }, extra: { error: 'read-old: boom' } });
+      await store.log('live-3', { at: at(201), type: 'node', node: 'read-new' });
+      await store.log('live-3', { at: at(202), type: 'done', node: 'read-new' });
+      await store.log('live-3', { at: at(203), type: 'node', node: 'read-old' });
+      await store.log('live-3', { at: at(204), type: 'finish', status: 'failed', node: 'read-old', error: 'boom' });
+      await earlier.locator('#run-banner:not([hidden])').waitFor();
+      await earlier.waitForFunction(() => document.getElementById('run-state').textContent === 'Failed');
+      assert.match(await earlier.textContent('#run-earlier'), /This was an earlier version of this file\. Steps no longer in the file: Old check \(gone\) — not started\./);
+      assert.equal(await earlier.textContent('.node[data-node="read-old"] .run-title'), 'Failed: boom');
+      assert.equal(await earlier.locator('#nodes .node[data-node="gone"]').count(), 0, 'a step the file no longer has was drawn');
+      assert.equal(await earlier.textContent('.node[data-node="read-new"] .run-word'), '✓ Done');
+      await earlier.click('.node[data-node="read-old"]');
+      await earlier.locator('#run-note .error-text').waitFor();
+      assert.equal(await earlier.textContent('#run-note .error-text'), 'boom');
+      assert.match(await earlier.textContent('#run-note .run-state'), /Failed/);
+      await earlier.close();
+
+      // The elapsed time ticks on the page, with the real clock.
+      store = new RunStore(path.join(tmp, 'runs-4'));
+      const since = new Date(Date.now() - 3000).toISOString();
+      await begin('live-4', { startedAt: since });
+      await store.log('live-4', { at: since, type: 'node', node: 'read-new' });
+      const ticking = await open(sampleText, { runs });
+      await ticking.locator('.node[data-node="read-new"] .tick').waitFor();
+      const first = await ticking.textContent('.tick');
+      await ticking.waitForFunction(text => document.querySelector('.tick').textContent !== text, first, { timeout: 4000 });
+      await ticking.close();
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+
     assert.deepEqual(errors, []);
-    console.log('Studio editor UI test passed; screenshots in ui-snapshots/30-32');
+    console.log('Studio editor UI test passed; screenshots in ui-snapshots/30-34');
   } finally {
     await browser.close();
     server.close();

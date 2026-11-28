@@ -15,6 +15,7 @@
   --button-fg: var(--vscode-button-secondaryForeground, #fff);
   --primary-bg: var(--vscode-button-background, #0e639c);
   --primary-fg: var(--vscode-button-foreground, #fff);
+  --ok: var(--vscode-testing-iconPassed, #388a34);
 }
 * { box-sizing: border-box; }
 body { margin: 0; color: var(--fg); background: var(--bg); font: 13px var(--vscode-font-family, system-ui, sans-serif); height: 100vh; display: flex; flex-direction: column; }
@@ -36,6 +37,26 @@ textarea { font-family: var(--vscode-editor-font-family, monospace); font-size: 
 .actions { display: flex; gap: 6px; }
 #notice { padding: 8px 16px; color: var(--error); border-bottom: 1px solid var(--border); white-space: pre-wrap; }
 #notice[hidden] { display: none; }
+.sr-only { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+
+/* The run the diagram follows: the words carry the state, the colours only echo them. */
+.run-banner { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 16px; padding: 8px 16px; border-bottom: 1px solid var(--border); background: var(--panel); }
+.run-banner[hidden] { display: none; }
+.run-line { display: flex; flex-wrap: wrap; align-items: baseline; }
+.run-line span { white-space: pre; }
+.run-badge { margin-left: 8px; padding: 0 8px; border: 1px solid currentColor; border-radius: 8px; font-size: 12px; }
+.run-actions { display: flex; align-items: center; gap: 6px; margin-left: auto; }
+.run-actions [hidden] { display: none; }
+.run-note { flex-basis: 100%; margin: 0; color: var(--muted); font-size: 12px; }
+.run-note[hidden] { display: none; }
+.run-note.warning { color: var(--warn); }
+.run-running-text { color: var(--accent); }
+.run-waiting-text { color: var(--warn); }
+.run-done-text { color: var(--ok); }
+.run-failed-text, .error-text { color: var(--error); }
+.run-stopped-text { color: var(--muted); }
+.run-state { margin: 0 0 4px; font-weight: 600; }
+.error-text { margin: 0 0 8px; white-space: pre-wrap; }
 
 .layout { flex: 1; min-height: 0; display: grid; grid-template-columns: 210px minmax(0, 1fr) 320px; }
 .palette, .panel { overflow: auto; padding: 0 12px 16px; background: var(--panel); }
@@ -63,6 +84,16 @@ textarea { font-family: var(--vscode-editor-font-family, monospace); font-size: 
 .node .lock { fill: var(--warn); font-size: 11px; pointer-events: auto; }
 .node .model { fill: var(--accent); font-weight: 700; font-size: 11px; }
 .node .problem-mark { fill: var(--error); }
+.node.run-pending rect { stroke-dasharray: 2 3; }
+.node.run-running rect { stroke: var(--accent); stroke-width: 3; stroke-dasharray: none; }
+.node.run-waiting rect { stroke: var(--warn); stroke-width: 3; stroke-dasharray: none; }
+.node.run-done rect { stroke: var(--ok); stroke-width: 2; stroke-dasharray: none; }
+.node.run-failed rect { stroke: var(--error); stroke-width: 3; stroke-dasharray: none; }
+.node.run-stopped rect { stroke: var(--muted); stroke-width: 2; stroke-dasharray: none; }
+.node.run-skipped rect, .node.run-skipped text { opacity: 0.55; }
+.node.run-skipped rect { stroke-dasharray: 4 4; }
+.node .run-word { font-weight: 600; font-size: 12px; opacity: 1; }
+.node.run-skipped .run-word { opacity: 1; }
 .edge path { fill: none; stroke: var(--muted); stroke-width: 1.5; }
 .edge.near path { stroke: var(--accent); }
 .edge .when { fill: var(--warn); font-size: 11px; }

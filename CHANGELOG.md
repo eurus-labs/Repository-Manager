@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.15.0] - 2026-11-28
+
+### Added
+
+- **See a run live in the workflow diagram.** An open workflow diagram marks each step of its running (or waiting) run as running with its time, waiting for you, done, failed, skipped or not started, with a word as well as a colour. A banner shows which run it is, "Step k of n" and when it started, with **Stop** and **Open in Runs**. A failed step shows its error. You can keep editing: the banner says the run uses the copy it started with, and names the steps the file no longer has.
+- The **Runs view updates while a run goes on**, whether it was started from the chat, the editor, Run Workflow… or Resume, and a running run has **Stop**. Stop cancels the run the same way as the notification's Cancel.
+
 ## [3.14.0] - 2026-11-28
 
 ### Changed
