@@ -109,6 +109,8 @@ class LiveRun {
   private lastPost = 0;
   private readonly dirty = new Set<string>();
   private readonly other = new Set<string>();
+  /** An entry arrived since the last look was asked for. */
+  private fresh = false;
   private subscription?: { dispose(): void };
   private disposed = false;
   private queue: Promise<void> = Promise.resolve();
@@ -147,9 +149,11 @@ class LiveRun {
     const found = id ? (await store.list()).find(state => state.workflow.id === id && (state.status === 'running' || state.status === 'waiting')) : undefined;
     if (this.disposed) { return; }
     if (found) { this.tracked = { id: found.id, startedAt: found.startedAt, live: true }; await this.render(); }
+    if (this.disposed) { return; }
     this.subscription = store.onLog(runId => {
       if (this.disposed || this.other.has(runId)) { return; }
       this.dirty.add(runId);
+      this.fresh = true;
       this.arm(false);
     });
   }
@@ -161,8 +165,11 @@ class LiveRun {
     this.timer = setTimeout(() => {
       this.timer = undefined;
       this.lastPost = Date.now();
+      // An entry that came while this one was waiting has had no look of its own: confirm again.
+      const again = this.fresh;
+      this.fresh = false;
       this.enqueue(() => this.flush());
-      if (!confirm) { this.arm(true); }
+      if (!confirm || again) { this.arm(true); }
     }, wait);
   }
 
@@ -175,7 +182,9 @@ class LiveRun {
       const state = await store.load(runId).catch(() => undefined);
       if (this.disposed) { return; }
       if (!state) { continue; }
-      if (!id || state.workflow.id !== id) { this.other.add(runId); continue; }
+      // The file may be unreadable for a moment (mid-edit in the JSON editor): that says nothing about the run.
+      if (!id) { continue; }
+      if (state.workflow.id !== id) { if (this.tracked?.id !== runId) { this.other.add(runId); } continue; }
       const live = state.status === 'running' || state.status === 'waiting';
       // The newest run that is going on is the one shown; a finished one stays until another starts.
       if (!this.tracked || this.tracked.id === runId || (live && (!this.tracked.live || state.startedAt >= this.tracked.startedAt))) {

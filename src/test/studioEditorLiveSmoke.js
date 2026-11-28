@@ -158,6 +158,27 @@ async function main() {
     await until(() => last().run.status === 'failed', 'the failed run');
     assert.deepEqual([last().run.steps.a.outcome, last().run.steps.a.error], ['failed', 'disk full']);
 
+    // ---- the file unreadable for a moment (mid-edit in the JSON editor) does not make the diagram forget its run.
+    await store.save(runState('r6', { startedAt: at(25) }));
+    await store.saveWorkflow('r6', flow);
+    await store.log('r6', { at: at(25), type: 'start' });
+    await until(() => last().run.id === 'r6', 'the newest run');
+    document.text = '{ "id": ';
+    await store.log('r6', { at: at(26), type: 'node', node: 'a' });
+    await sleep(600);
+    document.text = text;
+    await store.log('r6', { at: at(27), type: 'tool', node: 'a', name: 'x', ok: true });
+    await until(() => outcomes().a === 'running', 'r6 running after the file was readable again');
+
+    // ---- an entry that lands while the confirming look waits is confirmed too: its state is saved after that look.
+    await sleep(400);
+    await store.log('r6', { at: at(28), type: 'tool', node: 'a', name: 'y', ok: true });
+    await sleep(150);
+    await store.log('r6', { at: at(29), type: 'waiting', node: 'a', kind: 'effect' });
+    await sleep(200);
+    await store.save(runState('r6', { startedAt: at(25), status: 'waiting', nodes: { a: { status: 'pending' }, b: { status: 'pending' }, c: { status: 'pending' } }, waiting: { node: 'a', kind: 'effect', title: 'Write', effect: 'write', preview: '' } }));
+    await until(() => last().run.status === 'waiting', 'the waiting state saved after the entry');
+
     // ---- closing the panel ends the subscription: a later entry posts nothing and throws nothing.
     dispose();
     const closed = posted.length;

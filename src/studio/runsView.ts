@@ -26,6 +26,8 @@ export class RunsViewProvider implements vscode.WebviewViewProvider {
   private timer?: ReturnType<typeof setTimeout>;
   /** The newest refresh started: an older one that finishes later does not overwrite it. */
   private drawing = 0;
+  /** A log entry arrived since the last redraw was asked for. */
+  private fresh = false;
   /** The page last drawn, without its nonce: a refresh that would draw the same page leaves it alone. */
   private drawn = '';
 
@@ -39,6 +41,8 @@ export class RunsViewProvider implements vscode.WebviewViewProvider {
 
   resolveWebviewView(view: vscode.WebviewView): void {
     this.view = view;
+    // A new view starts blank: the last page drawn belonged to the one before.
+    this.drawn = '';
     view.webview.options = { enableScripts: true, localResourceRoots: [] };
     view.webview.onDidReceiveMessage((message: Incoming) => { void this.receive(message); });
     view.onDidChangeVisibility(() => { if (view.visible) { void this.refresh(); } });
@@ -72,11 +76,14 @@ export class RunsViewProvider implements vscode.WebviewViewProvider {
       this.timer = setTimeout(() => {
         this.timer = undefined;
         if (ended || !view.visible) { return; }
+        // An entry that came while this one was waiting has had no redraw of its own: confirm again.
+        const again = this.fresh;
+        this.fresh = false;
         void this.refresh();
-        if (!confirm) { arm(true); }
+        if (!confirm || again) { arm(true); }
       }, wait);
     };
-    subscriptions.push(store.onLog(() => { if (view.visible) { arm(false); } }));
+    subscriptions.push(store.onLog(() => { if (view.visible) { this.fresh = true; arm(false); } }));
   }
 
   /** Reads the runs again and redraws (also after a run changes). */

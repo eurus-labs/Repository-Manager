@@ -44,7 +44,8 @@ async function main() {
       onDidChangeVisibility: handler => { visibility = handler; },
       onDidDispose: handler => { disposed = handler; }
     };
-    new RunsViewProvider(runs).resolveWebviewView(view);
+    const provider = new RunsViewProvider(runs);
+    provider.resolveWebviewView(view);
     // The provider handles a message after returning from the handler: give it a moment.
     const send = async message => { await receive(message); await sleep(80); };
     await sleep(150);
@@ -88,6 +89,18 @@ async function main() {
     assert.doesNotMatch(draws.at(-1).html, /data-action="stop"/, 'a run that ended still has Stop');
     await store.save(state('go'));
 
+    // An entry that lands while the confirming redraw waits is confirmed too: its state is saved after that redraw.
+    await sleep(400);
+    await store.save(state('go'));
+    await store.log('go', { type: 'tool', node: 'a', name: 'first', ok: true });
+    await sleep(120);
+    await store.log('go', { type: 'finish', status: 'done' });
+    await sleep(220);
+    await store.save({ ...state('go', 'done'), nodes: { a: { status: 'done' } } });
+    for (let i = 0; i < 60 && /data-action="stop"/.test(draws.at(-1).html); i++) { await sleep(25); }
+    assert.doesNotMatch(draws.at(-1).html, /data-action="stop"/, 'a state saved after the confirming redraw was never drawn');
+    await store.save(state('go'));
+
     // Hidden: nothing is drawn; shown again: drawn once.
     await sleep(400);
     view.visible = false;
@@ -119,6 +132,14 @@ async function main() {
     await sleep(700);
     assert.equal(draws.length, count, 'the closed view was drawn');
     assert.deepEqual(unhandled, []);
+
+    // A new view on the same provider (VS Code resolves another after it closed one) is drawn, not left blank.
+    const again = [];
+    const second = { visible: true, webview: { cspSource: 'x', options: {}, set html(value) { again.push(value); }, onDidReceiveMessage() {} }, onDidChangeVisibility() {}, onDidDispose() {} };
+    provider.resolveWebviewView(second);
+    await sleep(200);
+    assert.equal(again.length, 1, 'a view resolved after another was closed was not drawn');
+    second.visible = false;
 
     // A view closed before the store answered ends its subscription too.
     let release;

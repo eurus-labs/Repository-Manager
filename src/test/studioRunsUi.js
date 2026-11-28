@@ -85,7 +85,8 @@ async function main() {
       onDidReceiveMessage: handler => { receive = handler; }
     };
     await page.exposeFunction('postToHost', message => receive(message));
-    await page.addInitScript(() => { window.acquireVsCodeApi = () => ({ postMessage: message => window.postToHost(message) }); });
+    // getState/setState as VS Code gives them: what the page keeps survives it being drawn again.
+    await page.addInitScript(() => { window.acquireVsCodeApi = () => ({ postMessage: message => window.postToHost(message), getState: () => JSON.parse(sessionStorage.getItem('state') || 'null'), setState: value => sessionStorage.setItem('state', JSON.stringify(value)) }); });
     const settle = async () => { for (let i = 0; i < 20; i++) { await new Promise(resolve => setTimeout(resolve, 25)); await rendered; } };
 
     new RunsViewProvider(studioRuns).resolveWebviewView({ webview, visible: true, onDidChangeVisibility: () => {}, onDidDispose: () => {} });
@@ -150,6 +151,17 @@ async function main() {
     await store.log('going', { type: 'finish', status: 'stopped', reason: 'Cancelled' });
     await store.save({ ...(await store.load('going')), status: 'stopped', error: 'Cancelled' });
     await page.waitForFunction(() => !document.querySelector('.detail button[data-action="stop"]'), undefined, { timeout: 3000 });
+
+    // A section the person opened stays open when the page is drawn again for a run elsewhere.
+    await page.click(`button[data-action="select"][data-run="${waiting.id}"]`);
+    await page.locator('.detail details.result summary').first().click();
+    assert.equal(await page.locator('.detail details.result[open]').count() > 0, true);
+    await store.save({ id: 'elsewhere', workflow: { id: 'fix', version: '1', title: 'Another workflow', hash: 'h' }, startedAt: '2026-11-28T09:30:00.000Z', updatedAt: '',
+      status: 'running', inputs: {}, approvals: {}, nodes: {} });
+    await store.log('elsewhere', { type: 'start' });
+    await page.waitForFunction(() => document.querySelectorAll('table.runs tbody tr').length === 5, undefined, { timeout: 3000 });
+    await settle();
+    assert.equal(await page.locator('.detail details.result[open]').count() > 0, true, 'an open result was closed by the redraw');
     assert.deepEqual(errors, [], `page errors: ${errors.join('; ')}`);
     console.log('Studio runs UI test passed; screenshots in ui-snapshots/50-53');
   } finally {
