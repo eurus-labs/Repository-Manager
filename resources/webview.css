@@ -1676,10 +1676,10 @@ button.reference-detail-item:hover { background: var(--bg-hover); }
   pointer-events: none;
   user-select: none;
 }
-/* Each row carries its line's tone at 5%, 20% when selected; the checked-out tip is outlined. */
-.history-row.row-tint { background: color-mix(in srgb, var(--lane-color) 5%, transparent); }
-.history-row.row-tint:hover { background: color-mix(in srgb, var(--lane-color) 10%, transparent); }
-.history-row.row-tint.active { background: color-mix(in srgb, var(--lane-color) 20%, transparent); }
+/* Each row carries its line's tone at 9%, 14% under the pointer, 22% when selected; the checked-out tip is outlined. */
+.history-row.row-tint { background: color-mix(in srgb, var(--lane-color) 9%, transparent); }
+.history-row.row-tint:hover { background: color-mix(in srgb, var(--lane-color) 14%, transparent); }
+.history-row.row-tint.active { background: color-mix(in srgb, var(--lane-color) 22%, transparent); }
 .history-row.row-head::after {
   position: absolute;
   inset: 0;
@@ -1708,7 +1708,22 @@ body.vscode-high-contrast .history-row.row-tint.active { background: transparent
   cursor: pointer;
 }
 .history-subject:focus-visible { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
-.history-author { color: var(--text-secondary); }
+.history-author { display: flex; align-items: center; gap: 7px; color: var(--text-secondary); }
+.history-author-name { overflow: hidden; min-width: 0; text-overflow: ellipsis; white-space: nowrap; }
+/* The author's initials in a circle; one person keeps one tone (toneForName). */
+.author-avatar {
+  display: inline-grid;
+  flex: none;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  color: #14161a;
+  background: color-mix(in srgb, var(--lane-color) 85%, transparent);
+  font-size: 8.5px;
+  font-weight: 600;
+  line-height: 1;
+}
 .history-date,
 .history-hash { color: var(--text-muted); }
 .history-hash {
@@ -1812,7 +1827,7 @@ body.vscode-high-contrast .graph-node-control[data-marker="T"] .graph-node-hit {
 }
 
 .history-ref {
-  max-width: 170px;
+  max-width: 320px;
   padding: 1px 7px;
   border: 0;
   border-radius: 5px;
@@ -2307,7 +2322,7 @@ body.vscode-high-contrast .graph-node-control[data-marker="T"] .graph-node-hit {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  max-width: 170px;
+  max-width: 320px;
   min-width: 0;
   height: 20px;
   flex: 0 0 auto;
@@ -2784,7 +2799,10 @@ body.vscode-light .history-refs .history-ref.ref-tone { color: var(--text-primar
 /* Detail pane: explicit rows so hidden siblings never shift the main content into an auto row.
    A long summary gives way first (it scrolls), so the changed files and diff keep room to scroll;
    when even that does not fit, the pane itself scrolls. */
-.commit-detail-region { grid-template-rows: auto minmax(0, auto) minmax(150px, 1fr); overflow-y: auto; }
+/* The header's row is max-content, not auto: the header has a min-height, which switches off the grid item's
+   content-based minimum, so an auto row shrank to fit beside the 150px files row and the header's last line
+   (Contained in) was painted over the Changed files title. */
+.commit-detail-region { grid-template-rows: max-content minmax(0, auto) minmax(150px, 1fr); overflow-y: auto; }
 .commit-detail-region > .commit-header { grid-row: 1; }
 .commit-detail-region > .change-summary { grid-row: 2; }
 .commit-detail-region > .commit-content { grid-row: 3; }

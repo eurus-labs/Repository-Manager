@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.13.0] - 2026-11-27
+
+### Changed
+
+- The history rows are **tinted more clearly** with their line's colour: 9% on a row, 14% under the pointer and 22% when selected (they were 5%, 10% and 20%).
+- **Branch labels show their whole name**, up to 320 px (they were cut at 170 px). A longer name still ends in an ellipsis, and the label's tooltip gives it in full.
+- The **author column starts with a round avatar of the author's initials**, in a colour that stays the same for one person. The name and the email tooltip are still there.
+- Pointing at a row no longer shows the "Ctrl+click or Shift+click to compare" tooltip. The hint is on the Graph column header.
+
+### Fixed
+
+- In a short window, the **Contained in** line of the commit details could be painted over the "Changed files" title below it. The details header now always grows to hold its lines, and the pane scrolls when they do not all fit.
+
 ## [3.12.0] - 2026-11-27
 
 ### Added

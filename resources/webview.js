@@ -1845,7 +1845,7 @@
   const HISTORY_REF_NARROW = 360;
   const HISTORY_REF_GAP = 3;
   const HISTORY_REF_MORE_WIDTH = 30;
-  const HISTORY_REF_MAX_WIDTH = 170;
+  const HISTORY_REF_MAX_WIDTH = 320;
   let historyRefFoldFrame = 0;
   function foldHistoryRefs() {
     const history = document.getElementById('dashboardHistory');
@@ -2426,10 +2426,10 @@
       // The row is tinted with its line's tone; the checked-out branch's tip is outlined.
       const tint = Number.isInteger(layout.color) ? ` row-tint graph-lane-${layout.color % 8}` : '';
       const tip = (commit.refs || []).some(ref => ref.kind === 'head') ? ' row-head' : '';
-      return `<div class="history-row${tint}${tip}" data-action="selectHistoryCommit" data-commit="${escapeHtml(commit.hash)}"${segment} tabindex="0" title="Ctrl+click or Shift+click to compare">
+      return `<div class="history-row${tint}${tip}" data-action="selectHistoryCommit" data-commit="${escapeHtml(commit.hash)}"${segment} tabindex="0">
         ${renderGraphCell()}
         <span class="history-message">${refs ? `<span class="history-refs">${refs}</span>` : ''}<button class="history-subject" type="button" data-action="selectHistoryCommit" data-commit="${escapeHtml(commit.hash)}">${escapeHtml(commit.subject)}</button></span>
-        <span class="history-author" title="${escapeHtml(commit.authorEmail)}">${escapeHtml(commit.authorName)}</span>
+        <span class="history-author" title="${escapeHtml(commit.authorEmail)}"><span class="author-avatar graph-lane-${window.RepositoryHistoryGraph.toneForName(commit.authorName)}" aria-hidden="true">${escapeHtml(authorInitials(commit.authorName))}</span><span class="history-author-name">${escapeHtml(commit.authorName)}</span></span>
         <span class="history-date">${escapeHtml(formatHistoryDate(commit.authoredAt))}</span>
         <code class="history-hash">${escapeHtml(commit.shortHash)}</code>
       </div>`;
