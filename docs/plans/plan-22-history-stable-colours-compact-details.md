@@ -1,6 +1,6 @@
 # Plan 22 — Keep a branch's colour when it is checked out, and keep the commit details compact
 
-Status: approved
+Status: implemented
 Date: 2026-11-28
 Branch: `fix/history-stable-colours-compact-details`
 Baseline: `main` at `4a89f99a129e1663c2cc0026491f735adc879d13` (3.13.0)
