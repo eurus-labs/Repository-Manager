@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **A branch keeps its colour when you check it out.** The checked-out line no longer turns amber and a branch you leave or come back to keeps its colour. A line in the graph takes the colour of the nearest branch label above each commit, so no commit changes colour on a checkout, even when you check out a branch made from `main`. History labels and the commit details use the colour of their own branch's name. The checked-out line is still in the first column, with an outlined tip row, a bold label and, new, a ring around its node. A detached HEAD stays amber.
+- **A branch keeps its colour when you check it out.** The checked-out line no longer turns amber and a branch you leave or come back to keeps its colour. A line in the graph takes the colour of the nearest branch label above each commit, so no commit changes colour on a checkout, even when you check out a branch made from `main`; where branches forked from an unlabelled commit, the shared history below keeps `main`'s colour. History labels and the commit details use the colour of their own branch's name. The checked-out line is still in the first column, with an outlined tip row, a bold label and, new, a ring around its node. A detached HEAD stays amber.
 - In the commit details, the **branch labels and the "Contained in" chips look like the labels in the history**: an outlined pill in the branch's colour, with a cloud for a branch on `origin` and a monitor for one on this machine, in place of the "origin" text.
 
 ### Fixed

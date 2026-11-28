@@ -54,6 +54,11 @@ out. The user chose "a colour changes at each branch label" from a rendered prev
        commits are on lane 1 in its tone; `main` and below are in `main`'s tone. After checking out `feature/x`:
        column 0 is `feature/x`'s tone down to the commit labelled `main`, and `main`'s tone from there down. No
        commit changes tone.
+     - **Shared history after a fork (Codex review on PR 199, user's choice 2026-11-28 "keep each branch's own
+       colour").** Where several lines meet at an unlabelled commit (the branches forked there), the lane takes the
+       name of one of the lines that lead into it, chosen without regard to HEAD: `main`, then `master`, then the
+       first name in alphabetical order; unnamed lanes do not count. Example: `main` moved after `feature/x` was
+       made; the fork commit and everything below it stay `main`'s tone on any checkout. Column layout is unchanged.
      - **Accepted cost:** one line can change colour part way down. A stale branch label sitting on another branch's
        line recolours that line below it; that is stable across checkouts.
    - **History labels take their own name's tone,** not the row's line tone, like the details. On a row the first

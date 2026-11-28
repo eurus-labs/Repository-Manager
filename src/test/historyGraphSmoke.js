@@ -103,6 +103,43 @@ const rowOf = (model, commits, hash) => model.rows[commits.findIndex(commit => c
   assert.equal(tonesOf([{ hash: 'r1', parentHashes: [], refs: [remote('origin/beta')] }]).r1, graph.toneForName('beta'));
 }
 
+// Branches that diverged (plan 22, Codex review): main moved after feature/x was made, so the two meet at m1, which has
+// no label. The shared history below the fork takes the default branch's tone whatever is checked out; without a
+// default branch, the first name in alphabetical order.
+{
+  const headRef = name => ({ name, kind: 'head', isCurrent: true });
+  const ref = (name, headOn) => (name === headOn ? headRef(name) : local(name));
+  const build = headOn => [
+    { hash: 'x2', parentHashes: ['x1'], refs: [ref('feature/x', headOn)] },
+    { hash: 'm2', parentHashes: ['m1'], refs: [ref('main', headOn)] },
+    { hash: 'x1', parentHashes: ['m1'] },
+    { hash: 'y1', parentHashes: ['m0'], refs: [ref('fix/y', headOn)] },
+    { hash: 'm1', parentHashes: ['m0'] },
+    { hash: 'm0', parentHashes: [] }
+  ];
+  const tonesOf = commits => {
+    const model = graph.buildGraphModel(commits);
+    return Object.fromEntries(commits.map((commit, index) => [commit.hash, model.rows[index].color]));
+  };
+  const main = graph.toneForName('main');
+  const expected = { x2: graph.toneForName('feature/x'), m2: main, x1: graph.toneForName('feature/x'), y1: graph.toneForName('fix/y'), m1: main, m0: main };
+  for (const headOn of ['main', 'feature/x', 'fix/y']) {
+    assert.deepEqual(tonesOf(build(headOn)), expected, `with HEAD on ${headOn} the shared history changed colour`);
+  }
+  // The edges into the fork keep each child's tone; the line below it is main's.
+  const checked = graph.buildGraphModel(build('feature/x'));
+  assert.equal(checked.rows[4].beforeColors[0], graph.toneForName('feature/x'), 'the edge from x1 into the fork is not feature/x\'s tone');
+  assert.equal(checked.rows[4].parentColors[0], main, 'the edge below the fork is not main\'s tone');
+  // master is a default branch too; without one, the alphabetically first name wins, on either checkout.
+  const pair = (a, b, headOn) => [
+    { hash: 'a1', parentHashes: ['base'], refs: [ref(a, headOn)] },
+    { hash: 'b1', parentHashes: ['base'], refs: [ref(b, headOn)] },
+    { hash: 'base', parentHashes: [] }
+  ];
+  for (const headOn of ['master', 'feature/a']) assert.equal(tonesOf(pair('feature/a', 'master', headOn)).base, graph.toneForName('master'), `master lost with HEAD on ${headOn}`);
+  for (const headOn of ['feature/b', 'feature/a']) assert.equal(tonesOf(pair('feature/b', 'feature/a', headOn)).base, graph.toneForName('feature/a'), `the shared base changed with HEAD on ${headOn}`);
+}
+
 // A lane a merge opens keeps its tone when Load more brings the merged parent into the list.
 {
   const merge = subject => ({ hash: 'm3', parentHashes: ['m2', 'x2'], subject, refs: [head] });
