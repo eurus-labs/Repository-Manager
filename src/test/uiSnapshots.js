@@ -3305,7 +3305,7 @@ async function main() {
           window.dispatchEvent(new MessageEvent('message', { data: { type: 'commitBranchesLoaded', payload: { repositoryPath: request.repositoryPath,
             commitHash: request.commitHash, requestId: request.requestId, branches } } }));
         });
-        await compact.locator('#dashboardCommitSummary .contained-chip').first().waitFor();
+        await compact.locator('#dashboardCommitSummary .contained-chip').first().waitFor({ state: 'attached' }); // at 720 px a wide font can fold every chip
         await compact.locator('#dashboardChangedFiles .changed-file-item').first().waitFor();
         await compact.waitForTimeout(150);
         const look = await compact.evaluate(() => {
