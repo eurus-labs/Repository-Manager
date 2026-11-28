@@ -9,6 +9,18 @@
   let data = null;
   let selected = (vscode.getState() || {}).selected || null; // { kind: 'node', id } | null
   let notice = '';
+  // The run the host says this file's workflow is in (null: none), and the one the person hid.
+  let run = null;
+  let dismissed = null;
+  let stopping = null;
+  let announced = null;
+  let ticker = null;
+  // A step's state in a word and a sign: never colour alone (the same words as the chat's run card).
+  const STEP = {
+    pending: ['○', 'Not started'], running: ['▶', 'Running'], waiting: ['⏸', 'Waiting for you'], done: ['✓', 'Done'],
+    skipped: ['–', 'Skipped'], failed: ['✗', 'Failed'], stopped: ['■', 'Stopped']
+  };
+  const RUN_WORD = { running: 'Running', waiting: 'Waiting for you', done: 'Done', failed: 'Failed', stopped: 'Stopped' };
 
   const $ = id => document.getElementById(id);
   const send = operation => vscode.postMessage({ type: 'edit', operation });
@@ -31,6 +43,14 @@
   const stepOf = type => (data && data.catalog || []).find(step => step.type === type);
   const remember = () => vscode.setState({ selected });
   const select = value => { selected = value; remember(); render(); };
+
+  /** m:ss from a start time (ISO), as the reader's clock shows it. */
+  function elapsed(since) {
+    const started = Date.parse(since);
+    if (!Number.isFinite(started)) return '';
+    const seconds = Math.max(0, Math.floor((Date.now() - started) / 1000));
+    return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
+  }
 
   /** A labelled field that sends its value when it changes (on blur or Enter), not on each key. */
   function field(label, value, onCommit, { multiline = false, placeholder = '', key, hint, required } = {}) {
@@ -113,6 +133,7 @@
         transform: `translate(${at[0]},${at[1]})`, tabindex: 0, role: 'button', 'data-node': node.id,
         'aria-label': `${node.title || node.id}, ${node.type}${node.type === 'gate' ? ', waits for your answer' : locked ? `, asks before it ${step.asks}` : ''}${issues.length ? `, ${issues.length} problem${issues.length === 1 ? '' : 's'}` : ''}`
       });
+      group.dataset.label = group.getAttribute('aria-label');
       group.append(svg('rect', { width: NODE_W, height: NODE_H, rx: 8 }));
       const title = svg('text', { x: 12, y: 24, class: 'title' });
       const name = node.title || node.id;
@@ -147,6 +168,118 @@
       });
       nodesLayer.append(group);
     });
+    applyRun();
+  }
+
+  // ----------------------------------------------------------------------------------- a run
+
+  /** The state of a step of the shown run, or undefined (no run, or the file has no such step). */
+  const stepRun = id => (run && run.steps ? run.steps[id] : undefined);
+
+  /** Marks each step with the run's state, in place: no redraw, so a drag or a focus is not lost. */
+  function applyRun() {
+    document.querySelectorAll('#nodes .node').forEach(group => {
+      [...group.classList].forEach(name => { if (name.startsWith('run-')) group.classList.remove(name); });
+      group.querySelectorAll('.run-word, .run-title').forEach(item => item.remove());
+      const state = stepRun(group.dataset.node);
+      group.setAttribute('aria-label', group.dataset.label);
+      if (!state) return;
+      const [sign, word] = STEP[state.outcome] || STEP.pending;
+      group.classList.add(`run-${state.outcome}`);
+      const text = svg('text', { x: 12, y: NODE_H + 16, class: 'run-word' });
+      text.append(`${sign} ${word}`);
+      if (state.outcome === 'running' && state.since) {
+        const tick = svg('tspan', { class: 'tick', 'data-since': state.since });
+        tick.textContent = elapsed(state.since);
+        text.append(' · ', tick);
+      }
+      const tip = svg('title', { class: 'run-title' });
+      tip.textContent = state.outcome === 'failed' && state.error ? `Failed: ${state.error}` : word;
+      group.prepend(tip);
+      group.append(text);
+      group.setAttribute('aria-label', `${group.dataset.label}, ${word.toLowerCase()}${state.outcome === 'failed' && state.error ? `: ${state.error}` : ''}`);
+    });
+    // A failed step's error, in the panel when it is selected.
+    const note = $('run-note');
+    if (note) {
+      const state = selected && stepRun(selected.id);
+      note.replaceChildren();
+      if (state) {
+        const [sign, word] = STEP[state.outcome] || STEP.pending;
+        note.append(el('p', { class: `run-state run-${state.outcome}-text`, text: `${sign} ${word}` }),
+          state.error && state.outcome === 'failed' ? el('p', { class: 'error-text', text: state.error }) : null);
+      }
+    }
+    startTicker();
+  }
+
+  /** The running step's time ticks here, once a second; the host sends nothing per tick. */
+  function startTicker() {
+    if (!document.querySelector('#nodes .tick')) { if (ticker) { clearInterval(ticker); ticker = null; } return; }
+    if (ticker) return;
+    ticker = setInterval(() => {
+      const ticks = document.querySelectorAll('#nodes .tick');
+      if (!ticks.length) { clearInterval(ticker); ticker = null; return; }
+      ticks.forEach(tick => { tick.textContent = elapsed(tick.dataset.since); });
+    }, 1000);
+  }
+
+  /** The banner above the canvas: which run, how far, and Stop. Its parts are updated, not rebuilt, so focus stays. */
+  function updateBanner() {
+    const banner = $('run-banner');
+    const shown = run || null;
+    banner.hidden = !shown || !data || !data.editable;
+    if (banner.hidden) { banner.replaceChildren(); delete banner.dataset.run; announce(); return; }
+    if (banner.dataset.run !== shown.id) {
+      banner.dataset.run = shown.id;
+      const stop = el('button', { type: 'button', id: 'run-stop', class: 'primary', text: 'Stop', title: 'Stops the run at its next step, like Cancel on its notification',
+        onclick: () => { stopping = shown.id; updateBanner(); vscode.postMessage({ type: 'stopRun', run: shown.id }); } });
+      banner.replaceChildren(
+        el('div', { class: 'run-line' },
+          el('strong', { id: 'run-title' }), el('span', { id: 'run-step' }), el('span', { id: 'run-started' }), el('span', { id: 'run-state', class: 'run-badge' })),
+        el('div', { class: 'run-actions' }, stop,
+          el('button', { type: 'button', id: 'run-open', text: 'Open in Runs', title: 'See this run, and every other, in the Runs view', onclick: () => vscode.postMessage({ type: 'openRuns' }) }),
+          el('button', { type: 'button', id: 'run-hide', class: 'link', text: 'Hide', title: 'Stop showing this run on the diagram', onclick: () => { dismissed = shown.id; run = null; applyRun(); updateBanner(); } })),
+        el('p', { id: 'run-edit', class: 'run-note', text: 'You can keep editing: the run uses the copy of this workflow it started with.' }),
+        el('p', { id: 'run-earlier', class: 'run-note warning', hidden: true }),
+        el('p', { id: 'run-activity', class: 'run-note muted', hidden: true }));
+    }
+    const started = new Date(shown.startedAt);
+    $('run-title').textContent = shown.title;
+    $('run-step').textContent = ` · Step ${shown.step} of ${shown.total}`;
+    $('run-started').textContent = Number.isNaN(started.getTime()) ? '' : ` · started ${started.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+    $('run-state').textContent = RUN_WORD[shown.status] || shown.status;
+    $('run-state').className = `run-badge run-${shown.status}-text`;
+    const live = shown.status === 'running' || shown.status === 'waiting';
+    $('run-stop').hidden = !shown.stoppable;
+    $('run-stop').disabled = stopping === shown.id;
+    $('run-stop').textContent = stopping === shown.id ? 'Stopping…' : 'Stop';
+    $('run-edit').hidden = !live;
+    $('run-hide').hidden = live;
+    const missing = shown.missing || [];
+    $('run-earlier').hidden = !shown.earlier;
+    $('run-earlier').textContent = shown.earlier
+      ? `${live ? 'Running an earlier version of this file' : 'This was an earlier version of this file'}.${missing.length ? ` Steps no longer in the file: ${missing.map(step => `${step.title === step.id ? step.id : `${step.title} (${step.id})`} — ${(STEP[step.outcome] || STEP.pending)[1].toLowerCase()}`).join('; ')}.` : ''}`
+      : '';
+    $('run-activity').hidden = !shown.activity;
+    $('run-activity').textContent = shown.activity || '';
+    announce();
+  }
+
+  /** The visually hidden status line: changes only when a step starts or ends, not for every tool line or tick. */
+  function announce() {
+    const status = $('run-status');
+    const shown = run || null;
+    const signature = shown ? `${shown.id}|${shown.status}|${Object.entries(shown.steps || {}).map(([id, step]) => `${id}:${step.outcome}`).join(',')}` : '';
+    if (signature === announced) return;
+    announced = signature;
+    if (!shown) { status.textContent = ''; return; }
+    const steps = Object.entries(shown.steps || {});
+    const active = steps.find(([, step]) => step.outcome === 'running' || step.outcome === 'waiting' || step.outcome === 'failed' || step.outcome === 'stopped');
+    const node = active && data && data.workflow ? data.workflow.nodes.find(candidate => candidate.id === active[0]) : null;
+    status.textContent = active
+      ? `${shown.title}: step ${shown.step} of ${shown.total}, ${node && node.title ? node.title : active[0]}: ${(STEP[active[1].outcome] || STEP.pending)[1].toLowerCase()}`
+      : `${shown.title}: ${(RUN_WORD[shown.status] || shown.status).toLowerCase()}, ${steps.filter(([, step]) => step.outcome === 'done' || step.outcome === 'skipped').length} of ${shown.total} steps finished`;
   }
 
   // Drag a node to move it; a click without moving selects it. Only the drop is sent.
@@ -236,6 +369,7 @@
       el('p', { class: 'kind', text: `${step.title} · ${node.type}` }),
       node.type === 'gate' ? el('p', { class: 'locked', text: '⏸ The run stops here until you continue it, showing what "show" holds.' })
         : step.asks ? el('p', { class: 'locked', text: `🔒 The engine asks you before this step ${step.asks}, showing exactly what will happen. A workflow cannot turn this off.` }) : null,
+      el('div', { id: 'run-note', class: 'run-note-panel' }),
       issues.length ? el('ul', { class: 'node-problems' }, issues.map(problem => el('li', { text: problem.message }))) : null,
       field('ID', node.id, value => { if (value && value !== node.id) { selected = { kind: 'node', id: value }; remember(); send({ op: 'renameNode', id: node.id, to: value }); } },
         { hint: 'Renaming updates the edges and the ${…} references that read it.' }),
@@ -298,12 +432,21 @@
     const node = selected && workflow.nodes.find(candidate => candidate.id === selected.id);
     $('panel').replaceChildren(...(node ? nodePanel(node) : workflowPanel()).filter(Boolean));
     if (focused) { const again = $('panel').querySelector(`[data-key="${CSS.escape(focused)}"]`); if (again) again.focus(); }
+    applyRun();
+    updateBanner();
   }
 
   window.addEventListener('message', event => {
     const message = event.data || {};
     if (message.type === 'load') { data = message; notice = ''; render(); }
     if (message.type === 'editFailed') { notice = message.message; render(); }
+    if (message.type === 'runState') {
+      // A run the person hid (only an ended one can be) stays hidden; a newer run shows again.
+      run = message.run && dismissed === message.run.id ? null : message.run;
+      if (run && stopping && stopping !== run.id) stopping = null;
+      applyRun();
+      updateBanner();
+    }
   });
   $('arrange').addEventListener('click', () => send({ op: 'arrange' }));
   $('json').addEventListener('click', () => vscode.postMessage({ type: 'openAsJson' }));
