@@ -1,6 +1,6 @@
 # Plan 22 — Keep a branch's colour when it is checked out, and keep the commit details compact
 
-Status: implemented
+Status: approved
 Date: 2026-11-28
 Branch: `fix/history-stable-colours-compact-details`
 Baseline: `main` at `4a89f99a129e1663c2cc0026491f735adc879d13` (3.13.0)
@@ -33,12 +33,31 @@ The user reported three things on 2026-11-28, with screenshots of 3.13.0.
 
 Decision 1 is the user's (2026-11-28). Decisions 2 and 3 are the planner's. The planner proposed them in chat on
 2026-11-28, and the user approved this plan on 2026-11-28 after seeing a rendered preview, choosing to keep the HEAD
-ring in Decision 1.
+ring in Decision 1. The colour rule in Decision 1 was amended the same day: review found that colouring all of
+column 0 with the checked-out branch still recoloured `main`'s history when a branch made from `main` was checked
+out. The user chose "a colour changes at each branch label" from a rendered preview (`22-6`).
 
 1. **A branch's tone never depends on HEAD.**
-   - **Tone source.** Column 0's chain takes the tone of its branch name, `toneForName(<checked-out branch>)`, like
-     any other line. The name comes from the `head` ref at the HEAD commit. A detached HEAD has no name and takes tone
-     0.
+   - **Tone source: the nearest branch label above, on the same line (amended, user's choice).** Walking a lane from
+     its top down, the lane takes the tone of the branch label where it starts and switches to a new tone at every
+     commit that carries a branch label. So every commit's tone is `toneForName` of the nearest labelled commit at or
+     above it on its lane, which does not depend on HEAD.
+     - This applies to every lane, column 0 included, and in first-parent mode.
+     - **Which label counts at a commit:** the `head` ref first, then the first local branch, then the first remote
+       branch without its remote (`laneNameOf`, changed to prefer `head`). Tags and `origin/HEAD` do not count.
+     - **An unlabelled top:** a lane opened by a merge keeps plan 13's naming (merge subject, else the parent's hash)
+       until it reaches a labelled commit. A detached HEAD's chain is tone 0 until it reaches a labelled commit.
+     - **Edges:** the edge from a commit to its parent keeps the child's tone, so the switch shows at the labelled
+       node, as in the preview.
+     - **Segments** (plan 19's highlight) do not change: a colour switch does not start a new segment.
+     - **Example (the case review found):** `feature/x` made from `main`, `main` not moved. On `main`: `feature/x`'s
+       commits are on lane 1 in its tone; `main` and below are in `main`'s tone. After checking out `feature/x`:
+       column 0 is `feature/x`'s tone down to the commit labelled `main`, and `main`'s tone from there down. No
+       commit changes tone.
+     - **Accepted cost:** one line can change colour part way down. A stale branch label sitting on another branch's
+       line recolours that line below it; that is stable across checkouts.
+   - **History labels take their own name's tone,** not the row's line tone, like the details. On a row the first
+     label's tone equals the line's, so this only differs when one commit carries several branches.
    - **Where HEAD's line stays.** It keeps its column (0). It is marked by plan 20's outlined tip row (`row-head`), its
      bold label and a ring around its node, not by a colour.
    - **The HEAD ring (user's choice, 2026-11-28).** One extra SVG circle around the HEAD node only:
@@ -122,6 +141,17 @@ Default (`AGENTS.md`):
   - In both, `main`'s line and `feature/x`'s line have the same tone, and neither is 0.
   - A detached HEAD's line is tone 0.
   - **Failing first:** on `4a89f99` the checked-out line is 0.
+- [ ] **Branch made from `main`** (`historyGraphSmoke.js`, amended rule).
+  - Model: `feature/x` two commits ahead of `main`, `main` not moved, plus `fix/y` diverging below `main`. Model it
+    with HEAD on `main` and with HEAD on `feature/x`.
+  - In both, every commit's tone is the same: `feature/x`'s commits `toneForName('feature/x')`, `main`'s commit and
+    everything below it `toneForName('main')`, `fix/y`'s `toneForName('fix/y')`.
+  - Also: a detached HEAD above `main` is tone 0 down to `main`, then `main`'s; first-parent mode follows the same
+    rule; a commit labelled with two branches gives the `head` one when it is checked out.
+  - **Failing first** on `fd2ed93`: with HEAD on `feature/x`, `main`'s commit is `feature/x`'s tone.
+- [ ] **Branch made from `main` in the page** (`uiSnapshots.js`): the scripted checkout uses this shape (a branch
+  created from `main`, not only diverging branches). `main`'s label, its row tone and its node tone are the same before
+  and after the checkout. **Failing first** on `fd2ed93`.
 - [ ] **HEAD ring** (`uiSnapshots.js`).
   - Exactly one `.graph-node-head-ring` is in the graph, centred on the HEAD node, and its computed stroke equals the
     HEAD node's lane colour.
