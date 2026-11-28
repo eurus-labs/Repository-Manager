@@ -3014,15 +3014,23 @@
     const budget = line.clientWidth - (label ? label.offsetWidth + CONTAINING_GAP : 0);
     // Chips past the limit are not drawn: each counts as one that never fits, so the button keeps its room.
     const widths = chips.map(chip => chip.offsetWidth).concat(beyond.map(() => budget + 1));
-    const fits = Math.min(chips.length, window.RepositoryHistoryGraph.visibleRefCount(widths, budget, widths.length, CONTAINING_GAP, CONTAINING_MORE_WIDTH));
-    const folded = chips.slice(fits);
-    folded.forEach(chip => chip.classList.add('ref-folded'));
-    const names = folded.map(chip => chip.dataset.refName).concat(beyond);
-    button.hidden = names.length === 0;
-    button.textContent = names.length ? `+${names.length}` : '';
-    button.title = names.join(', ');
-    if (names.length) button.setAttribute('aria-label', `Show ${names.length} more ${names.length === 1 ? 'branch' : 'branches'}: ${names.join(', ')}`);
-    else button.removeAttribute('aria-label');
+    let fits = Math.min(chips.length, window.RepositoryHistoryGraph.visibleRefCount(widths, budget, widths.length, CONTAINING_GAP, CONTAINING_MORE_WIDTH));
+    const apply = () => {
+      chips.forEach((chip, index) => chip.classList.toggle('ref-folded', index >= fits));
+      const names = chips.slice(fits).map(chip => chip.dataset.refName).concat(beyond);
+      button.hidden = names.length === 0;
+      button.textContent = names.length ? `+${names.length}` : '';
+      button.title = names.join(', ');
+      if (names.length) button.setAttribute('aria-label', `Show ${names.length} more ${names.length === 1 ? 'branch' : 'branches'}: ${names.join(', ')}`);
+      else button.removeAttribute('aria-label');
+    };
+    apply();
+    // The estimate keeps one chip and assumes the button's width; with a wider font the line can still stick out, so
+    // fold one more chip at a time until it fits (down to none: the count and the button always stay).
+    while (fits > 0 && line.scrollWidth > line.clientWidth) {
+      fits -= 1;
+      apply();
+    }
   }
 
   function refreshContainingLine(hash) {

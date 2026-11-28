@@ -3277,12 +3277,23 @@ async function main() {
           window.__postToHost = message => { if (message.type === 'getCommitBranches') { sent.push(message); return Promise.resolve(); } return toHost(message); };
           window.__compactDetails = [];
           window.addEventListener('message', event => { if (event.data && event.data.type === 'commitDetailLoaded') window.__compactDetails.push(event.data.payload); }, true);
+          // Start from an empty "Contained in" cache: the page may have restored the target commit and asked the real host
+          // before this hook was in place, and a cached commit is not asked for again. Loading the refs clears the cache;
+          // the local branches are the ones the details' labels are classified by.
+          window.dispatchEvent(new MessageEvent('message', { data: { type: 'repositoryRefsLoaded', payload: { repositoryPath: '.', tags: [], remotes: [], stashes: [],
+            branches: [{ name: 'feature/dashboard', isRemote: false }, { name: 'feature/ahead', isRemote: false }, { name: 'main', isRemote: false },
+              { name: 'origin/feature/dashboard', isRemote: true }] } } }));
         });
         // The page may already show the target commit: pick another first, so the target is always a fresh selection.
         await compact.locator('.history-row', { hasText: 'feat: add app' }).click();
         await compact.waitForFunction(() => window.__compactDetails.some(payload => payload.detail.subject === 'feat: add app'));
         await compact.locator('.history-row', { hasText: 'feat: update app in two places' }).click();
-        await compact.waitForFunction(() => window.__compactDetails.some(payload => payload.detail.subject === 'feat: update app in two places') && window.__compactSent.length > 1);
+        // Wait for the target's own branches request: a quick second click can supersede the first commit's request, so
+        // counting requests is not enough.
+        await compact.waitForFunction(() => {
+          const target = window.__compactDetails.filter(payload => payload.detail.subject === 'feat: update app in two places').at(-1);
+          return Boolean(target) && window.__compactSent.some(message => message.payload && message.payload.commitHash === target.detail.hash);
+        });
         // The real details of the commit, with a body and three labels: HEAD's branch (on origin), a local branch and a tag.
         await compact.evaluate(() => {
           const real = window.__compactDetails.filter(payload => payload.detail.subject === 'feat: update app in two places').at(-1);
@@ -3369,6 +3380,19 @@ async function main() {
               overflow: line.scrollWidth - line.clientWidth, header: document.querySelector('.commit-header').getBoundingClientRect().bottom, files: document.querySelector('.changed-files-panel .panel-title').getBoundingClientRect().top }; });
           assert.deepEqual([expanded.visible, expanded.button, expanded.overflow <= 0], [12, 0, true], 'the expanded line does not show every chip');
           assert.ok(expanded.header <= expanded.files + 0.5, 'the expanded header covers the file list');
+        }
+        if (width === 720) {
+          // A wider font than this machine's (CI's headless shell): the estimate's one kept chip and assumed button width
+          // must not let the line stick out; it folds further, down to no chip. A width change folds it again.
+          await compact.addStyleTag({ content: '.commit-summary-contained { letter-spacing: 1.5px; }' });
+          await compact.setViewportSize({ width: 721, height: 560 });
+          await compact.waitForTimeout(200);
+          const wide = await compact.evaluate(() => { const line = document.querySelector('.commit-summary-contained'); const more = line.querySelector('.contained-more');
+            return { overflow: line.scrollWidth - line.clientWidth, shown: Array.from(line.querySelectorAll('.contained-chip')).filter(chip => chip.offsetParent !== null).length,
+              more: more && !more.hidden ? Number(more.textContent.slice(1)) : 0 }; });
+          measurements.push(`721x560 with a wider font: shown ${wide.shown}/12 chips, button +${wide.more}, overflow ${wide.overflow}`);
+          assert.ok(wide.overflow <= 0, `721px with a wider font: the Contained in line overflows by ${wide.overflow} px`);
+          assert.equal(wide.shown + wide.more, 12, '721px with a wider font: shown chips and the button do not add up to 12');
         }
         await compact.close();
       }
