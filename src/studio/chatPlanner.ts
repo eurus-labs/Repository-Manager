@@ -296,5 +296,7 @@ export async function draftPlan(model: StudioModel, steps: Map<string, StepDefin
     // One repair turn, as prompt steps have; then the draft is shown with what is still wrong.
     ask = `${prompt}\n\nYour previous reply could not be used:\n${problems.slice(0, 12).map(problem => `- ${problem.where}: ${problem.message}`).join('\n')}\nReply again with ONLY the JSON object, fixing these.`;
   }
-  return !last!.workflow && usable ? usable : last!;
+  // A repair that came back unusable or with errors is worse than a first draft that can run with warnings.
+  const blocked = !last!.workflow || last!.problems.some(problem => problem.severity !== 'warning');
+  return blocked && usable ? usable : last!;
 }

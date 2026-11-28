@@ -704,6 +704,11 @@ async function main() {
       const broken = await draftPlan(scripted([{ reply: 'A', workflow: docsPlan() }, 'sorry']), steps, { ...folder, message: 'create a weather dashboard' }, never);
       assert.equal(broken.reply, 'A');
       assert.equal(warnings(broken).length, 1);
+      // A repair reply with a real error (an unknown step type) is worse than a first draft that can run: keep the first.
+      const worse = await draftPlan(scripted([{ reply: 'A', workflow: docsPlan() }, { reply: 'C', workflow: { ...codePlan(), nodes: codePlan().nodes.map(node => ({ ...node, type: 'no.such.step' })) } }]),
+        steps, { ...folder, message: 'create a weather dashboard' }, never);
+      assert.equal(worse.reply, 'A', 'a repair with errors replaced a draft that could run');
+      assert.ok(worse.problems.every(problem => problem.severity === 'warning'));
     }
 
     // No false repair: 6 coding and 6 other messages, in both languages; and never without a folder.
