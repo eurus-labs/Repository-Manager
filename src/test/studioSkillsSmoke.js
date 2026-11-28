@@ -304,7 +304,7 @@ async function main() {
   {
     const offered = (await library.cachedIndex('acme/skills'));
     const invented = skillRef('acme', 'skills', 'plugins/invented', commit);
-    const reply = skills => ({ reply: 'Plan.', workflow: { title: 'T', criteria: ['c'], prompts: { p: { instructions: 'Do it.' } }, nodes: [{ id: 'a', type: 'prompt', prompt: 'p', skills, with: { input: 'x' } }] } });
+    const reply = skills => ({ reply: 'Plan.', workflow: { title: 'T', criteria: ['The plan reports the result in notes/out.md'], prompts: { p: { instructions: 'Do it.' } }, nodes: [{ id: 'a', type: 'prompt', prompt: 'p', skills, with: { input: 'x' } }] } });
     const prompts = [];
     const script = [reply([invented]), reply([invented])];
     const model = { complete: async prompt => { prompts.push(prompt); return { text: JSON.stringify(script.shift()), model: 'Scripted' }; } };

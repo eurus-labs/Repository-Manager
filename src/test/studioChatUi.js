@@ -227,7 +227,7 @@ async function main() {
     await page.locator('.card[data-card="current"] .problems').waitFor({ state: 'detached' });
 
     // A change that also drops the write step: shown as a diff, the plan untouched until Accept.
-    const dropped = plan(); dropped.nodes = [dropped.nodes[0]]; dropped.edges = []; dropped.criteria = ['A summary exists'];
+    const dropped = plan(); dropped.nodes = [dropped.nodes[0]]; dropped.edges = []; dropped.criteria = ['A summary is shown'];
     replies.push({ reply: 'Shorter now.', workflow: dropped });
     await page.fill('#message', 'Make the summary shorter');
     await page.click('#send');
@@ -324,6 +324,29 @@ async function main() {
       await modePage.waitForFunction(pattern => new RegExp(pattern).test(document.querySelector('[data-skills="fix"] .chip').title), title.source);
       assert.equal(await modePage.locator('[data-skills="fix"] .chip .chip-warning').count(), warned ? 1 : 0, `${mode}: the warning sign only where the scripts will not run`);
     }
+
+    // Plan 9: a coding goal still planned without a code step after the one repair is shown with
+    // "Check before running"; the warnings are advice, so Run stays on.
+    const advice = await open({ height: 760 });
+    const docsOnly = plan();
+    docsOnly.criteria = ['Requirements are defined', 'Data sources are identified'];
+    docsOnly.nodes = [{ id: 'define', type: 'docs.requirements', title: 'Define Requirements', with: { from: 'docs' } }];
+    docsOnly.edges = []; docsOnly.prompts = {}; docsOnly.types = {};
+    const promptsBefore = prompts.length;
+    replies.push({ reply: 'Define the requirements first.', workflow: docsOnly }, { reply: 'Still the same plan.', workflow: docsOnly });
+    await advice.fill('#message', 'i need to create a weather dashboard');
+    await advice.press('#message', 'Enter');
+    const adviceCard = advice.locator('.card[data-card="current"]');
+    await adviceCard.waitFor();
+    assert.equal(prompts.length - promptsBefore, 2, 'one repair turn');
+    assert.match(prompts[prompts.length - 1].text, /The request asks to change code/);
+    assert.equal(await adviceCard.locator('[data-testid="warnings"] summary').textContent(), 'Check before running');
+    assert.equal(await adviceCard.locator('[data-testid="warnings"] li').count(), 3, 'the missing code step and two criteria');
+    assert.match(await adviceCard.locator('[data-testid="warnings"]').textContent(), /plan it with code steps/);
+    assert.equal(await adviceCard.locator('.problems').count(), 0, 'no error: nothing says "cannot run"');
+    assert.equal(await adviceCard.locator('button:has-text("Run")').isDisabled(), false, 'warnings leave Run on');
+    assert.equal(await adviceCard.locator('button:has-text("Export…")').isDisabled(), false);
+    await snap(advice, '53-studio-chat-plan-warning');
 
     // A plan with no step that uses a model has no "Steps use" at all.
     const plain = await open({ height: 600 });

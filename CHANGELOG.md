@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.15.0] - 2026-11-28
+
+### Changed
+
+- **The Studio Chat plans the right steps and writes criteria you can check.** The planner is now told when to use each step type and when not to, and is shown four worked examples. A goal that changes code, such as "create a weather dashboard", gets `code` steps instead of a step that only reads requirement files. When a plan for such a goal has no code step, or a criterion cannot be checked ("requirements are defined"), the planner is asked once to fix it; a plan that still has either shows them on its card under "Check before running", and Run stays on.
+
 ## [3.14.0] - 2026-11-28
 
 ### Changed

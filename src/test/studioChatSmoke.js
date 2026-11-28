@@ -342,7 +342,7 @@ async function main() {
     assert.ok(!posted.some(message => /Wait for the current reply/.test(message.notice || '')), 'Chat History was refused after the run');
 
     // A proposed change, accepted, is written to the file.
-    const changed = { ...edited, criteria: ['Two criteria now', 'and this'] };
+    const changed = { ...edited, criteria: ['Two criteria are listed now', 'The second criterion also holds'] };
     lmReplies.push({ reply: 'Changed.', workflow: changed });
     await receive({ type: 'send', text: 'Add a criterion' }); await settle();
     const proposed = last().messages.filter(message => message.draft && message.draft.status === 'proposed');
@@ -350,7 +350,7 @@ async function main() {
     assert.match(lmCalls[lmCalls.length - 1].prompt, /edited in the diagram/, 'the change starts from the file');
     assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).criteria.length, 1, 'not written before Accept');
     await receive({ type: 'accept', id: proposed[0].id }); await settle();
-    assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')).criteria, ['Two criteria now', 'and this']);
+    assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')).criteria, ['Two criteria are listed now', 'The second criterion also holds']);
 
     // Export… writes the accepted plan to share, with requires computed by the same Export; the
     // plan's file is not touched. Cancelling the save dialog writes nothing.
@@ -359,7 +359,7 @@ async function main() {
     answers.save = [{ fsPath: exportedPlan }];
     await receive({ type: 'export' }); await settle();
     const sharedPlan = JSON.parse(fs.readFileSync(exportedPlan, 'utf8'));
-    assert.deepEqual(sharedPlan.criteria, ['Two criteria now', 'and this'], 'Export did not take the accepted plan');
+    assert.deepEqual(sharedPlan.criteria, ['Two criteria are listed now', 'The second criterion also holds'], 'Export did not take the accepted plan');
     assert.deepEqual([sharedPlan.requires.steps, sharedPlan.requires.scripts], [['file.write', 'prompt'], []]);
     assert.match(sharedPlan.requires.extension, /^>=\d+\.\d+\.\d+$/);
     assert.match(last().notice, /^Exported to .*summarize-notes\.workflow\.json\./);
@@ -648,17 +648,118 @@ async function main() {
   }
 
 
+  // ---- Plan 9: the planner picks the right steps and writes checkable criteria.
+  {
+    const { asksForCode, criterionIsVague } = out('chatPlanner.js');
+    const steps = out('registry.js').studioSteps(); // with the code step, as the chat has it
+    const folder = { scripts: ['lint', 'test'], history: [] };
+    const warnings = draft => draft.problems.filter(problem => problem.severity === 'warning');
+    const codePlan = () => plan({ criteria: ['`npm test` passes', 'src/weather/ holds the dashboard component'], nodes: [
+      { id: 'build', type: 'code', title: 'Build the dashboard', with: { task: 'Build a weather dashboard page', paths: ['src/weather/'], checks: ['lint', 'test'] } }
+    ], edges: [] });
+    const docsPlan = () => plan({ criteria: ['The requirements are listed in the report'], nodes: [
+      { id: 'define', type: 'docs.requirements', title: 'Define Requirements', with: { from: 'docs' } }
+    ], edges: [] });
+
+    // Catalog and prompt: a use/avoid pair for every step type; example (a) with a folder, a note without.
+    {
+      const catalog = stepCatalog(steps);
+      assert.equal((catalog.match(/^  use: .+/gm) || []).length, steps.size);
+      assert.equal((catalog.match(/^  avoid: .+/gm) || []).length, steps.size);
+      for (const type of ['prompt', 'docs.requirements', 'requirements.compare', 'file.write', 'gate', 'code']) {
+        assert.ok(steps.has(type) && steps.get(type).planning, `${type} has planning lines`);
+      }
+      assert.match(catalog, /docs\.requirements: .*\n  use: read existing requirement files that carry IDs.*\n  avoid: writing or defining new requirements/);
+      const seen = [];
+      const recorder = { complete: async prompt => { seen.push(prompt); return { text: JSON.stringify({ reply: 'x', workflow: null }), model: 'm' }; } };
+      await draftPlan(recorder, steps, { message: 'hello', history: [], scripts: ['test'] }, never);
+      await draftPlan(recorder, steps, { message: 'hello', history: [] }, never);
+      assert.match(seen[0], /\(a\) "add a weather dashboard page": one or two "code" steps/);
+      assert.doesNotMatch(seen[1], /\(a\) "add a weather dashboard page"/);
+      assert.match(seen[1], /\(a\) Goals that change code need an open folder/);
+      for (const prompt of seen) { for (const letter of ['b', 'c', 'd']) { assert.match(prompt, new RegExp(`\\(${letter}\\) "`)); } }
+      for (const line of seen[0].split('\n').filter(line => /^\([a-d]\) /.test(line))) { assert.ok(line.length < 600, `an example is under 600 characters: ${line.length}`); }
+    }
+
+    // The user's report: a coding goal planned as one docs.requirements step is repaired once with the reason.
+    {
+      const model = scripted([{ reply: 'Define the requirements.', workflow: docsPlan() }, { reply: 'Build it.', workflow: codePlan() }]);
+      const draft = await draftPlan(model, steps, { ...folder, message: 'i need to create a weather dashboard' }, never);
+      assert.equal(model.calls.length, 2);
+      assert.match(model.calls[1].prompt, /The request asks to change code/);
+      assert.equal(draft.reply, 'Build it.');
+      assert.deepEqual(draft.problems, [], 'the repaired plan has no warning');
+    }
+
+    // Still no code step after the repair: shown with the warning, as a warning (Run stays on in the card).
+    {
+      const model = scripted([{ reply: 'A', workflow: docsPlan() }, { reply: 'B', workflow: docsPlan() }]);
+      const draft = await draftPlan(model, steps, { ...folder, message: 'i need to create a weather dashboard' }, never);
+      assert.equal(model.calls.length, 2, 'only one repair turn');
+      assert.equal(draft.reply, 'B');
+      assert.ok(draft.workflow);
+      assert.equal(draft.problems.length, 1);
+      assert.deepEqual(draft.problems[0], { where: 'nodes', severity: 'warning', message: 'The request asks to change code; plan it with code steps (paths and checks).' });
+      // A repair reply that cannot be used leaves the first draft, with its warning.
+      const broken = await draftPlan(scripted([{ reply: 'A', workflow: docsPlan() }, 'sorry']), steps, { ...folder, message: 'create a weather dashboard' }, never);
+      assert.equal(broken.reply, 'A');
+      assert.equal(warnings(broken).length, 1);
+      // A repair reply with a real error (an unknown step type) is worse than a first draft that can run: keep the first.
+      const worse = await draftPlan(scripted([{ reply: 'A', workflow: docsPlan() }, { reply: 'C', workflow: { ...codePlan(), nodes: codePlan().nodes.map(node => ({ ...node, type: 'no.such.step' })) } }]),
+        steps, { ...folder, message: 'create a weather dashboard' }, never);
+      assert.equal(worse.reply, 'A', 'a repair with errors replaced a draft that could run');
+      assert.ok(worse.problems.every(problem => problem.severity === 'warning'));
+    }
+
+    // No false repair: 6 coding and 6 other messages, in both languages; and never without a folder.
+    {
+      const coding = ['i need to create a weather dashboard', 'fix the failing test in src/x', 'Add an endpoint that lists users', 'tạo một trang thời tiết', 'sửa lỗi ở giao diện đăng nhập', 'xây ứng dụng ghi chú'];
+      const other = ['summarise the open issues in docs/', 'analyse requirement changes since v1.2', 'write release notes from the last tag', 'tóm tắt các thay đổi trong tài liệu', 'explain what this plan does', 'phân tích yêu cầu của phiên bản 1.2'];
+      for (const message of coding) { assert.equal(asksForCode(message), true, message); }
+      for (const message of other) { assert.equal(asksForCode(message), false, message); }
+      for (const message of other) {
+        const model = scripted([{ reply: 'Plan.', workflow: docsPlan() }]);
+        const draft = await draftPlan(model, steps, { ...folder, message }, never);
+        assert.equal(model.calls.length, 1, `no repair for "${message}"`);
+        assert.deepEqual(warnings(draft), [], message);
+      }
+      const model = scripted([{ reply: 'Plan.', workflow: docsPlan() }]);
+      const noFolder = await draftPlan(model, steps, { message: 'i need to create a weather dashboard', history: [] }, never);
+      assert.equal(model.calls.length, 1, 'without a folder the coding check never fires');
+      assert.deepEqual(warnings(noFolder), []);
+    }
+
+    // Criteria a person cannot check get the warning; ones they can, do not.
+    {
+      for (const vague of ['Requirements are defined', 'done', 'Data sources are identified.', 'The task is done', 'Everything works', 'It is complete', 'Looks good']) { assert.equal(criterionIsVague(vague), true, vague); }
+      for (const fine of ['`npm test` passes', 'the page shows today\'s temperature', 'src/weather/ holds the dashboard component', 'notes/summary.md exists', 'The report lists every added ID']) { assert.equal(criterionIsVague(fine), false, fine); }
+      const vaguePlan = plan({ criteria: ['Requirements are defined', '`npm test` passes', 'done'] });
+      const model = scripted([{ reply: 'A', workflow: vaguePlan }, { reply: 'B', workflow: vaguePlan }]);
+      const draft = await draftPlan(model, steps, { message: 'Summarize my notes', history: [] }, never);
+      assert.match(model.calls[1].prompt, /criteria \(1\): Criterion 1 cannot be checked/);
+      assert.deepEqual(warnings(draft).map(problem => problem.where), ['criteria (1)', 'criteria (3)']);
+      assert.equal(draft.problems.length, 2, 'warnings only');
+    }
+
+    // Workflow files are unaffected: validateWorkflow and the run/export check give no warnings.
+    {
+      const file = { schema: 'repository-manager/workflow@1', id: 'x', version: '1', ...plan({ criteria: ['done'] }) };
+      assert.deepEqual(validateWorkflow(file, steps), []);
+      assert.deepEqual(planProblems(file, steps), []);
+    }
+  }
+
   // ---- Plan 7: files and folders attached to the chat.
   {
     const { execFileSync } = require('node:child_process');
     const crypto = require('node:crypto');
-    // The prompt without attachments is byte-identical to main's (sha256 of two fixed requests, taken on main).
+    // The prompt without attachments does not change with them (sha256 of two fixed requests; re-taken in plan 9, which changed the base prompt).
     {
       const seen = [];
       const recorder = { complete: async prompt => { seen.push(prompt); return { text: JSON.stringify({ reply: 'x', workflow: null }), model: 'm' }; } };
       await draftPlan(recorder, steps, { message: 'do it', history: [] }, never);
       await draftPlan(recorder, steps, { message: 'again', history: [{ role: 'user', text: 'a' }, { role: 'assistant', text: 'b' }], scripts: ['test'], skills: [{ ref: 'r', name: 'n', description: 'd' }] }, never);
-      assert.equal(crypto.createHash('sha256').update(JSON.stringify(seen)).digest('hex'), '62e2d943ba6d7dec725d9386e69e8e3d95397a64c33bbcdef8bc7cff8bd7357b');
+      assert.equal(crypto.createHash('sha256').update(JSON.stringify(seen)).digest('hex'), '9eb36e04af839884172668181ab6f9ed7d6a06c7492497b2af747e860eda81b0');
       await draftPlan(recorder, steps, { message: 'do it', history: [], attachments: '' }, never);
       assert.equal(seen[2], seen[0], 'empty attachments change nothing');
       await draftPlan(recorder, steps, { message: 'do it', history: [{ role: 'user', text: 'earlier' }], attachments: '=== a.md (full) ===\nHELLO\n' }, never);

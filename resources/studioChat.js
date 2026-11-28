@@ -148,20 +148,29 @@
     const view = draft.view;
     const editable = draft.status === 'current' && !state.busy;
     const busy = Boolean(state.busy);
-    const problems = draft.problems.length
-      ? el('details', { class: 'problems', open: draft.status === 'current' || draft.status === 'proposed' },
-          el('summary', {}, `${draft.problems.length} problem${draft.problems.length === 1 ? '' : 's'}: it cannot run until they are fixed`),
-          el('ul', {}, draft.problems.slice(0, 12).map(problem => el('li', {}, el('code', {}, problem.where), ' ', problem.message))))
+    // Errors stop a run; warnings (plan 9) are advice to read first and leave Run on.
+    const errors = draft.problems.filter(problem => problem.severity !== 'warning');
+    const warnings = draft.problems.filter(problem => problem.severity === 'warning');
+    const open = draft.status === 'current' || draft.status === 'proposed';
+    const problems = errors.length
+      ? el('details', { class: 'problems', open },
+          el('summary', {}, `${errors.length} problem${errors.length === 1 ? '' : 's'}: it cannot run until they are fixed`),
+          el('ul', {}, errors.slice(0, 12).map(problem => el('li', {}, el('code', {}, problem.where), ' ', problem.message))))
+      : null;
+    const advice = warnings.length
+      ? el('details', { class: 'warnings', 'data-testid': 'warnings', open },
+          el('summary', {}, 'Check before running'),
+          el('ul', {}, warnings.slice(0, 12).map(problem => el('li', {}, el('code', {}, problem.where), ' ', problem.message))))
       : null;
     let actions = null;
     if (draft.status === 'current') {
       actions = el('div', { class: 'actions' },
-        el('button', { type: 'button', class: 'primary', disabled: busy || !state.folder || draft.problems.length > 0,
-          title: !state.folder ? 'Open a folder to run a plan' : draft.problems.length ? 'Fix the problems first' : 'Run this plan',
+        el('button', { type: 'button', class: 'primary', disabled: busy || !state.folder || errors.length > 0,
+          title: !state.folder ? 'Open a folder to run a plan' : errors.length ? 'Fix the problems first' : 'Run this plan',
           onclick: () => vscode.postMessage({ type: 'run' }) }, 'Run'),
         el('button', { type: 'button', disabled: busy || !state.folder, onclick: () => vscode.postMessage({ type: 'openDiagram' }) }, 'Open in diagram'),
         el('button', { type: 'button', disabled: busy || !state.folder, onclick: () => vscode.postMessage({ type: 'save' }) }, state.file ? 'Saved' : 'Save as workflow'),
-        el('button', { type: 'button', disabled: busy || draft.problems.length > 0, title: draft.problems.length ? 'Fix the problems first' : 'Export this plan as a .workflow.json to share',
+        el('button', { type: 'button', disabled: busy || errors.length > 0, title: errors.length ? 'Fix the problems first' : 'Export this plan as a .workflow.json to share',
           onclick: () => vscode.postMessage({ type: 'export' }) }, 'Export…'));
     } else if (draft.status === 'proposed') {
       actions = el('div', { class: 'actions' },
@@ -186,7 +195,7 @@
     return el('article', { class: `card ${draft.status}`, 'data-card': draft.status },
       header,
       collapsed ? null : [draft.status === 'proposed' ? diffLine(draft.diff) : null, criteriaBlock(view, editable, draft.status === 'proposed' ? draft.diff : null),
-        el('h4', {}, `Steps (${view.steps.length})`), defaults, stepsBlock(view, editable, draft.status === 'proposed' ? draft.diff : null), problems, actions,
+        el('h4', {}, `Steps (${view.steps.length})`), defaults, stepsBlock(view, editable, draft.status === 'proposed' ? draft.diff : null), problems, advice, actions,
         draft.status === 'current' && state.file ? el('p', { class: 'muted' }, `Saved as ${state.file}: changes there show here.`) : null]);
   }
 
