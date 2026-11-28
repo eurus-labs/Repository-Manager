@@ -268,6 +268,7 @@ export const codeStep: StepDefinition = {
   type: 'code',
   title: 'Change code',
   description: 'Changes code in this repository with the agent\'s tools: does with.task, only in with.paths (files, or folders ending with "/"), then runs with.checks (names of the repository\'s package.json scripts, such as lint and test). Works on the branch the repository is on; with.branch creates that new branch first, only when the person asks for one. A person reviews the diff and the checks, and may Retry.',
+  planning: { use: 'any goal that creates or changes source files in the open repository: features, fixes, UI, config', avoid: 'reading or summarising only' },
   effect: 'write',
   usesModel: true,
   single: true,

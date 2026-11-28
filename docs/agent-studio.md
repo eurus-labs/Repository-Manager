@@ -625,6 +625,21 @@ scripted in the tests; a chat with Copilot in VS Code has not been run yet.
   `validateWorkflow` plus two plan rules: at least one criterion, at most 20
   nodes. One repair turn with the problems; a plan still invalid is shown
   with them and Run is off.
+  **Step choice and criteria (plan 9, `docs/plans/plan-9-studio-planner-step-choice.md`).**
+  The catalog gives each step type a `use:` and an `avoid:` line
+  (`StepDefinition.planning`), and the prompt holds four short worked examples
+  (a goal and a plan sketch; without an open folder, example (a) is a note that
+  code steps need one). Two checks run only on chat drafts, never on workflow
+  files, and join the same single repair turn as **warnings**
+  (`Problem.severity: 'warning'`): a coding goal (`asksForCode`: a build or
+  change verb with a software noun, English or Vietnamese) with a folder open
+  and no `code` step; and a criterion nobody can check (an empty phrase such
+  as "requirements are defined", or fewer than 4 words with no command or
+  path in it). A warning that is still there after the repair is listed on the
+  card under "Check before running"; it does not turn Run or Export off. The
+  word test can misfire ("update the release notes file"), which is why it
+  advises and never blocks. Editing the card recomputes problems without the
+  warnings. How much a real weak model improves is unverified until run in VS Code.
 - **Conversation rules** (`src/studio/chatSession.ts`). The first plan is the
   plan. A later plan is a **proposed change** with its diff (nodes added,
   removed, changed, including a changed prompt; criteria added and removed;

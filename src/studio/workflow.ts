@@ -111,7 +111,8 @@ export interface StepShape {
   single?: boolean;
 }
 
-export interface Problem { where: string; message: string }
+/** `severity: 'warning'` is advice to read before running (the Studio Chat's planner); no severity is an error that stops a run. */
+export interface Problem { where: string; message: string; severity?: 'warning' }
 
 const NODE_ID = /^[a-z][a-z0-9-]*$/;
 /** `<vendor>:<family>`, as vscode.lm names a model: matched on the machine that runs it. */

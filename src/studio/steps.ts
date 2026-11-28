@@ -98,6 +98,8 @@ export interface StepDefinition extends StepShape {
   effect: Effect;
   /** What the step is for, in one sentence: shown in the palette and given to the planner. */
   description?: string;
+  /** When the planner should choose this step and when not (plan 9): printed in the planner's catalog, not in the palette. */
+  planning?: { use: string; avoid: string };
   /** What a person approves before a step with an effect runs. */
   preview?(input: Record<string, unknown>, context: StepContext): Promise<string>;
   run(input: Record<string, unknown>, context: StepContext): Promise<unknown>;
@@ -142,6 +144,7 @@ const promptStep: StepDefinition = {
   type: 'prompt',
   title: 'Prompt',
   description: `Asks the model to do one task on its input (with.input) following the prompt's instructions; the reply is one JSON object, of the prompt's output type when it names one.`,
+  planning: { use: 'reasoning over, summarising, classifying or drafting text from its input', avoid: 'reading or writing files or changing code: it only returns text; follow it with file.write to save the text' },
   effect: 'read',
   usesModel: true,
   required: ['input'],
@@ -220,6 +223,7 @@ const docsRequirements: StepDefinition = {
   type: 'docs.requirements',
   title: 'Read requirements',
   description: `Reads the requirements (RST or Markdown with requirement IDs) in a folder (with.from); with.ref reads them at a Git revision of that folder's repository.`,
+  planning: { use: 'read existing requirement files that carry IDs (RST or Markdown)', avoid: 'writing or defining new requirements; use a prompt step and file.write, or a code step' },
   effect: 'read',
   required: ['from'],
   optional: ['ref'],
@@ -270,6 +274,7 @@ const requirementsCompare: StepDefinition = {
   type: 'requirements.compare',
   title: 'Compare requirements',
   description: `Compares two outputs of Read requirements (with.old, with.new) by requirement ID: added, removed and changed requirements.`,
+  planning: { use: 'comparing two outputs of docs.requirements (two revisions, or two folders) by requirement ID', avoid: 'anything that does not have two sets of requirements to compare' },
   effect: 'read',
   required: ['old', 'new'],
   async run(input) {
@@ -316,6 +321,7 @@ const fileWrite: StepDefinition = {
   type: 'file.write',
   title: 'Write a file',
   description: `Writes with.content to a workspace file (with.path); with.format is text (default), json or markdown-json, with.title a heading for markdown-json. Asks before writing.`,
+  planning: { use: 'saving text or JSON that the plan produced (a report, notes, a summary) to one workspace file', avoid: 'changing source code or editing a file in place; use a code step' },
   effect: 'write',
   required: ['path', 'content'],
   optional: ['format', 'title'],
@@ -345,6 +351,7 @@ const gate: StepDefinition = {
   type: 'gate',
   title: 'Ask a person',
   description: `Stops and shows with.show to a person with with.title; the run goes on only when they continue.`,
+  planning: { use: 'only where a person must look at something midway before the plan goes on', avoid: 'approving writes; the engine already asks before every write' },
   effect: 'read',
   required: ['title'],
   optional: ['show'],

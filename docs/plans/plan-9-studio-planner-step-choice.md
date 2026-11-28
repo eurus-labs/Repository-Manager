@@ -1,6 +1,6 @@
 # Plan 9 — The Studio planner picks the right steps and writes checkable criteria
 
-Status: approved
+Status: implemented
 Date: 2026-11-22
 Branch: `feat/studio-planner-step-choice`
 Baseline: `main` at `4fe5d23e5d17283e1987a4ed31c452e0a5034ac9`
@@ -159,3 +159,13 @@ Default (`AGENTS.md`).
 ## Open questions
 
 None.
+
+## Implementation notes
+
+- Shipped as 3.15.0 (main had moved to 3.14.0 before this merged).
+- "Fewer than 4 words" does not apply to a criterion that holds a backtick command or a path
+  (`` `npm test` passes `` is three words and is a valid criterion, as the acceptance list requires).
+- The two checks are in `planProblems` behind an optional `chat` argument, so the run, export and
+  migration callers get no warnings. Editing a card recomputes problems without them.
+- When the repair reply cannot be used, the first draft is kept if it had only warnings.
+- Existing fixtures with 2-3 word criteria were lengthened; the prompt hash in `studioChatSmoke.js` was re-taken.
