@@ -18,6 +18,12 @@
     return head ? head.hash : '';
   }
 
+  // The branch checked out at this commit: its `head` ref's name, '' when HEAD is detached (a bare "HEAD") or absent.
+  function headNameOf(commit) {
+    const ref = commit && (commit.refs || []).find(item => item && (item.isCurrent || item.name === 'HEAD'));
+    return ref && ref.name && ref.name !== 'HEAD' ? ref.name : '';
+  }
+
   // The current branch's configured upstream (`@{upstream}`, resolved by the extension) when it
   // is ahead of HEAD and its first-parent line runs straight down to HEAD: the main column then
   // starts at the upstream tip, so "behind by n" reads as one line, as in Git Graph. Nothing is
@@ -38,7 +44,7 @@
   const TONE_COUNT = 8;
 
   // A stable tone (1-7) for a branch name, so a branch keeps its colour across pages and refreshes.
-  // Tone 0 is HEAD's line: a name never takes it, so no other branch looks checked out.
+  // Tone 0 is for a detached HEAD's line only: a name never takes it.
   function toneForName(name) {
     let hash = 5381;
     for (let index = 0; index < name.length; index += 1) hash = ((hash * 33) + name.charCodeAt(index)) >>> 0;
@@ -59,13 +65,26 @@
     return '';
   }
 
-  // The name that colours a lane starting at this commit: its first local branch, else its first remote one.
+  // The name that colours a lane from this commit down: its checked-out branch, else its first local branch, else its
+  // first remote one. Tags, origin/HEAD and a detached "HEAD" name nothing: ''.
   function laneNameOf(commit) {
     const refs = (commit && commit.refs) || [];
-    const local = refs.find(ref => ref && (ref.kind === 'head' || ref.kind === 'local-branch') && ref.name);
+    const checkedOut = refs.find(ref => ref && (ref.isCurrent || ref.kind === 'head') && ref.name && ref.name !== 'HEAD');
+    if (checkedOut) return checkedOut.name;
+    const local = refs.find(ref => ref && ref.kind === 'local-branch' && ref.name);
     if (local) return local.name;
-    const remote = refs.map(branchNameOfRef).find(Boolean);
+    const remote = refs.filter(ref => ref && ref.kind === 'remote-branch').map(branchNameOfRef).find(Boolean);
     return remote || '';
+  }
+
+  // The name shared history takes where several named lines meet: the default branch first, then alphabetical order, so
+  // it does not depend on which line is checked out. '' when no line is named.
+  const DEFAULT_BRANCHES = ['main', 'master'];
+  function sharedName(names) {
+    const named = Array.from(names || []).filter(Boolean);
+    if (!named.length) return '';
+    const rank = name => { const index = DEFAULT_BRANCHES.indexOf(name); return index >= 0 ? index : DEFAULT_BRANCHES.length; };
+    return named.sort((a, b) => rank(a) - rank(b) || (a < b ? -1 : a > b ? 1 : 0))[0];
   }
 
   // The branch a merge commit's subject says it merged, without its remote or owner; '' when it says none.
@@ -124,14 +143,26 @@
       const candidates = [1, 2, 3, 4, 5, 6, 7, 0];
       return candidates.find(tone => !used.has(tone) && (tone !== 0 || !reserved)) ?? candidates.find(tone => !used.has(tone)) ?? 1;
     };
-    // Column 0's tone: 0 when the chain holds HEAD, else its tip's label.
-    const chainColor = headChain.has(headHash) || !list.length ? 0 : toneFor(list[0], 0);
+    // Column 0's top tone: the checked-out branch's when the chain holds HEAD (tone 0 for a detached HEAD), else the tip's label.
+    // A line switches to the tone of each branch label it reaches (below), so this only colours the commits above the first one.
+    const headName = headNameOf(byHash.get(headHash));
+    const chainColor = !list.length ? 0 : headChain.has(headHash) ? (headName ? toneForName(headName) : 0) : toneFor(list[0], 0);
+    const chainName = !list.length ? '' : headChain.has(headHash) ? headName : laneNameOf(list[0]);
     const freeLane = () => {
       for (let index = reserved ? 1 : 0; ; index += 1) if (!lanes[index]) return index;
     };
-    const open = (lane, hash, color) => {
+    // The branch name each lane is coloured by ('' for an unnamed lane), and the names of every line that leads into a
+    // commit (its children's lanes, whether they continue into it or end by joining it).
+    const laneNames = [];
+    const arriving = new Map();
+    const arrive = (hash, name) => {
+      if (!arriving.has(hash)) arriving.set(hash, new Set());
+      arriving.get(hash).add(name);
+    };
+    const open = (lane, hash, color, name) => {
       lanes[lane] = hash;
       colors[lane] = color;
+      laneNames[lane] = name;
       segments[lane] = nextSegment++;
     };
 
@@ -143,10 +174,21 @@
       const startsHere = !expecting.includes(lane);
       if (startsHere) {
         colors[lane] = onHead ? chainColor : toneFor(commit, lane);
+        laneNames[lane] = onHead ? chainName : laneNameOf(commit);
         segments[lane] = nextSegment++;
       }
       const before = lanes.slice();
+      // The edges that arrive from above keep the tone they had: the switch shows at the labelled node.
       const beforeColors = colors.slice();
+      // A branch label switches its line's tone from this commit down, whatever is checked out.
+      // Where lines meet at an unlabelled commit (branches that forked from it), the shared history below takes one
+      // name whatever is checked out: the default branch's, else the first name in alphabetical order.
+      const label = laneNameOf(commit) || sharedName(arriving.get(commit.hash));
+      arriving.delete(commit.hash);
+      if (label) {
+        colors[lane] = toneForName(label);
+        laneNames[lane] = label;
+      }
       const beforeSegments = segments.slice();
       const incomingLanes = expecting.filter(index => index !== lane);
       incomingLanes.forEach(index => { lanes[index] = null; });
@@ -163,6 +205,7 @@
       } else {
         const first = parents[0];
         const other = lanes.findIndex((value, index) => index !== lane && value === first);
+        arrive(first, laneNames[lane]);
         if (!onHead && other >= 0) {
           // Another lane already leads to this parent: this branch ends by joining it.
           lanes[lane] = null;
@@ -181,15 +224,17 @@
             // Even a commit of the current branch opens its own lane here; when its row comes it
             // is drawn in column 0 and this lane curves into it.
             parentLane = freeLane();
-            open(parentLane, parentHash, toneForName(mergedBranchName(commit.subject) || parentHash));
+            const merged = mergedBranchName(commit.subject);
+            open(parentLane, parentHash, toneForName(merged || parentHash), merged);
           }
+          arrive(parentHash, laneNames[parentLane]);
           parentLanes.push(parentLane);
           parentColors.push(colors[parentLane]);
           parentSegments.push(segments[parentLane]);
         });
       }
 
-      while (lanes.length && !lanes[lanes.length - 1]) { lanes.pop(); colors.length = lanes.length; segments.length = lanes.length; }
+      while (lanes.length && !lanes[lanes.length - 1]) { lanes.pop(); colors.length = lanes.length; laneNames.length = lanes.length; segments.length = lanes.length; }
       maxLaneCount = Math.max(maxLaneCount, before.length, lanes.length, lane + 1, ...parentLanes.map(value => value + 1));
       return {
         rowIndex,

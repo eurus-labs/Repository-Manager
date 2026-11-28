@@ -2522,19 +2522,29 @@ async function main() {
     assert.deepEqual(await contained.evaluate(() => { const { type, payload } = window.__containedSent[0];
       return [type, typeof payload.requestId, payload.repositoryPath.length > 0, payload.commitHash]; }), ['getCommitBranches', 'number', true, hashA]);
     assert.equal((await line.textContent()).trim(), 'Finding branches…');
-    // The answer lists the branches in the host's order, the checked-out one first in HEAD's tone.
+    // The answer lists the branches in the host's order, the checked-out one first. Every chip takes its name's tone (plan 22),
+    // the checked-out one included, and is the history's outlined pill: a cloud for origin, a monitor for local, no "origin" text.
     const answerA = [branch('feature/dashboard', { current: true, onOrigin: true }), branch('feature/ahead'), branch('main', { onOrigin: true }),
       branch('origin/remote-only', { kind: 'remote' })];
     await contained.evaluate(branches => window.__containedReply(0, { branches }), answerA);
     await line.locator('.contained-chip').first().waitFor();
-    assert.deepEqual(await chipNames(), ['feature/dashboardorigin', 'feature/ahead', 'mainorigin', 'origin/remote-only']);
+    // Plan 19's chip text 'feature/dashboardorigin' and 'mainorigin' became the bare names: the cloud icon replaced the "origin" text.
+    assert.deepEqual(await chipNames(), ['feature/dashboard', 'feature/ahead', 'main', 'origin/remote-only']);
     assert.equal(await line.locator('.contained-label').textContent(), 'Contained in 4 branches');
-    const tones = await line.locator('.contained-chip').evaluateAll(chips => chips.map(chip => chip.querySelector('.chip-tone').className.split(' ').find(name => /^graph-lane-\d$/.test(name))));
-    const expectedTones = await contained.evaluate(() => ['feature/ahead', 'main', 'remote-only'].map(name => `graph-lane-${window.RepositoryHistoryGraph.toneForName(name)}`));
-    assert.equal(tones[0], 'graph-lane-0', 'the checked-out branch does not take HEAD\'s tone');
-    assert.deepEqual(tones.slice(1), expectedTones, 'the other chips take the graph tone of their name');
-    assert.equal(await line.locator('.contained-chip').first().getAttribute('class'), 'contained-chip contained-current');
-    assert.equal(await line.locator('.contained-more').count(), 0);
+    const tones = await line.locator('.contained-chip').evaluateAll(chips => chips.map(chip => chip.className.split(' ').find(name => /^graph-lane-\d$/.test(name))));
+    const expectedTones = await contained.evaluate(() => ['feature/dashboard', 'feature/ahead', 'main', 'remote-only'].map(name => `graph-lane-${window.RepositoryHistoryGraph.toneForName(name)}`));
+    // Plan 19 asserted the checked-out chip had 'graph-lane-0' (HEAD's tone) on a `.chip-tone` bar: now the chip carries the name tone.
+    assert.deepEqual(tones, expectedTones, 'a chip does not take the tone of its name');
+    assert.ok(!tones.includes('graph-lane-0'), 'a named branch took tone 0');
+    assert.equal(await line.locator('.contained-chip').first().getAttribute('class'), `contained-chip ref-tone ${expectedTones[0]} contained-current`);
+    assert.equal(await line.locator('.chip-tone, .ref-origin:not(svg)').count(), 0, 'the old bar or "origin" text is still drawn');
+    const chipLooks = await line.locator('.contained-chip').evaluateAll(chips => chips.map(chip => ({
+      border: getComputedStyle(chip).borderTopColor, lane: getComputedStyle(chip).getPropertyValue('--lane-color').trim(),
+      width: getComputedStyle(chip).borderTopWidth, cloud: chip.querySelectorAll('svg.ref-origin[role="img"][aria-label="on origin"]').length,
+      monitor: chip.querySelectorAll('svg.ref-local[aria-label="on this machine"]').length, text: /origin\s*$/.test(chip.textContent) && !/^origin\//.test(chip.textContent) })));
+    assert.deepEqual(chipLooks.map(look => [look.width, look.cloud, look.monitor]), [['1px', 1, 1], ['1px', 0, 1], ['1px', 1, 1], ['1px', 1, 0]], 'chip icons: cloud for origin, monitor for local');
+    assert.ok(chipLooks.every(look => !look.text), 'a chip says "origin" as text');
+    assert.equal(await line.locator('.contained-more:visible').count(), 0);
     assert.equal(await contained.locator('#dashboardCommitSummary [onclick], #dashboardCommitSummary [onmouseover], #dashboardCommitSummary a[href^="javascript:"]').count(), 0);
     await snap(contained, '62-history-contained-in');
 
@@ -2546,7 +2556,7 @@ async function main() {
     await contained.waitForFunction(() => /Not on any branch/.test(document.querySelector('#dashboardCommitSummary .commit-summary-contained').textContent));
     await pick('add linked repositories');
     assert.equal(await sentCount(), 2, 'reselecting posted a second request');
-    assert.deepEqual(await chipNames(), ['feature/dashboardorigin', 'feature/ahead', 'mainorigin', 'origin/remote-only'], 'the cached answer was not shown');
+    assert.deepEqual(await chipNames(), ['feature/dashboard', 'feature/ahead', 'main', 'origin/remote-only'], 'the cached answer was not shown');
     // A request still in flight is reused: leaving a commit before its answer and coming back posts nothing.
     await pick('add app');
     await contained.waitForFunction(() => window.__containedSent.length === 3);
@@ -2601,12 +2611,23 @@ async function main() {
     const fifteen = Array.from({ length: 15 }, (_, index) => branch(`topic/${String(index).padStart(2, '0')}`));
     await contained.evaluate(branches => window.__containedReply(5, { branches }), fifteen);
     await line.locator('.contained-chip').first().waitFor();
-    assert.equal(await line.locator('.contained-chip').count(), 12);
-    assert.equal(await line.locator('.contained-more').textContent(), '+3 more');
+    // Twelve chips at most are drawn; the ones that do not fit the one-line row fold, with those past the limit, into "+N".
+    const foldState = () => line.evaluate(element => {
+      const chips = Array.from(element.querySelectorAll('.contained-chip'));
+      const more = element.querySelector('.contained-more');
+      return { drawn: chips.length, shown: chips.filter(chip => chip.offsetParent !== null).length,
+        more: more && !more.hidden ? more.textContent : null, title: more ? more.title : '', lineHeight: element.getBoundingClientRect().height,
+        overflow: element.scrollWidth - element.clientWidth };
+    });
+    const folded = await foldState();
+    assert.equal(folded.drawn, 12);
+    assert.equal(folded.more, `+${15 - folded.shown}`, 'the button counts every chip that is not shown');
+    assert.deepEqual(folded.title.split(', '), fifteen.map(item => item.name).slice(folded.shown), 'the button title does not name the hidden branches');
+    assert.ok(folded.overflow <= 0, 'the folded line still overflows its row');
     assert.equal(await line.locator('.contained-label').textContent(), 'Contained in 15 branches');
     await snap(contained, '62b-history-contained-in-more');
     await line.locator('.contained-more').click();
-    assert.equal(await line.locator('.contained-chip').count(), 15);
+    assert.equal(await line.locator('.contained-chip:visible').count(), 15);
     assert.equal(await line.locator('.contained-more').count(), 0);
 
     // In a comparison the line is the Target's.
@@ -2661,7 +2682,7 @@ async function main() {
     assert.equal(await readable.evaluate(() => window.__graphReply('all').firstParent), false, 'the request asked for first-parent only');
     await readable.locator('.history-row', { hasText: 'x two' }).waitFor();
 
-    // Labels carry their line's tone as the border and text: main (tone 0, on origin) and feature/x by name.
+    // Labels carry their line's tone as the border and text: main (checked out, on origin) and feature/x by name (plan 22: not tone 0).
     // Plan 20 removed plan 13's edge bar (.ref-dot): the border carries the tone, so there is one mark.
     const labelTones = await readable.evaluate(() => {
       const toneOf = name => `graph-lane-${window.RepositoryHistoryGraph.toneForName(name)}`;
@@ -2675,7 +2696,7 @@ async function main() {
       });
       return { labels, expected: { x: toneOf('feature/x'), y: toneOf('feature/y') } };
     });
-    assert.equal(labelTones.labels['main'].lane, 'graph-lane-0', 'main has the tone of its line');
+    assert.equal(labelTones.labels['main'].lane, `graph-lane-${await readable.evaluate(() => window.RepositoryHistoryGraph.toneForName('main'))}`, 'main has the tone of its name, not HEAD\'s tone 0');
     assert.equal(labelTones.labels['feature/x'].lane, labelTones.expected.x, 'the merged feature/x label has another tone');
     assert.equal(labelTones.labels['feature/y'].lane, labelTones.expected.y);
     assert.equal(labelTones.labels['origin/HEAD'].lane, null, 'origin/HEAD has a tone');
@@ -3116,6 +3137,269 @@ async function main() {
     }
     // PLAN21-END
 
+    // PLAN22-START
+    // Plan 22, part 1: a branch keeps its colour when it is checked out, and HEAD's node has a ring. The history is
+    // scripted from the fixture's real commits: first with HEAD on feature/dashboard, then as after a checkout of main.
+    {
+      // A branch made from main (plan 22, amended): feature/dashboard is two commits ahead of main, main did not move.
+      const [topHash, midHash, mainHash, baseHash] = ['a', 'b', 'c', 'd'].map(letter => letter.repeat(40));
+      const checkoutPage = await openPage(1440, 900);
+      await checkoutPage.evaluate(([top, mid, main, base]) => {
+        const sent = window.__checkoutSent = [];
+        const toHost = window.__postToHost;
+        window.__postToHost = message => { if (message.type === 'getHistory') { sent.push(message); return Promise.resolve(); } return toHost(message); };
+        const commit = (hash, parents, subject, refs) => ({ hash, shortHash: hash.slice(0, 7), parentHashes: parents, authorName: 'Eurus Unit', authorEmail: 'e@x',
+          authoredAt: '2025-01-15T10:00:00Z', subject, refs });
+        const head = name => ({ name, kind: 'head', isCurrent: true });
+        const local = name => ({ name, kind: 'local-branch' });
+        const remote = name => ({ name, kind: 'remote-branch' });
+        const sets = {
+          // HEAD on feature/dashboard.
+          before: [commit(top, [mid], 'update app', [head('feature/dashboard'), remote('origin/feature/dashboard')]), commit(mid, [main], 'tweak app', []),
+            commit(main, [base], 'add linked repositories', [local('main'), remote('origin/main')]), commit(base, [], 'add app', [])],
+          // The same commits after a checkout of main.
+          after: [commit(top, [mid], 'update app', [local('feature/dashboard'), remote('origin/feature/dashboard')]), commit(mid, [main], 'tweak app', []),
+            commit(main, [base], 'add linked repositories', [head('main'), remote('origin/main')]), commit(base, [], 'add app', [])]
+        };
+        window.__checkoutReply = key => {
+          const request = sent.at(-1).payload;
+          window.dispatchEvent(new MessageEvent('message', { data: { type: 'historyLoaded', payload: { repositoryPath: request.repositoryPath,
+            requestId: request.requestId, offset: 0, commits: sets[key], nextOffset: null, upstream: null } } }));
+        };
+      }, [topHash, midHash, mainHash, baseHash]);
+      const readState = () => checkoutPage.evaluate(hashes => {
+        const laneClass = element => Array.from(element.classList).find(item => /^graph-lane-\d$/.test(item)) || null;
+        const point = element => { const m = /translate\(([\d.]+) ([\d.]+)\)/.exec(element.getAttribute('transform')); return `${m[1]},${m[2]}`; };
+        const rings = Array.from(document.querySelectorAll('.graph-node-head-ring'));
+        const headNode = document.querySelector('.graph-node.graph-node-head');
+        const labelTone = name => { const label = Array.from(document.querySelectorAll('.history-ref')).find(item => item.querySelector('.ref-name').textContent === name);
+          return label ? { lane: laneClass(label), border: getComputedStyle(label).borderTopColor } : null; };
+        // Every commit's node tone and row tone, by hash.
+        const tones = Object.fromEntries(hashes.map(hash => {
+          const spot = point(document.querySelector(`.graph-node-control[data-commit="${hash}"]`));
+          const node = Array.from(document.querySelectorAll('.graph-node')).find(item => `${item.getAttribute('cx')},${item.getAttribute('cy')}` === spot);
+          return [hash, { node: laneClass(node), row: laneClass(document.querySelector(`.history-row[data-commit="${hash}"]`)) }];
+        }));
+        const ring = rings[0];
+        const control = ring && Array.from(document.querySelectorAll('.graph-node-control')).find(item => point(item) === `${ring.getAttribute('cx')},${ring.getAttribute('cy')}`);
+        return { rings: rings.length, headNodes: document.querySelectorAll('.graph-node-head').length,
+          ring: ring ? { at: `${ring.getAttribute('cx')},${ring.getAttribute('cy')}`, nodeAt: `${headNode.getAttribute('cx')},${headNode.getAttribute('cy')}`, r: ring.getAttribute('r'),
+            fill: getComputedStyle(ring).fill, width: getComputedStyle(ring).strokeWidth, events: getComputedStyle(ring).pointerEvents,
+            stroke: getComputedStyle(ring).stroke, nodeStroke: getComputedStyle(headNode).stroke, lane: laneClass(ring), commit: control ? control.dataset.commit : null,
+            beforeControls: Boolean(ring.compareDocumentPosition(document.querySelector('.graph-node-control')) & Node.DOCUMENT_POSITION_FOLLOWING) } : null,
+          tones, main: labelTone('main'), dashboard: labelTone('feature/dashboard'), tone0: document.querySelectorAll('.graph-edge.graph-lane-0, .graph-node.graph-lane-0, .history-ref.graph-lane-0').length };
+      }, [topHash, midHash, mainHash, baseHash]);
+      const toneOf = name => checkoutPage.evaluate(value => `graph-lane-${window.RepositoryHistoryGraph.toneForName(value)}`, name);
+      // The first reply: HEAD on feature/dashboard.
+      await checkoutPage.evaluate(() => document.getElementById('dashboardIncludeRemotes').click());
+      await checkoutPage.waitForFunction(() => window.__checkoutSent.length > 0);
+      await checkoutPage.evaluate(() => window.__checkoutReply('before'));
+      await checkoutPage.locator('.history-row', { hasText: 'update app' }).waitFor();
+      const beforeCheckout = await readState();
+      assert.equal(beforeCheckout.rings, 1, 'exactly one HEAD ring');
+      assert.equal(beforeCheckout.headNodes, 1);
+      assert.equal(beforeCheckout.ring.commit, topHash, 'the ring is not on the HEAD node');
+      assert.equal(beforeCheckout.ring.at, beforeCheckout.ring.nodeAt, 'the ring is not centred on the HEAD node');
+      assert.deepEqual([beforeCheckout.ring.r, beforeCheckout.ring.fill, beforeCheckout.ring.width, beforeCheckout.ring.events], ['11.5', 'none', '1.5px', 'none']);
+      assert.equal(beforeCheckout.ring.stroke, beforeCheckout.ring.nodeStroke, 'the ring is not in the HEAD node\'s lane colour');
+      assert.equal(beforeCheckout.ring.lane, await toneOf('feature/dashboard'), 'the HEAD line is not in its name tone');
+      assert.equal(beforeCheckout.tone0, 0, 'a named branch is drawn in tone 0');
+      assert.ok(beforeCheckout.ring.beforeControls, 'the ring is not drawn before the node controls');
+      assert.equal(beforeCheckout.main.lane, await toneOf('main'));
+      assert.equal(beforeCheckout.dashboard.lane, await toneOf('feature/dashboard'));
+      // The hover ring (the hit circle's stroke) still draws on top of the HEAD ring.
+      await checkoutPage.locator(`.graph-node-control[data-commit="${topHash}"]`).hover();
+      const hover = await checkoutPage.evaluate(hash => {
+        const hit = document.querySelector(`.graph-node-control[data-commit="${hash}"] .graph-node-hit`);
+        return { stroke: getComputedStyle(hit).stroke, aboveRing: Boolean(document.querySelector('.graph-node-head-ring').compareDocumentPosition(hit) & Node.DOCUMENT_POSITION_FOLLOWING) };
+      }, topHash);
+      assert.notEqual(hover.stroke, 'none', 'hovering the HEAD node shows no hover ring');
+      assert.equal(hover.aboveRing, true, 'the hover ring is under the HEAD ring');
+      await checkoutPage.mouse.move(0, 0);
+      await snap(checkoutPage, '65b-history-checkout-colours-before');
+      // The checkout: the same commits, HEAD now on main.
+      await checkoutPage.evaluate(() => document.getElementById('dashboardIncludeRemotes').click());
+      await checkoutPage.waitForFunction(() => window.__checkoutSent.length > 1);
+      await checkoutPage.evaluate(() => window.__checkoutReply('after'));
+      await checkoutPage.waitForFunction(label => Array.from(document.querySelectorAll('.history-ref.ref-head .ref-name')).some(item => item.textContent === label), 'main');
+      const afterCheckout = await readState();
+      assert.equal(afterCheckout.rings, 1, 'one ring expected after the checkout');
+      assert.equal(afterCheckout.ring.commit, mainHash, 'the ring did not move to the new HEAD node');
+      assert.equal(afterCheckout.ring.lane, await toneOf('main'));
+      assert.equal(afterCheckout.tone0, 0, 'a named branch is drawn in tone 0');
+      // Neither branch changed colour: the labels' tones are the same before and after.
+      // The branch made from main: no commit changed tone, main's label, row and node included (the line switches at the main label).
+      assert.deepEqual(afterCheckout.tones, beforeCheckout.tones, 'a commit changed tone on checkout');
+      const featureTone = await toneOf('feature/dashboard');
+      const mainTone = await toneOf('main');
+      assert.deepEqual(beforeCheckout.tones, {
+        [topHash]: { node: featureTone, row: featureTone }, [midHash]: { node: featureTone, row: featureTone },
+        [mainHash]: { node: mainTone, row: mainTone }, [baseHash]: { node: mainTone, row: mainTone } }, 'the commits are not in their branches\' tones');
+      assert.deepEqual(afterCheckout.main, beforeCheckout.main, 'main changed colour on checkout');
+      assert.deepEqual(afterCheckout.dashboard, beforeCheckout.dashboard, 'feature/dashboard changed colour on checkout');
+      await snap(checkoutPage, '65b-history-checkout-colours');
+      await checkoutPage.close();
+
+      // A detached HEAD: tone 0, with the ring.
+      const detachedPage = await openPage(1440, 900);
+      await detachedPage.evaluate(([top, main, base]) => {
+        const sent = window.__detachedSent = [];
+        const toHost = window.__postToHost;
+        window.__postToHost = message => { if (message.type === 'getHistory') { sent.push(message); return Promise.resolve(); } return toHost(message); };
+        const commit = (hash, parents, subject, refs) => ({ hash, shortHash: hash.slice(0, 7), parentHashes: parents, authorName: 'Eurus Unit', authorEmail: 'e@x', authoredAt: '2025-01-15T10:00:00Z', subject, refs });
+        window.__detachedReply = () => {
+          const request = sent.at(-1).payload;
+          window.dispatchEvent(new MessageEvent('message', { data: { type: 'historyLoaded', payload: { repositoryPath: request.repositoryPath,
+            requestId: request.requestId, offset: 0, nextOffset: null, upstream: null, commits: [commit(top, [base], 'update app', [{ name: 'HEAD', kind: 'head', isCurrent: true }]),
+              commit(main, [base], 'add linked repositories', [{ name: 'main', kind: 'local-branch' }]), commit(base, [], 'add app', [])] } } }));
+        };
+      }, [topHash, mainHash, baseHash]);
+      await detachedPage.evaluate(() => document.getElementById('dashboardIncludeRemotes').click());
+      await detachedPage.waitForFunction(() => window.__detachedSent.length > 0);
+      await detachedPage.evaluate(() => window.__detachedReply());
+      await detachedPage.locator('.graph-node-head-ring').waitFor();
+      const detached = await detachedPage.evaluate(() => ({ rings: document.querySelectorAll('.graph-node-head-ring').length,
+        lane: Array.from(document.querySelector('.graph-node-head-ring').classList).find(item => /^graph-lane-\d$/.test(item)) }));
+      assert.deepEqual(detached, { rings: 1, lane: 'graph-lane-0' }, 'a detached HEAD is one ring in tone 0');
+      await detachedPage.close();
+    }
+
+    // Plan 22, part 2: the commit details stay compact. A commit with a body, 3 labels and 12 "Contained in" branches
+    // is measured in a 560 px tall window at 1000, 1440 and 720 px wide.
+    {
+      const measurements = [];
+      for (const width of [1000, 1440, 720]) {
+        const compact = await openPage(width, 560);
+        while (!isHostIdle()) await compact.waitForTimeout(20);
+        await compact.evaluate(() => {
+          const sent = window.__compactSent = [];
+          const toHost = window.__postToHost;
+          window.__postToHost = message => { if (message.type === 'getCommitBranches') { sent.push(message); return Promise.resolve(); } return toHost(message); };
+          window.__compactDetails = [];
+          window.addEventListener('message', event => { if (event.data && event.data.type === 'commitDetailLoaded') window.__compactDetails.push(event.data.payload); }, true);
+          // Start from an empty "Contained in" cache: the page may have restored the target commit and asked the real host
+          // before this hook was in place, and a cached commit is not asked for again. Loading the refs clears the cache;
+          // the local branches are the ones the details' labels are classified by.
+          window.dispatchEvent(new MessageEvent('message', { data: { type: 'repositoryRefsLoaded', payload: { repositoryPath: '.', tags: [], remotes: [], stashes: [],
+            branches: [{ name: 'feature/dashboard', isRemote: false }, { name: 'feature/ahead', isRemote: false }, { name: 'main', isRemote: false },
+              { name: 'origin/feature/dashboard', isRemote: true }] } } }));
+        });
+        // The page may already show the target commit: pick another first, so the target is always a fresh selection.
+        await compact.locator('.history-row', { hasText: 'feat: add app' }).click();
+        await compact.waitForFunction(() => window.__compactDetails.some(payload => payload.detail.subject === 'feat: add app'));
+        await compact.locator('.history-row', { hasText: 'feat: update app in two places' }).click();
+        // Wait for the target's own branches request: a quick second click can supersede the first commit's request, so
+        // counting requests is not enough.
+        await compact.waitForFunction(() => {
+          const target = window.__compactDetails.filter(payload => payload.detail.subject === 'feat: update app in two places').at(-1);
+          return Boolean(target) && window.__compactSent.some(message => message.payload && message.payload.commitHash === target.detail.hash);
+        });
+        // The real details of the commit, with a body and three labels: HEAD's branch (on origin), a local branch and a tag.
+        await compact.evaluate(() => {
+          const real = window.__compactDetails.filter(payload => payload.detail.subject === 'feat: update app in two places').at(-1);
+          const detail = Object.assign({}, real.detail, { body: 'The body of the commit says why it changed, in a sentence that is long enough to be cut by the header.',
+            refs: [{ name: 'feature/dashboard', kind: 'head', isCurrent: true }, { name: 'origin/feature/dashboard', kind: 'other' }, { name: 'feature/ahead', kind: 'other' }, { name: '1.0.0', kind: 'tag' }] });
+          window.dispatchEvent(new MessageEvent('message', { data: { type: 'commitDetailLoaded', payload: Object.assign({}, real, { detail }) } }));
+          const request = window.__compactSent.map(message => message.payload).filter(payload => payload.commitHash === real.detail.hash).at(-1);
+          const branches = Array.from({ length: 12 }, (_, i) => ({ name: i ? `feature/branch-number-${i}` : 'feature/dashboard', kind: 'local', current: !i, onOrigin: i < 3 }));
+          window.dispatchEvent(new MessageEvent('message', { data: { type: 'commitBranchesLoaded', payload: { repositoryPath: request.repositoryPath,
+            commitHash: request.commitHash, requestId: request.requestId, branches } } }));
+        });
+        await compact.locator('#dashboardCommitSummary .contained-chip').first().waitFor({ state: 'attached' }); // at 720 px a wide font can fold every chip
+        await compact.locator('#dashboardChangedFiles .changed-file-item').first().waitFor();
+        await compact.waitForTimeout(150);
+        const look = await compact.evaluate(() => {
+          const box = element => { const r = element.getBoundingClientRect(); return { top: r.top, bottom: r.bottom, left: r.left, right: r.right, width: r.width, height: r.height }; };
+          const header = document.querySelector('.commit-header');
+          const labels = document.querySelector('.commit-summary-labels');
+          const contained = document.querySelector('.commit-summary-contained');
+          const region = document.querySelector('.commit-detail-region');
+          const heightWith = box(header).height;
+          // The same commit without "Contained in", and with neither it nor the labels (the header before plan 19 had the labels row).
+          contained.style.display = 'none';
+          const heightWithoutContained = box(header).height;
+          labels.style.display = 'none';
+          const heightWithoutRow = box(header).height;
+          labels.style.display = '';
+          contained.style.display = '';
+          const copy = box(document.querySelector('.commit-summary-copy'));
+          const actions = box(document.getElementById('commitHeaderActions'));
+          const review = Array.from(document.querySelectorAll('#commitHeaderActions button')).filter(button => button.offsetParent !== null).map(button => button.textContent.trim());
+          const title = box(document.querySelector('.changed-files-panel .panel-title'));
+          const firstFile = box(document.querySelector('#dashboardChangedFiles .changed-file-item'));
+          const more = contained.querySelector('.contained-more');
+          const chips = Array.from(contained.querySelectorAll('.contained-chip'));
+          const pills = Array.from(document.querySelectorAll('#dashboardCommitSummary .commit-summary-refs .history-ref')).map(pill => ({
+            text: pill.textContent, lane: Array.from(pill.classList).find(item => /^graph-lane-\d$/.test(item)) || null, border: getComputedStyle(pill).borderTopWidth + ' ' + getComputedStyle(pill).borderTopStyle,
+            borderColor: getComputedStyle(pill).borderTopColor, laneColor: getComputedStyle(pill).getPropertyValue('--lane-color').trim(),
+            cloud: pill.querySelectorAll('svg.ref-origin[role="img"][aria-label="on origin"]').length, monitor: pill.querySelectorAll('svg.ref-local').length }));
+          const chipLooks = chips.map(chip => ({ border: getComputedStyle(chip).borderTopWidth, borderColor: getComputedStyle(chip).borderTopColor, laneColor: getComputedStyle(chip).getPropertyValue('--lane-color').trim(),
+            cloud: chip.querySelectorAll('svg.ref-origin[role="img"][aria-label="on origin"]').length, monitor: chip.querySelectorAll('svg.ref-local').length, shown: chip.offsetParent !== null }));
+          const hits = [title, firstFile].filter(other => labels.getBoundingClientRect().top < other.bottom - 0.5 && other.top < labels.getBoundingClientRect().bottom - 0.5).length;
+          return { heightWith, heightWithoutContained, heightWithoutRow, labelsHeight: box(labels).height, copy, actions, review, region: box(region), regionScroll: region.scrollTop,
+            title, firstFile, labels: box(labels), pills, chipLooks, shown: chips.filter(chip => chip.offsetParent !== null).length, chipCount: chips.length,
+            more: more && !more.hidden ? { text: more.textContent, title: more.title } : null, hiddenNames: chips.filter(chip => chip.offsetParent === null).map(chip => chip.dataset.refName),
+            overflow: contained.scrollWidth - contained.clientWidth, labelsOverflow: labels.scrollWidth - labels.clientWidth,
+            hits, text: document.getElementById('dashboardCommitSummary').textContent, ringless: document.querySelectorAll('#dashboardCommitSummary .ref-origin:not(svg)').length };
+        });
+        measurements.push(`${width}x560: header ${Math.round(look.heightWith)} px with Contained in, ${Math.round(look.heightWithoutContained)} px with it hidden, ${Math.round(look.heightWithoutRow)} px with no label row (one row ${Math.round(look.labelsHeight)} px); shown ${look.shown}/${look.chipCount} chips, button ${look.more ? look.more.text : 'none'}; title width ${Math.round(look.copy.width)} px`);
+        // Header: at most one ref row taller than a commit without "Contained in" (the row is shared, so no taller at all).
+        assert.ok(look.heightWith - look.heightWithoutContained <= 1, `${width}px: Contained in made the header ${look.heightWith - look.heightWithoutContained} px taller`);
+        assert.ok(look.heightWith - look.heightWithoutRow <= look.labelsHeight + 9.5, `${width}px: the labels row is more than one row`);
+        // The file list is in view without scrolling the pane.
+        assert.equal(look.regionScroll, 0, `${width}px: the details pane scrolled`);
+        assert.ok(look.title.top >= look.region.top - 0.5 && look.title.bottom <= look.region.bottom + 0.5, `${width}px: the CHANGED FILES title is out of the pane: ${JSON.stringify([look.title, look.region])}`);
+        assert.ok(look.firstFile.top >= look.region.top - 0.5 && look.firstFile.bottom <= look.region.bottom + 0.5, `${width}px: the first file row is out of the pane: ${JSON.stringify([look.firstFile, look.region])}`);
+        // The files row keeps its 150 px minimum inside the pane (a taller header squeezed it, so the list needed scrolling).
+        assert.ok(look.region.bottom - look.title.top >= 149.5, `${width}px: the file list has only ${Math.round(look.region.bottom - look.title.top)} px of the pane`);
+        // The buttons are on the title row from 720 px; nothing overlaps.
+        assert.ok(look.actions.top < look.copy.top + 18 && look.actions.left >= look.copy.right - 0.5, `${width}px: the buttons are not on the title row: ${JSON.stringify([look.actions, look.copy])}`);
+        assert.deepEqual(look.review.filter(label => /Review|Summarize/.test(label)).length > 0, true);
+        assert.equal(look.hits, 0, `${width}px: the labels overlap the file list`);
+        assert.ok(look.labels.bottom <= look.title.top + 0.5, `${width}px: the labels row sticks out of the header`);
+        // One non-wrapping row: nothing sticks out of it.
+        assert.ok(look.overflow <= 0 && look.labelsOverflow <= 0, `${width}px: the labels row overflows (${look.overflow}, ${look.labelsOverflow})`);
+        // One style: lane tone on the border, a cloud with aria-label for origin, a monitor for local, no "origin" text.
+        assert.deepEqual(look.pills.map(pill => [pill.text, pill.cloud, pill.monitor]), [['feature/dashboard', 1, 1], ['feature/ahead', 0, 1], ['1.0.0', 0, 0]], `${width}px: the details labels are not the history pills: ${JSON.stringify(look.pills)}`);
+        assert.ok(look.pills.slice(0, 2).every(pill => pill.lane && pill.border === '1px solid' && pill.borderColor !== 'rgba(0, 0, 0, 0)'), 'a branch label has no tone border');
+        assert.ok(look.chipLooks.every(chip => chip.border === '1px'), 'a chip has no border');
+        assert.deepEqual(look.chipLooks.slice(0, 3).map(chip => [chip.cloud, chip.monitor]), [[1, 1], [1, 1], [1, 1]]);
+        assert.deepEqual(look.chipLooks.slice(3).map(chip => [chip.cloud, chip.monitor]).filter(([cloud]) => cloud), [], 'a branch not on origin has a cloud');
+        assert.equal(look.ringless, 0, 'an "origin" text chip is drawn');
+        assert.ok(!/origin\s*$/.test(look.text.replace(/\s+/g, ' ').split('Contained in')[1] || ''), 'the chips say "origin" as text');
+        // Folding: what does not fit is in the button, which names it.
+        assert.equal(look.shown + (look.more ? Number(look.more.text.slice(1)) : 0), 12, `${width}px: shown chips and the button do not add up to the 12 branches`);
+        if (look.more) assert.deepEqual(look.more.title.split(', '), look.hiddenNames, `${width}px: the button title does not name the hidden chips`);
+        if (width === 1000) {
+          assert.ok(look.more, '1000px: 12 chips fit one line without folding');
+          await snap(compact, '65-history-details-compact');
+          // "+N" shows the rest in place: every chip, no button, and the line wraps instead of cutting them.
+          await compact.locator('#dashboardCommitSummary .contained-more').click();
+          const expanded = await compact.evaluate(() => { const line = document.querySelector('.commit-summary-contained');
+            return { visible: Array.from(line.querySelectorAll('.contained-chip')).filter(chip => chip.offsetParent !== null).length, button: line.querySelectorAll('.contained-more').length,
+              overflow: line.scrollWidth - line.clientWidth, header: document.querySelector('.commit-header').getBoundingClientRect().bottom, files: document.querySelector('.changed-files-panel .panel-title').getBoundingClientRect().top }; });
+          assert.deepEqual([expanded.visible, expanded.button, expanded.overflow <= 0], [12, 0, true], 'the expanded line does not show every chip');
+          assert.ok(expanded.header <= expanded.files + 0.5, 'the expanded header covers the file list');
+        }
+        if (width === 720) {
+          // A wider font than this machine's (CI's headless shell): the estimate's one kept chip and assumed button width
+          // must not let the line stick out; it folds further, down to no chip. A width change folds it again.
+          await compact.addStyleTag({ content: '.commit-summary-contained { letter-spacing: 1.5px; }' });
+          await compact.setViewportSize({ width: 721, height: 560 });
+          await compact.waitForTimeout(200);
+          const wide = await compact.evaluate(() => { const line = document.querySelector('.commit-summary-contained'); const more = line.querySelector('.contained-more');
+            return { overflow: line.scrollWidth - line.clientWidth, shown: Array.from(line.querySelectorAll('.contained-chip')).filter(chip => chip.offsetParent !== null).length,
+              more: more && !more.hidden ? Number(more.textContent.slice(1)) : 0 }; });
+          measurements.push(`721x560 with a wider font: shown ${wide.shown}/12 chips, button +${wide.more}, overflow ${wide.overflow}`);
+          assert.ok(wide.overflow <= 0, `721px with a wider font: the Contained in line overflows by ${wide.overflow} px`);
+          assert.equal(wide.shown + wide.more, 12, '721px with a wider font: shown chips and the button do not add up to 12');
+        }
+        await compact.close();
+      }
+      console.log('plan 22 header measurements:\n' + measurements.join('\n'));
+    }
+    // PLAN22-END
+
     // A reply for an older request or another repository does not replace the rows shown. The page's
     // own getHistory requests are held back, so no real reply can land at any timing: only the replies
     // injected here reach the page.
@@ -3499,9 +3783,11 @@ async function main() {
         // The hash keeps to the right edge, above the actions, rather than floating in their column.
         const hash = document.querySelector('#dashboardCommitSummary > code').getBoundingClientRect();
         return { inside: actions.left >= header.left && actions.right <= header.right + 0.5 && actions.bottom <= header.bottom + 0.5, overlaps,
-          hashRight: Math.abs(hash.right - actions.right) <= 1 };
+          hashRight: Math.abs(hash.right - actions.right) <= 1, onTitleRow: actions.top < copy.top + 18 && actions.left >= hash.right - 0.5 };
       });
-      assert.deepEqual(headerFit, { inside: true, overlaps: false, hashRight: true }, `${width}px: the header actions spill out, cover the title, or leave the hash adrift`);
+      // Plan 22: from 720px the buttons stay on the title row, right of the hash; under it they wrap below the title.
+      const wide = width >= 720;
+      assert.deepEqual(headerFit, { inside: true, overlaps: false, hashRight: !wide, onTitleRow: wide }, `${width}px: the header actions spill out, cover the title, leave the hash adrift or are on the wrong row`);
       // With a Base/Target selection, the comparison status stays on screen next to the release group.
       if (width > 760) {
         await narrow.locator('.graph-node-control').nth(1).click();
