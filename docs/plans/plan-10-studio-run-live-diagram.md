@@ -1,6 +1,6 @@
 # Plan 10 — See a run live in the workflow diagram and the Runs view
 
-Status: approved
+Status: implemented
 Date: 2026-11-22
 Branch: `feat/studio-run-live-diagram`
 Baseline: `main` at `4fe5d23e5d17283e1987a4ed31c452e0a5034ac9`

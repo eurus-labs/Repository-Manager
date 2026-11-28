@@ -172,6 +172,23 @@ The Studio opens a workflow in a webview editor:
   either side show on the other.
 - **Run, Dry run, Export, Import.** A dry run executes Read steps only and
   shows what each gate would ask.
+- **A run, live** *(3.15.0, plan 10)*. The editor follows the newest run of
+  this workspace that is running or waiting and has the open file's workflow
+  `id` (a run of another id never shows). It reads the same run log the chat
+  and the Runs view read (`RunStore.onLog`, step states from `runTimeline`).
+  Each step gets a word under its box with a sign (not started, running with
+  its time, waiting for you, done, failed, skipped, stopped), never colour
+  alone; a failed step shows its error in its tooltip and, when selected, in
+  the side panel. A banner above the canvas reads `<title> · Step k of n ·
+  started hh:mm`, with **Stop** while the run is running (not while it waits
+  for an answer in a dialog), **Open in Runs**, and the step's last activity
+  line. Editing stays possible: the run keeps the copy it started with, and
+  when the file's hash differs from the run's the banner says so and lists
+  the steps the file no longer has instead of drawing them. A run that ends
+  stays shown (with **Hide**) until a newer run of the workflow starts. A
+  visually hidden status line changes only when a step starts or ends. The
+  host posts at most every 250 ms (a confirming post follows), and the
+  subscription ends with the panel.
 
 ## AI-assisted authoring
 
@@ -998,10 +1015,20 @@ people by chat or email, before any usage data; see Risks.)*
   after startup recovery; **Open raw log** opens the state and log as JSON.
   Show Workflow Runs keeps its quick pick and uses the same two actions.
 - The view reads again when it is shown, after its own actions, and on
-  **Refresh**; a run started elsewhere appears on the next of these.
+  **Refresh**. *(3.15.0, plan 10)* While it is shown it also follows the runs'
+  logs (`RunStore.onLog`), whichever of the chat, the editor, Run Workflow…
+  or Resume started them: it is drawn again at most every 250 ms (a
+  confirming redraw follows, drawn only if the page differs), never while it
+  is hidden, and once when it is shown again. A running run has **Stop**,
+  which calls `StudioRuns.stop(runId)`: the same cancel as the notification's
+  Cancel and the chat's Stop, for a run this window is driving (the run is
+  stopped at its next step boundary; the code step's undo is unchanged).
 - Tested by `src/test/studioRunsSmoke.js` (real engine runs, and logs with
-  known times) and `src/test/studioRunsUi.js` (the real provider in Chromium
-  under its Content Security Policy).
+  known times), `src/test/studioRunsLiveSmoke.js` (the live redraw, throttle,
+  hidden view and disposal), `src/test/studioEditorLiveSmoke.js` (the
+  diagram's run state, earlier version, Stop and disposal) and
+  `src/test/studioRunsUi.js` / `src/test/studioEditorUi.js` (the real
+  providers in Chromium under their Content Security Policy).
 
 ## Phases
 
