@@ -1804,6 +1804,13 @@
   }
 
   // counts: { ahead, behind } of the repository the history shows.
+  // A label's tone is its own branch's, whichever line its commit is on (a detached HEAD has tone 0).
+  function refToneOf(ref) {
+    if (ref.name === 'HEAD') return 0;
+    const name = window.RepositoryHistoryGraph.branchNameOfRef(ref);
+    return name ? window.RepositoryHistoryGraph.toneForName(name) : undefined;
+  }
+
   // `tone` is one tone for the row, or a function of the ref (the commit details tone each label by its own name);
   // `fold` adds the "+N" chip the history row folds into (the details do not fold their labels).
   function renderHistoryRefs(refs, interactive, tone, counts, fold = true) {
@@ -2306,7 +2313,8 @@
       }
 
       if (!layout.startsHere) {
-        paths.push(`<path class="graph-edge ${tone(color)}"${seg(layout.segment)} d="M ${currentX} ${top} V ${middle}"/>`);
+        // The edge from above keeps the child's tone: a line switches tone at a labelled node, not above it.
+        paths.push(`<path class="graph-edge ${tone(beforeColors[layout.lane] === undefined ? color : beforeColors[layout.lane])}"${seg(layout.segment)} d="M ${currentX} ${top} V ${middle}"/>`);
       }
       // Other children of this commit arrive from their own columns.
       (layout.incomingLanes || []).forEach(lane => {
@@ -2427,7 +2435,7 @@
     const branchCounts = currentRepository ? { ahead: currentRepository.ahead || 0, behind: currentRepository.behind || 0 } : null;
     const renderRows = (commits, firstIndex = 0) => commits.map((commit, index) => {
       const layout = graphModel.rows[firstIndex + index] || {};
-      const refs = renderHistoryRefs(commit.refs, true, layout.color, branchCounts) + renderMergeBadge(commit, firstParent);
+      const refs = renderHistoryRefs(commit.refs, true, refToneOf, branchCounts) + renderMergeBadge(commit, firstParent);
       const segment = layout.segment === undefined ? '' : ` data-segment="${layout.segment}"`;
       // The row is tinted with its line's tone; the checked-out branch's tip is outlined.
       const tint = Number.isInteger(layout.color) ? ` row-tint graph-lane-${layout.color % 8}` : '';
@@ -3069,7 +3077,7 @@
     if (summary) {
       ensureContainingBranches(detail.hash);
       // The same outlined pills as the history, each toned by its own branch name (a detached HEAD has tone 0).
-      const refs = renderHistoryRefs(classifyDetailRefs(detail.refs), false, ref => (ref.name === 'HEAD' ? 0 : window.RepositoryHistoryGraph.toneForName(window.RepositoryHistoryGraph.branchNameOfRef(ref) || ref.name)), null, false);
+      const refs = renderHistoryRefs(classifyDetailRefs(detail.refs), false, refToneOf, null, false);
       const initials = (detail.authorName || '?').split(/\s+/).filter(Boolean).slice(0, 2).map(part => part.charAt(0)).join('').toUpperCase();
       const comparisonText = detail.comparisonBaseHash
         ? `${detail.comparisonMode === 'parent' ? 'Parent' : 'Compare'} ${escapeHtml(shortRevision(detail.comparisonBaseHash))} → ${escapeHtml(detail.shortHash)}`

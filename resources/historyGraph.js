@@ -65,12 +65,15 @@
     return '';
   }
 
-  // The name that colours a lane starting at this commit: its first local branch, else its first remote one.
+  // The name that colours a lane from this commit down: its checked-out branch, else its first local branch, else its
+  // first remote one. Tags, origin/HEAD and a detached "HEAD" name nothing: ''.
   function laneNameOf(commit) {
     const refs = (commit && commit.refs) || [];
-    const local = refs.find(ref => ref && (ref.kind === 'head' || ref.kind === 'local-branch') && ref.name);
+    const checkedOut = refs.find(ref => ref && (ref.isCurrent || ref.kind === 'head') && ref.name && ref.name !== 'HEAD');
+    if (checkedOut) return checkedOut.name;
+    const local = refs.find(ref => ref && ref.kind === 'local-branch' && ref.name);
     if (local) return local.name;
-    const remote = refs.map(branchNameOfRef).find(Boolean);
+    const remote = refs.filter(ref => ref && ref.kind === 'remote-branch').map(branchNameOfRef).find(Boolean);
     return remote || '';
   }
 
@@ -130,8 +133,8 @@
       const candidates = [1, 2, 3, 4, 5, 6, 7, 0];
       return candidates.find(tone => !used.has(tone) && (tone !== 0 || !reserved)) ?? candidates.find(tone => !used.has(tone)) ?? 1;
     };
-    // Column 0's tone: the tone of the branch checked out when the chain holds HEAD (a branch keeps its colour
-    // whether or not it is checked out), tone 0 for a detached HEAD, else its tip's label.
+    // Column 0's top tone: the checked-out branch's when the chain holds HEAD (tone 0 for a detached HEAD), else the tip's label.
+    // A line switches to the tone of each branch label it reaches (below), so this only colours the commits above the first one.
     const headName = headNameOf(byHash.get(headHash));
     const chainColor = !list.length ? 0 : headChain.has(headHash) ? (headName ? toneForName(headName) : 0) : toneFor(list[0], 0);
     const freeLane = () => {
@@ -154,7 +157,11 @@
         segments[lane] = nextSegment++;
       }
       const before = lanes.slice();
+      // The edges that arrive from above keep the tone they had: the switch shows at the labelled node.
       const beforeColors = colors.slice();
+      // A branch label switches its line's tone from this commit down, whatever is checked out.
+      const label = laneNameOf(commit);
+      if (label) colors[lane] = toneForName(label);
       const beforeSegments = segments.slice();
       const incomingLanes = expecting.filter(index => index !== lane);
       incomingLanes.forEach(index => { lanes[index] = null; });

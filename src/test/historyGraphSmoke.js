@@ -62,6 +62,47 @@ const rowOf = (model, commits, hash) => model.rows[commits.findIndex(commit => c
   assert.equal(rowOf(graph.buildGraphModel(detached), detached, 'm2').color, 0, 'a detached HEAD is not tone 0');
 }
 
+// A branch made from main (plan 22, amended): a lane's tone is the nearest branch label at or above a commit on its
+// line, so it does not depend on which branch is checked out. feature/x is two commits ahead of main, main did not move,
+// and fix/y diverges below main.
+{
+  const headRef = name => ({ name, kind: 'head', isCurrent: true });
+  const build = (headOn, detached) => [
+    { hash: 'x2', parentHashes: ['x1'], refs: detached ? [headRef('HEAD')] : [headOn === 'feature/x' ? headRef('feature/x') : local('feature/x')] },
+    { hash: 'x1', parentHashes: ['a'] },
+    { hash: 'a', parentHashes: ['z'], refs: [headOn === 'main' ? headRef('main') : local('main')] },
+    { hash: 'y1', parentHashes: ['z'], refs: [local('fix/y')] },
+    { hash: 'z', parentHashes: [] }
+  ];
+  const expected = { x2: graph.toneForName('feature/x'), x1: graph.toneForName('feature/x'), a: graph.toneForName('main'), y1: graph.toneForName('fix/y'), z: graph.toneForName('main') };
+  const tonesOf = (commits, options) => {
+    const model = graph.buildGraphModel(commits, options);
+    return Object.fromEntries(commits.map((commit, index) => [commit.hash, model.rows[index].color]));
+  };
+  assert.deepEqual(tonesOf(build('main')), expected, 'with HEAD on main');
+  assert.deepEqual(tonesOf(build('feature/x')), expected, 'with HEAD on feature/x main\'s history changed colour');
+  // The edges below a labelled commit are in its tone (the lane's colours follow the switch).
+  const checked = graph.buildGraphModel(build('feature/x'));
+  assert.equal(checked.rows[2].color, graph.toneForName('main'));
+  assert.equal(checked.rows[2].parentColors[0], graph.toneForName('main'), 'the edge below main is not main\'s tone');
+  assert.equal(checked.rows[2].beforeColors[0], graph.toneForName('feature/x'), 'the edge above main is not the child\'s tone');
+  assert.equal(checked.rows[3].afterColors[0], graph.toneForName('main'));
+  // A detached HEAD above main is tone 0 down to main, then main's.
+  const detached = tonesOf(build('', true));
+  assert.deepEqual([detached.x2, detached.x1, detached.a, detached.z], [0, 0, graph.toneForName('main'), graph.toneForName('main')]);
+  assert.equal(detached.x2, 0);
+  // First-parent mode follows the same rule.
+  const firstParent = commits => tonesOf(commits.filter(commit => commit.hash !== 'y1'), { firstParent: true });
+  assert.deepEqual(firstParent(build('main')), { x2: expected.x2, x1: expected.x1, a: expected.a, z: expected.z });
+  assert.deepEqual(firstParent(build('feature/x')), { x2: expected.x2, x1: expected.x1, a: expected.a, z: expected.z });
+  // A commit labelled with two branches: the checked-out one counts, else the first local one.
+  const two = headNamed => [{ hash: 'c2', parentHashes: ['c1'], refs: [local('alpha'), headNamed ? headRef('zeta') : local('zeta')] }, { hash: 'c1', parentHashes: [] }];
+  assert.equal(tonesOf(two(true)).c2, graph.toneForName('zeta'), 'the head ref does not win');
+  assert.equal(tonesOf(two(false)).c2, graph.toneForName('alpha'));
+  // A remote label counts after the local ones.
+  assert.equal(tonesOf([{ hash: 'r1', parentHashes: [], refs: [remote('origin/beta')] }]).r1, graph.toneForName('beta'));
+}
+
 // A lane a merge opens keeps its tone when Load more brings the merged parent into the list.
 {
   const merge = subject => ({ hash: 'm3', parentHashes: ['m2', 'x2'], subject, refs: [head] });
@@ -180,7 +221,8 @@ const rowOf = (model, commits, hash) => model.rows[commits.findIndex(commit => c
   assert.deepEqual(model.rows.map(row => row.lane), [0, 0, 0], 'the selected branch is not in column 0');
   assert.equal(model.laneCount, 1);
   assert.equal(new Set(model.rows.map(row => row.segment)).size, 1, 'the branch has more than one segment');
-  assert.deepEqual(model.rows.map(row => row.color), [graph.toneForName('main'), graph.toneForName('main'), graph.toneForName('main')], 'a chain holding HEAD lost its branch tone');
+  // The tip's label colours it; the line switches to main's tone at the commit labelled main (plan 22, amended).
+  assert.deepEqual(model.rows.map(row => row.color), [graph.toneForName('feature/tip'), graph.toneForName('main'), graph.toneForName('main')], 'the line did not switch tone at the main label');
   // A chain without HEAD takes its tip's tone.
   const away = graph.buildGraphModel([{ hash: 't', parentHashes: ['u'], refs: [local('feature/t')] }, { hash: 'u', parentHashes: [] }], { firstParent: true });
   assert.deepEqual(away.rows.map(row => row.color), [graph.toneForName('feature/t'), graph.toneForName('feature/t')]);

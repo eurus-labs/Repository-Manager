@@ -3141,10 +3141,10 @@ async function main() {
     // Plan 22, part 1: a branch keeps its colour when it is checked out, and HEAD's node has a ring. The history is
     // scripted from the fixture's real commits: first with HEAD on feature/dashboard, then as after a checkout of main.
     {
-      // Two branches that diverged from one commit: feature/dashboard (a) and main (b) on base (c).
-      const [topHash, mainHash, baseHash] = ['a', 'b', 'c'].map(letter => letter.repeat(40));
+      // A branch made from main (plan 22, amended): feature/dashboard is two commits ahead of main, main did not move.
+      const [topHash, midHash, mainHash, baseHash] = ['a', 'b', 'c', 'd'].map(letter => letter.repeat(40));
       const checkoutPage = await openPage(1440, 900);
-      await checkoutPage.evaluate(([top, main, base]) => {
+      await checkoutPage.evaluate(([top, mid, main, base]) => {
         const sent = window.__checkoutSent = [];
         const toHost = window.__postToHost;
         window.__postToHost = message => { if (message.type === 'getHistory') { sent.push(message); return Promise.resolve(); } return toHost(message); };
@@ -3155,10 +3155,10 @@ async function main() {
         const remote = name => ({ name, kind: 'remote-branch' });
         const sets = {
           // HEAD on feature/dashboard.
-          before: [commit(top, [base], 'update app', [head('feature/dashboard'), remote('origin/feature/dashboard')]),
+          before: [commit(top, [mid], 'update app', [head('feature/dashboard'), remote('origin/feature/dashboard')]), commit(mid, [main], 'tweak app', []),
             commit(main, [base], 'add linked repositories', [local('main'), remote('origin/main')]), commit(base, [], 'add app', [])],
-          // The same commits after a checkout of main: feature/dashboard is left in its own line.
-          after: [commit(top, [base], 'update app', [local('feature/dashboard'), remote('origin/feature/dashboard')]),
+          // The same commits after a checkout of main.
+          after: [commit(top, [mid], 'update app', [local('feature/dashboard'), remote('origin/feature/dashboard')]), commit(mid, [main], 'tweak app', []),
             commit(main, [base], 'add linked repositories', [head('main'), remote('origin/main')]), commit(base, [], 'add app', [])]
         };
         window.__checkoutReply = key => {
@@ -3166,14 +3166,20 @@ async function main() {
           window.dispatchEvent(new MessageEvent('message', { data: { type: 'historyLoaded', payload: { repositoryPath: request.repositoryPath,
             requestId: request.requestId, offset: 0, commits: sets[key], nextOffset: null, upstream: null } } }));
         };
-      }, [topHash, mainHash, baseHash]);
-      const readState = () => checkoutPage.evaluate(() => {
+      }, [topHash, midHash, mainHash, baseHash]);
+      const readState = () => checkoutPage.evaluate(hashes => {
         const laneClass = element => Array.from(element.classList).find(item => /^graph-lane-\d$/.test(item)) || null;
         const point = element => { const m = /translate\(([\d.]+) ([\d.]+)\)/.exec(element.getAttribute('transform')); return `${m[1]},${m[2]}`; };
         const rings = Array.from(document.querySelectorAll('.graph-node-head-ring'));
         const headNode = document.querySelector('.graph-node.graph-node-head');
         const labelTone = name => { const label = Array.from(document.querySelectorAll('.history-ref')).find(item => item.querySelector('.ref-name').textContent === name);
           return label ? { lane: laneClass(label), border: getComputedStyle(label).borderTopColor } : null; };
+        // Every commit's node tone and row tone, by hash.
+        const tones = Object.fromEntries(hashes.map(hash => {
+          const spot = point(document.querySelector(`.graph-node-control[data-commit="${hash}"]`));
+          const node = Array.from(document.querySelectorAll('.graph-node')).find(item => `${item.getAttribute('cx')},${item.getAttribute('cy')}` === spot);
+          return [hash, { node: laneClass(node), row: laneClass(document.querySelector(`.history-row[data-commit="${hash}"]`)) }];
+        }));
         const ring = rings[0];
         const control = ring && Array.from(document.querySelectorAll('.graph-node-control')).find(item => point(item) === `${ring.getAttribute('cx')},${ring.getAttribute('cy')}`);
         return { rings: rings.length, headNodes: document.querySelectorAll('.graph-node-head').length,
@@ -3181,8 +3187,8 @@ async function main() {
             fill: getComputedStyle(ring).fill, width: getComputedStyle(ring).strokeWidth, events: getComputedStyle(ring).pointerEvents,
             stroke: getComputedStyle(ring).stroke, nodeStroke: getComputedStyle(headNode).stroke, lane: laneClass(ring), commit: control ? control.dataset.commit : null,
             beforeControls: Boolean(ring.compareDocumentPosition(document.querySelector('.graph-node-control')) & Node.DOCUMENT_POSITION_FOLLOWING) } : null,
-          main: labelTone('main'), dashboard: labelTone('feature/dashboard'), tone0: document.querySelectorAll('.graph-edge.graph-lane-0, .graph-node.graph-lane-0, .history-ref.graph-lane-0').length };
-      });
+          tones, main: labelTone('main'), dashboard: labelTone('feature/dashboard'), tone0: document.querySelectorAll('.graph-edge.graph-lane-0, .graph-node.graph-lane-0, .history-ref.graph-lane-0').length };
+      }, [topHash, midHash, mainHash, baseHash]);
       const toneOf = name => checkoutPage.evaluate(value => `graph-lane-${window.RepositoryHistoryGraph.toneForName(value)}`, name);
       // The first reply: HEAD on feature/dashboard.
       await checkoutPage.evaluate(() => document.getElementById('dashboardIncludeRemotes').click());
@@ -3222,6 +3228,13 @@ async function main() {
       assert.equal(afterCheckout.ring.lane, await toneOf('main'));
       assert.equal(afterCheckout.tone0, 0, 'a named branch is drawn in tone 0');
       // Neither branch changed colour: the labels' tones are the same before and after.
+      // The branch made from main: no commit changed tone, main's label, row and node included (the line switches at the main label).
+      assert.deepEqual(afterCheckout.tones, beforeCheckout.tones, 'a commit changed tone on checkout');
+      const featureTone = await toneOf('feature/dashboard');
+      const mainTone = await toneOf('main');
+      assert.deepEqual(beforeCheckout.tones, {
+        [topHash]: { node: featureTone, row: featureTone }, [midHash]: { node: featureTone, row: featureTone },
+        [mainHash]: { node: mainTone, row: mainTone }, [baseHash]: { node: mainTone, row: mainTone } }, 'the commits are not in their branches\' tones');
       assert.deepEqual(afterCheckout.main, beforeCheckout.main, 'main changed colour on checkout');
       assert.deepEqual(afterCheckout.dashboard, beforeCheckout.dashboard, 'feature/dashboard changed colour on checkout');
       await snap(checkoutPage, '65b-history-checkout-colours');
@@ -3265,15 +3278,18 @@ async function main() {
           window.__compactDetails = [];
           window.addEventListener('message', event => { if (event.data && event.data.type === 'commitDetailLoaded') window.__compactDetails.push(event.data.payload); }, true);
         });
+        // The page may already show the target commit: pick another first, so the target is always a fresh selection.
+        await compact.locator('.history-row', { hasText: 'feat: add app' }).click();
+        await compact.waitForFunction(() => window.__compactDetails.some(payload => payload.detail.subject === 'feat: add app'));
         await compact.locator('.history-row', { hasText: 'feat: update app in two places' }).click();
-        await compact.waitForFunction(() => window.__compactDetails.length > 0 && window.__compactSent.length > 0);
+        await compact.waitForFunction(() => window.__compactDetails.some(payload => payload.detail.subject === 'feat: update app in two places') && window.__compactSent.length > 1);
         // The real details of the commit, with a body and three labels: HEAD's branch (on origin), a local branch and a tag.
         await compact.evaluate(() => {
-          const real = window.__compactDetails.at(-1);
+          const real = window.__compactDetails.filter(payload => payload.detail.subject === 'feat: update app in two places').at(-1);
           const detail = Object.assign({}, real.detail, { body: 'The body of the commit says why it changed, in a sentence that is long enough to be cut by the header.',
             refs: [{ name: 'feature/dashboard', kind: 'head', isCurrent: true }, { name: 'origin/feature/dashboard', kind: 'other' }, { name: 'feature/ahead', kind: 'other' }, { name: '1.0.0', kind: 'tag' }] });
           window.dispatchEvent(new MessageEvent('message', { data: { type: 'commitDetailLoaded', payload: Object.assign({}, real, { detail }) } }));
-          const request = window.__compactSent.at(-1).payload;
+          const request = window.__compactSent.map(message => message.payload).filter(payload => payload.commitHash === real.detail.hash).at(-1);
           const branches = Array.from({ length: 12 }, (_, i) => ({ name: i ? `feature/branch-number-${i}` : 'feature/dashboard', kind: 'local', current: !i, onOrigin: i < 3 }));
           window.dispatchEvent(new MessageEvent('message', { data: { type: 'commitBranchesLoaded', payload: { repositoryPath: request.repositoryPath,
             commitHash: request.commitHash, requestId: request.requestId, branches } } }));
